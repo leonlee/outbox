@@ -1,0 +1,88 @@
+package outbox.jdbc;
+
+import outbox.core.tx.TxContext;
+
+import java.sql.Connection;
+import java.util.ArrayList;
+import java.util.List;
+
+public final class ThreadLocalTxContext implements TxContext {
+  private final ThreadLocal<TxState> state = new ThreadLocal<>();
+
+  @Override
+  public boolean isTransactionActive() {
+    return state.get() != null;
+  }
+
+  @Override
+  public Connection currentConnection() {
+    TxState current = state.get();
+    if (current == null) {
+      throw new IllegalStateException("No active transaction");
+    }
+    return current.connection;
+  }
+
+  @Override
+  public void afterCommit(Runnable callback) {
+    TxState current = state.get();
+    if (current == null) {
+      throw new IllegalStateException("No active transaction");
+    }
+    current.afterCommit.add(callback);
+  }
+
+  @Override
+  public void afterRollback(Runnable callback) {
+    TxState current = state.get();
+    if (current == null) {
+      throw new IllegalStateException("No active transaction");
+    }
+    current.afterRollback.add(callback);
+  }
+
+  void bind(Connection connection) {
+    if (state.get() != null) {
+      throw new IllegalStateException("Transaction already active");
+    }
+    state.set(new TxState(connection));
+  }
+
+  void clearAfterCommit() {
+    TxState current = state.get();
+    if (current == null) {
+      return;
+    }
+    try {
+      for (Runnable callback : current.afterCommit) {
+        callback.run();
+      }
+    } finally {
+      state.remove();
+    }
+  }
+
+  void clearAfterRollback() {
+    TxState current = state.get();
+    if (current == null) {
+      return;
+    }
+    try {
+      for (Runnable callback : current.afterRollback) {
+        callback.run();
+      }
+    } finally {
+      state.remove();
+    }
+  }
+
+  private static final class TxState {
+    private final Connection connection;
+    private final List<Runnable> afterCommit = new ArrayList<>();
+    private final List<Runnable> afterRollback = new ArrayList<>();
+
+    private TxState(Connection connection) {
+      this.connection = connection;
+    }
+  }
+}

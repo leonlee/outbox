@@ -1,0 +1,178 @@
+package outbox.spring;
+
+import outbox.core.registry.DefaultHandlerRegistry;
+import outbox.core.dispatch.DefaultInFlightTracker;
+import outbox.core.client.DefaultOutboxClient;
+import outbox.core.registry.DefaultPublisherRegistry;
+import outbox.core.dispatch.Dispatcher;
+import outbox.core.api.EventEnvelope;
+import outbox.core.dispatch.ExponentialBackoffRetryPolicy;
+import outbox.core.api.OutboxClient;
+import outbox.core.api.OutboxMetrics;
+import outbox.core.api.OutboxStatus;
+import outbox.jdbc.DataSourceConnectionProvider;
+import outbox.jdbc.JdbcOutboxRepository;
+
+import org.h2.jdbcx.JdbcDataSource;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.DefaultTransactionDefinition;
+
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class SpringAdapterIntegrationTest {
+  private DataSource dataSource;
+  private JdbcOutboxRepository repository;
+  private DataSourceConnectionProvider connectionProvider;
+  private SpringTxContext txContext;
+  private DataSourceTransactionManager txManager;
+
+  @BeforeEach
+  void setup() throws Exception {
+    JdbcDataSource ds = new JdbcDataSource();
+    ds.setURL("jdbc:h2:mem:outbox_spring_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
+    this.dataSource = ds;
+    this.repository = new JdbcOutboxRepository();
+    this.connectionProvider = new DataSourceConnectionProvider(ds);
+    this.txContext = new SpringTxContext(ds);
+    this.txManager = new DataSourceTransactionManager(ds);
+
+    try (Connection conn = ds.getConnection()) {
+      createSchema(conn);
+    }
+  }
+
+  @AfterEach
+  void teardown() throws Exception {
+    try (Connection conn = dataSource.getConnection()) {
+      conn.createStatement().execute("DROP TABLE outbox_event");
+    }
+  }
+
+  @Test
+  void commitTriggersFastPathAndMarksDone() throws Exception {
+    CountDownLatch latch = new CountDownLatch(1);
+    DefaultPublisherRegistry publishers = new DefaultPublisherRegistry()
+        .registerAll(event -> latch.countDown());
+
+    Dispatcher dispatcher = dispatcher(1, 100, 100, publishers);
+    OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
+
+    TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
+    String eventId;
+    try {
+      eventId = client.publish(EventEnvelope.ofJson("UserCreated", "{\"id\":42}"));
+      txManager.commit(status);
+    } catch (RuntimeException ex) {
+      txManager.rollback(status);
+      throw ex;
+    }
+
+    assertTrue(latch.await(2, TimeUnit.SECONDS));
+    awaitStatus(eventId, OutboxStatus.DONE, 2_000);
+
+    dispatcher.close();
+  }
+
+  @Test
+  void rollbackDoesNotPersistAndDoesNotEnqueue() throws Exception {
+    CountDownLatch latch = new CountDownLatch(1);
+    DefaultPublisherRegistry publishers = new DefaultPublisherRegistry()
+        .registerAll(event -> latch.countDown());
+
+    Dispatcher dispatcher = dispatcher(1, 100, 100, publishers);
+    OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
+
+    TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
+    String eventId;
+    try {
+      eventId = client.publish(EventEnvelope.ofJson("UserCreated", "{\"id\":99}"));
+      txManager.rollback(status);
+    } catch (RuntimeException ex) {
+      txManager.rollback(status);
+      throw ex;
+    }
+
+    assertFalse(latch.await(200, TimeUnit.MILLISECONDS));
+    assertEquals(-1, getStatus(eventId));
+
+    dispatcher.close();
+  }
+
+  private Dispatcher dispatcher(int workers, int hotCapacity, int coldCapacity, DefaultPublisherRegistry publishers) {
+    return new Dispatcher(
+        connectionProvider,
+        repository,
+        publishers,
+        new DefaultHandlerRegistry(),
+        new DefaultInFlightTracker(),
+        new ExponentialBackoffRetryPolicy(10, 50),
+        10,
+        workers,
+        hotCapacity,
+        coldCapacity,
+        OutboxMetrics.NOOP
+    );
+  }
+
+  private void createSchema(Connection conn) throws SQLException {
+    conn.createStatement().execute(
+        "CREATE TABLE outbox_event (" +
+            "event_id VARCHAR(36) PRIMARY KEY," +
+            "event_type VARCHAR(128) NOT NULL," +
+            "aggregate_type VARCHAR(64)," +
+            "aggregate_id VARCHAR(128)," +
+            "tenant_id VARCHAR(64)," +
+            "payload CLOB NOT NULL," +
+            "headers CLOB," +
+            "status TINYINT NOT NULL," +
+            "attempts INT NOT NULL DEFAULT 0," +
+            "available_at TIMESTAMP NOT NULL," +
+            "created_at TIMESTAMP NOT NULL," +
+            "done_at TIMESTAMP," +
+            "last_error CLOB" +
+            ")"
+    );
+    conn.createStatement().execute(
+        "CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_at)"
+    );
+  }
+
+  private int getStatus(String eventId) throws SQLException {
+    try (Connection conn = dataSource.getConnection();
+         PreparedStatement ps = conn.prepareStatement("SELECT status FROM outbox_event WHERE event_id=?")) {
+      ps.setString(1, eventId);
+      try (ResultSet rs = ps.executeQuery()) {
+        if (!rs.next()) {
+          return -1;
+        }
+        return rs.getInt(1);
+      }
+    }
+  }
+
+  private void awaitStatus(String eventId, OutboxStatus status, long timeoutMs) throws Exception {
+    long deadline = System.currentTimeMillis() + timeoutMs;
+    while (System.currentTimeMillis() < deadline) {
+      if (getStatus(eventId) == status.code()) {
+        return;
+      }
+      Thread.sleep(20);
+    }
+    assertEquals(status.code(), getStatus(eventId));
+  }
+}

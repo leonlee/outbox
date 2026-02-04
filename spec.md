@@ -58,9 +58,8 @@ Build a framework that:
 | **OutboxClient** | API used by business code inside a transaction context |
 | **TxContext** | Abstraction for transaction lifecycle hooks (afterCommit/afterRollback) |
 | **OutboxRepository** | Insert/update/query via `java.sql.Connection` |
-| **Dispatcher** | Hot/cold queues + worker pool; executes publishers/handlers; updates status |
-| **PublisherRegistry** | Maps event types to MQ publishers |
-| **HandlerRegistry** | Maps event types to in-process handlers |
+| **Dispatcher** | Hot/cold queues + worker pool; executes listeners; updates status |
+| **ListenerRegistry** | Maps event types to event listeners |
 | **Poller** | Low-frequency fallback DB scan; enqueues cold events |
 | **InFlightTracker** | In-memory deduplication |
 
@@ -112,7 +111,7 @@ Packages:
 - `outbox.core.client` - DefaultOutboxClient implementation
 - `outbox.core.dispatch` - Dispatcher, retry policy, inflight tracking
 - `outbox.core.poller` - OutboxPoller
-- `outbox.core.registry` - Publisher and handler registries
+- `outbox.core.registry` - Listener registry
 - `outbox.core.repo` - Repository interface and OutboxRow
 - `outbox.core.tx` - TxContext and ConnectionProvider interfaces
 - `outbox.core.util` - JsonCodec (no external JSON library)
@@ -427,8 +426,7 @@ LIMIT ?
 public Dispatcher(
     ConnectionProvider connectionProvider,
     OutboxRepository repository,
-    PublisherRegistry publisherRegistry,
-    HandlerRegistry handlerRegistry,
+    ListenerRegistry listenerRegistry,
     InFlightTracker inFlightTracker,
     RetryPolicy retryPolicy,
     int maxAttempts,
@@ -451,26 +449,26 @@ void close()                           // Graceful shutdown
 
 For each queued event:
 1. **Dedupe**: If eventId already inflight, drop
-2. **Execute**: Run all matching Publishers, then all matching Handlers
+2. **Execute**: Run all matching listeners in registration order
 3. **Success**: Update DB to DONE; remove from inflight
 4. **Failure**: Update RETRY with backoff, or DEAD after maxAttempts; remove from inflight
 
 ### 10.4 Synchronous Execution Model
 
-Workers execute publishers and handlers **synchronously** on the worker thread:
+Workers execute listeners **synchronously** on the worker thread:
 
 ```
 Worker Thread:
   loop:
     event = queue.poll()
-    publisher.publish(event)   // blocking
-    handler.handle(event)      // blocking
+    for listener in listeners:
+      listener.onEvent(event)  // blocking
     markDone(event)
 ```
 
 This is intentional for **natural backpressure**:
 - `workerCount` = maximum concurrent events being processed
-- Slow publishers → workers stay busy → cannot poll more events
+- Slow listeners → workers stay busy → cannot poll more events
 - Queues fill up → `enqueueHot()` returns false → graceful degradation
 - No risk of overwhelming downstream systems (MQ, databases, APIs)
 
@@ -525,52 +523,53 @@ void close()    // Stop polling
 
 ## 12. Registries
 
-### 12.1 Publisher Interface
+### 12.1 EventListener Interface
 
 ```java
-public interface Publisher {
-  void publish(EventEnvelope event) throws Exception;
+/**
+ * Listener that reacts to outbox events.
+ *
+ * Implementations can perform any action: publish to message brokers,
+ * update caches, call external services, or process locally. The framework
+ * makes no distinction between different listener types - all are treated
+ * equally and executed in registration order.
+ */
+public interface EventListener {
+  void onEvent(EventEnvelope event) throws Exception;
 }
 ```
 
-### 12.2 Handler Interface
+### 12.2 ListenerRegistry Interface
 
 ```java
-public interface Handler {
-  void handle(EventEnvelope event) throws Exception;
+public interface ListenerRegistry {
+  List<EventListener> listenersFor(String eventType);
 }
 ```
 
-### 12.3 PublisherRegistry
-
-```java
-public interface PublisherRegistry {
-  List<Publisher> publishersFor(String eventType);
-}
-```
-
-### 12.4 DefaultPublisherRegistry
+### 12.3 DefaultListenerRegistry
 
 ```java
 // Type-safe registration
-registry.register(UserEvents.USER_CREATED, event -> { ... });
+registry.register(UserEvents.USER_CREATED, event -> {
+  // Send to Kafka, update cache, call API, etc.
+});
 
 // String registration
 registry.register("UserUpdated", event -> { ... });
 
-// Wildcard (matches all events)
-registry.registerAll(event -> { ... });
+// Wildcard (matches all events) - useful for audit/logging
+registry.registerAll(event -> {
+  log.info("Event dispatched: {}", event.eventId());
+});
 ```
 
-### 12.5 HandlerRegistry
+### 12.4 Matching Rules
 
-Same pattern as PublisherRegistry.
-
-### 12.6 Matching Rules
-
-1. Find all publishers/handlers registered for the exact event type
+1. Find all listeners registered for the exact event type
 2. Append all wildcard ("*") registrations
 3. Return combined immutable list
+4. Listeners execute in registration order
 
 ---
 
@@ -642,12 +641,12 @@ The framework implements backpressure at multiple levels to prevent overwhelming
 
 ### 14.3 Synchronous Worker Execution
 
-Workers execute publishers/handlers synchronously (blocking). This provides natural rate limiting:
+Workers execute listeners synchronously (blocking). This provides natural rate limiting:
 
 | Scenario | Effect |
 |----------|--------|
-| Fast publishers | Workers quickly return to polling, high throughput |
-| Slow publishers | Workers blocked, queues fill, automatic throttling |
+| Fast listeners | Workers quickly return to polling, high throughput |
+| Slow listeners | Workers blocked, queues fill, automatic throttling |
 | Downstream outage | All workers blocked, queues full, events safe in DB |
 
 **Key insight:** The database acts as a durable buffer when in-memory queues are full.
@@ -732,7 +731,7 @@ public interface OutboxMetrics {
 
 ### 16.3 Idempotency Requirements
 
-- Publishers MUST include eventId in MQ message header/body
+- Listeners that publish to MQ MUST include eventId in message header/body
 - Downstream systems must dedupe by eventId
 - Framework provides at-least-once delivery
 
@@ -760,7 +759,7 @@ public interface OutboxMetrics {
 ### 18.2 Commit + Fast Path
 
 - Begin tx, publish event, commit
-- **Expect**: dispatcher receives HOT event; publisher invoked; outbox status DONE
+- **Expect**: dispatcher receives HOT event; listener invoked; outbox status DONE
 
 ### 18.3 Queue Overflow Downgrade
 
@@ -771,16 +770,16 @@ public interface OutboxMetrics {
 
 ### 18.4 Retry/Dead
 
-- Publisher fails repeatedly
+- Listener fails repeatedly
 - **Expect**: attempts increments, RETRY status
 - After maxAttempts
 - **Expect**: DEAD status
 
 ### 18.5 Type-Safe EventType
 
-- Register publisher with enum EventType
+- Register listener with enum EventType
 - Publish event using same enum
-- **Expect**: publisher invoked
+- **Expect**: listener invoked
 
 ### 18.6 Type-Safe AggregateType
 
@@ -801,11 +800,13 @@ ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 Dispatcher dispatcher = new Dispatcher(
     connectionProvider,
     repository,
-    new DefaultPublisherRegistry()
+    new DefaultListenerRegistry()
         .register("UserCreated", event -> {
-          // publish to MQ
+          // publish to MQ, update cache, call API, etc.
+        })
+        .registerAll(event -> {
+          // audit/logging for all events
         }),
-    new DefaultHandlerRegistry(),
     new DefaultInFlightTracker(),
     new ExponentialBackoffRetryPolicy(200, 60_000),
     10, 4, 1000, 1000,

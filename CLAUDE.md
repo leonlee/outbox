@@ -33,7 +33,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 - **OutboxRepository**: Persistence contract (`insertNew`, `markDone`, `markRetry`, `markDead`, `pollPending`). Implemented by `JdbcOutboxRepository`.
 - **Dispatcher**: Dual-queue event processor with hot queue (afterCommit callbacks) and cold queue (poller fallback). Uses `InFlightTracker` for deduplication and `RetryPolicy` for exponential backoff.
 - **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails.
-- **PublisherRegistry/HandlerRegistry**: Map event types to publishers/handlers. Support wildcard "*" registration.
+- **ListenerRegistry**: Maps event types to `EventListener` instances. Supports wildcard "*" registration for audit/logging listeners.
 
 ### Event Flow
 

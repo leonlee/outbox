@@ -9,6 +9,8 @@ mvn test                           # Run all module tests
 mvn -pl outbox-jdbc test           # Run JDBC module tests only
 mvn -pl outbox-core -am package    # Build core module and dependencies
 mvn -DskipTests package            # Build all jars without tests
+mvn install -DskipTests && mvn -pl outbox-demo exec:java  # Run demo
+mvn install -DskipTests && mvn -f outbox-spring-demo/pom.xml spring-boot:run  # Run Spring Boot demo
 ```
 
 Java 11 is the baseline.
@@ -22,6 +24,8 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 - **outbox-core**: Core interfaces, dispatcher, poller, registries. Zero external dependencies.
 - **outbox-jdbc**: JDBC repository implementation and manual transaction helpers (`JdbcTransactionManager`, `ThreadLocalTxContext`).
 - **outbox-spring-adapter**: Optional `SpringTxContext` for Spring transaction integration.
+- **outbox-demo**: Simple runnable demo with H2 (no Spring).
+- **outbox-spring-demo**: Spring Boot demo with REST API (standalone, requires Java 17).
 
 ### Key Abstractions
 

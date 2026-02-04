@@ -67,16 +67,22 @@ public final class JdbcTransactionManager {
     }
 
     private void finalizeTx(boolean committed) throws SQLException {
+      RuntimeException callbackException = null;
       try {
         if (committed) {
           txContext.clearAfterCommit();
         } else {
           txContext.clearAfterRollback();
         }
+      } catch (RuntimeException e) {
+        callbackException = e;
       } finally {
         completed = true;
         connection.setAutoCommit(true);
         connection.close();
+      }
+      if (callbackException != null) {
+        throw callbackException;
       }
     }
 

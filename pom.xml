@@ -12,6 +12,7 @@
     <module>outbox-core</module>
     <module>outbox-jdbc</module>
     <module>outbox-spring-adapter</module>
+    <module>outbox-demo</module>
   </modules>
 
   <properties>

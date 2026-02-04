@@ -14,6 +14,25 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *
  * <p>Supports registration by specific event type or wildcard ("*") for all events.
  * Listeners are invoked in registration order.
+ *
+ * <h2>Usage</h2>
+ * <pre>{@code
+ * ListenerRegistry registry = new DefaultListenerRegistry()
+ *     // Type-specific listeners
+ *     .register("OrderCreated", event -> kafka.send(event))
+ *     .register("OrderCreated", event -> cache.invalidate(event))
+ *     .register(UserEvents.USER_DELETED, event -> cleanup(event))
+ *
+ *     // Wildcard listener for audit/logging
+ *     .registerAll(event -> audit.log(event));
+ * }</pre>
+ *
+ * <h2>Thread Safety</h2>
+ * <p>This implementation is thread-safe. Registrations can be made concurrently,
+ * and lookups return consistent snapshots.
+ *
+ * @see EventListener
+ * @see ListenerRegistry
  */
 public final class DefaultListenerRegistry implements ListenerRegistry {
   public static final String ALL_EVENTS = "*";

@@ -10,6 +10,8 @@ import java.util.Objects;
 import java.util.UUID;
 
 public final class EventEnvelope {
+  public static final int MAX_PAYLOAD_BYTES = 1024 * 1024; // 1MB
+
   private final String eventId;
   private final String eventType;
   private final Instant occurredAt;
@@ -43,17 +45,57 @@ public final class EventEnvelope {
     if (builder.payloadJson != null) {
       this.payloadJson = builder.payloadJson;
       byte[] bytes = builder.payloadJson.getBytes(StandardCharsets.UTF_8);
+      if (bytes.length > MAX_PAYLOAD_BYTES) {
+        throw new IllegalArgumentException("Payload exceeds maximum size of " + MAX_PAYLOAD_BYTES + " bytes");
+      }
       this.payloadBytes = Arrays.copyOf(bytes, bytes.length);
     } else {
+      if (builder.payloadBytes.length > MAX_PAYLOAD_BYTES) {
+        throw new IllegalArgumentException("Payload exceeds maximum size of " + MAX_PAYLOAD_BYTES + " bytes");
+      }
       this.payloadBytes = Arrays.copyOf(builder.payloadBytes, builder.payloadBytes.length);
       this.payloadJson = new String(this.payloadBytes, StandardCharsets.UTF_8);
     }
   }
 
+  /**
+   * Creates a builder with a type-safe event type.
+   *
+   * @param eventType the event type (enum or other EventType implementation)
+   * @return a new builder
+   */
+  public static Builder builder(EventType eventType) {
+    return new Builder(eventType.name());
+  }
+
+  /**
+   * Creates a builder with a string event type.
+   *
+   * @param eventType the event type name
+   * @return a new builder
+   */
   public static Builder builder(String eventType) {
     return new Builder(eventType);
   }
 
+  /**
+   * Creates an envelope with a type-safe event type and JSON payload.
+   *
+   * @param eventType the event type
+   * @param payloadJson the JSON payload
+   * @return a new envelope
+   */
+  public static EventEnvelope ofJson(EventType eventType, String payloadJson) {
+    return builder(eventType).payloadJson(payloadJson).build();
+  }
+
+  /**
+   * Creates an envelope with a string event type and JSON payload.
+   *
+   * @param eventType the event type name
+   * @param payloadJson the JSON payload
+   * @return a new envelope
+   */
   public static EventEnvelope ofJson(String eventType, String payloadJson) {
     return builder(eventType).payloadJson(payloadJson).build();
   }
@@ -121,6 +163,11 @@ public final class EventEnvelope {
 
     public Builder aggregateType(String aggregateType) {
       this.aggregateType = aggregateType;
+      return this;
+    }
+
+    public Builder aggregateType(AggregateType aggregateType) {
+      this.aggregateType = aggregateType.name();
       return this;
     }
 

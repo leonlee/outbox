@@ -1,364 +1,836 @@
-Outbox Framework Spec (Core No-Spring, JDBC-Based, Fast-path enqueue + DB-poller fallback)
+# Outbox Framework Specification
 
-0. Goals
+Minimal, Spring-free transactional outbox framework with JDBC persistence, hot-path enqueue, and poller fallback.
+
+## Table of Contents
+
+1. [Goals](#1-goals)
+2. [Architecture Overview](#2-architecture-overview)
+3. [Modules](#3-modules)
+4. [Core Abstractions](#4-core-abstractions)
+5. [Data Model](#5-data-model)
+6. [Event Envelope](#6-event-envelope)
+7. [Type-Safe Event and Aggregate Types](#7-type-safe-event-and-aggregate-types)
+8. [Public API](#8-public-api)
+9. [JDBC Repository](#9-jdbc-repository)
+10. [Dispatcher](#10-dispatcher)
+11. [Poller](#11-poller)
+12. [Registries](#12-registries)
+13. [Retry Policy](#13-retry-policy)
+14. [Backpressure and Downgrade](#14-backpressure-and-downgrade)
+15. [Configuration](#15-configuration)
+16. [Observability](#16-observability)
+17. [Thread Safety](#17-thread-safety)
+18. [Acceptance Tests](#18-acceptance-tests)
+
+---
+
+## 1. Goals
 
 Build a framework that:
-	1.	Persists a unified event record into an outbox table within the current business DB transaction.
-	2.	After successful business transaction commit, enqueues the event (payload in memory) into an in-process Dispatcher (fast path).
-	3.	Dispatcher executes registered Publishers (send to MQ) and/or in-process async Handlers.
-	4.	On success, Dispatcher updates outbox status to DONE; on failure updates to RETRY/DEAD.
-	5.	A low-frequency Poller scans DB as fallback only (node crash, enqueue downgrade, missed enqueue) and enqueues unfinished events.
-	6.	Delivery semantics: at-least-once; duplicates are allowed and must be handled downstream by eventId.
 
-Constraints:
-	•	Core MUST NOT depend on Spring (no Spring TX, no JdbcTemplate).
-	•	DB access MUST use standard JDBC.
-	•	Spring integration is optional and implemented via an adapter module.
+1. Persists a unified event record into an outbox table within the current business DB transaction.
+2. After successful transaction commit, enqueues the event (payload in memory) into an in-process Dispatcher (fast path).
+3. Dispatcher executes registered Publishers (send to MQ) and/or in-process async Handlers.
+4. On success, Dispatcher updates outbox status to DONE; on failure updates to RETRY/DEAD.
+5. A low-frequency Poller scans DB as fallback only (node crash, enqueue downgrade, missed enqueue) and enqueues unfinished events.
+6. Delivery semantics: **at-least-once**; duplicates are allowed and must be handled downstream by `eventId`.
 
-Non-goals:
-	•	Exactly-once end-to-end.
-	•	Distributed transactions.
+### Constraints
 
-⸻
+- Core MUST NOT depend on Spring (no Spring TX, no JdbcTemplate).
+- DB access MUST use standard JDBC.
+- Spring integration is optional and implemented via an adapter module.
 
-1. Architecture Overview
+### Non-Goals
 
-1.1 Components
-	•	OutboxClient: API used by business code inside a transaction context.
-	•	TxContext / TxHooks: abstraction for transaction lifecycle hooks (afterCommit/afterRollback).
-	•	OutboxRepository (JDBC): insert/update/query via java.sql.Connection.
-	•	Dispatcher: hot/cold queues + worker pool; executes publishers/handlers; updates outbox status.
-	•	PublisherRegistry: MQ publishers.
-	•	HandlerRegistry: in-process handlers.
-	•	Poller: low-frequency fallback DB scan → enqueue cold events.
-	•	InFlightTracker: in-memory dedupe.
-	•	BackpressurePolicy: bounded queues + downgrade strategy.
+- Exactly-once end-to-end.
+- Distributed transactions.
 
-1.2 Queues
-	•	Dispatcher MUST prioritize:
-	•	Hot Queue: afterCommit enqueue from business thread.
-	•	Cold Queue: poller enqueue fallback.
+---
 
-⸻
+## 2. Architecture Overview
 
-2. Core Transaction Abstractions (No Spring)
+### 2.1 Components
 
-2.1 TxContext (required by core)
+| Component | Responsibility |
+|-----------|----------------|
+| **OutboxClient** | API used by business code inside a transaction context |
+| **TxContext** | Abstraction for transaction lifecycle hooks (afterCommit/afterRollback) |
+| **OutboxRepository** | Insert/update/query via `java.sql.Connection` |
+| **Dispatcher** | Hot/cold queues + worker pool; executes publishers/handlers; updates status |
+| **PublisherRegistry** | Maps event types to MQ publishers |
+| **HandlerRegistry** | Maps event types to in-process handlers |
+| **Poller** | Low-frequency fallback DB scan; enqueues cold events |
+| **InFlightTracker** | In-memory deduplication |
 
-Core needs a way to:
-	•	access the current transaction’s JDBC Connection
-	•	register callbacks that run after commit (fast path enqueue)
-	•	detect “no active transaction” and fail fast
+### 2.2 Event Flow
 
-Define:
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                            HOT PATH (Fast)                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  Business TX    OutboxClient     afterCommit      Dispatcher    DB      │
+│      │               │               │               │          │       │
+│      │──publish()───>│               │               │          │       │
+│      │               │──insertNew()──────────────────────────-->│       │
+│      │               │──register()──>│               │          │       │
+│      │──commit()─────────────────────│               │          │       │
+│      │               │               │──enqueueHot()>│          │       │
+│      │               │               │               │──markDone│       │
+└─────────────────────────────────────────────────────────────────────────┘
 
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         COLD PATH (Fallback)                             │
+├─────────────────────────────────────────────────────────────────────────┤
+│     Poller          DB           Dispatcher                              │
+│       │              │               │                                   │
+│       │──pollPending>│               │                                   │
+│       │<──rows───────│               │                                   │
+│       │──enqueueCold────────────────>│                                   │
+│       │              │               │──process()                        │
+│       │              │<──markDone────│                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 2.3 Queue Priority
+
+Dispatcher MUST prioritize:
+- **Hot Queue**: afterCommit enqueue from business thread (priority)
+- **Cold Queue**: poller enqueue fallback
+
+---
+
+## 3. Modules
+
+### 3.1 outbox-core
+
+Core interfaces, dispatcher, poller, and registries. **Zero external dependencies.**
+
+Packages:
+- `outbox.core.api` - Public API and domain types
+- `outbox.core.client` - DefaultOutboxClient implementation
+- `outbox.core.dispatch` - Dispatcher, retry policy, inflight tracking
+- `outbox.core.poller` - OutboxPoller
+- `outbox.core.registry` - Publisher and handler registries
+- `outbox.core.repo` - Repository interface and OutboxRow
+- `outbox.core.tx` - TxContext and ConnectionProvider interfaces
+- `outbox.core.util` - JsonCodec (no external JSON library)
+
+### 3.2 outbox-jdbc
+
+JDBC repository implementation and manual transaction helpers.
+
+Classes:
+- `JdbcOutboxRepository` - Implements OutboxRepository with PreparedStatement
+- `ThreadLocalTxContext` - ThreadLocal-based TxContext for manual transactions
+- `JdbcTransactionManager` - Helper for manual JDBC transactions
+- `DataSourceConnectionProvider` - ConnectionProvider from DataSource
+
+### 3.3 outbox-spring-adapter
+
+Optional Spring integration.
+
+Classes:
+- `SpringTxContext` - Implements TxContext using Spring's TransactionSynchronizationManager
+
+### 3.4 outbox-demo
+
+Standalone H2 demonstration (no Spring).
+
+### 3.5 outbox-spring-demo
+
+Spring Boot REST API demonstration (requires Java 17).
+
+---
+
+## 4. Core Abstractions
+
+### 4.1 TxContext
+
+```java
 public interface TxContext {
   boolean isTransactionActive();
-  Connection currentConnection(); // MUST be tx-bound
+  Connection currentConnection();
   void afterCommit(Runnable callback);
-  void afterRollback(Runnable callback); // optional, for cleanup
+  void afterRollback(Runnable callback);
 }
+```
 
 Rules:
-	•	currentConnection() MUST return the same connection used by business operations in this transaction.
-	•	afterCommit() callback MUST run only if the transaction commits successfully.
-	•	Core MUST fail-fast if publish() called when isTransactionActive()==false.
+- `currentConnection()` MUST return the same connection used by business operations.
+- `afterCommit()` callback MUST run only if the transaction commits successfully.
+- Core MUST fail-fast if `publish()` called when `isTransactionActive() == false`.
 
-2.2 Default implementations
+### 4.2 ConnectionProvider
 
-Core module does NOT provide a transaction manager. It only defines interfaces.
-Implementations are provided by:
-	•	JDBC-self-managed adapter (optional) for users who run transactions manually.
-	•	Spring adapter (optional) for users with @Transactional.
-
-⸻
-
-3. Data Model (Outbox Table)
-
-Table: outbox_event
-
-Columns (MySQL 8 assumed; JDBC compatible):
-	•	event_id VARCHAR(26 or 36) NOT NULL PRIMARY KEY
-	•	event_type VARCHAR(128) NOT NULL
-	•	aggregate_type VARCHAR(64) NULL
-	•	aggregate_id VARCHAR(128) NULL
-	•	tenant_id VARCHAR(64) NULL
-	•	payload JSON NOT NULL (or LONGTEXT)
-	•	headers JSON NULL
-	•	status TINYINT NOT NULL  (0=NEW,1=DONE,2=RETRY,3=DEAD)
-	•	attempts INT NOT NULL DEFAULT 0
-	•	available_at DATETIME(6) NOT NULL
-	•	created_at DATETIME(6) NOT NULL
-	•	done_at DATETIME(6) NULL
-	•	last_error TEXT NULL
-
-Indexes:
-	•	idx_status_available(status, available_at, created_at)
-	•	optional idx_created_at(created_at)
-
-⸻
-
-4. Event Envelope
-
-Define EventEnvelope:
-
-Fields:
-	•	String eventId (generated if null)
-	•	String eventType (required)
-	•	Instant occurredAt (default now)
-	•	String aggregateType (optional)
-	•	String aggregateId (optional)
-	•	String tenantId (optional)
-	•	Map<String,String> headers (optional)
-	•	byte[] payloadBytes OR String payloadJson (required; must be immutable for dispatch)
-
-Rule:
-	•	Payload MUST be serialized once and reused for:
-	•	DB insert
-	•	fast-path dispatch publish
-	•	cold-path dispatch publish (poller reads same payload)
-
-⸻
-
-5. Public API (Core)
-
-5.1 OutboxClient
-
-public interface OutboxClient {
-  String publish(EventEnvelope event);
-}
-
-Semantics:
-	•	MUST require an active transaction via TxContext.
-	•	MUST insert outbox row (NEW) using TxContext.currentConnection() in the current transaction.
-	•	MUST register TxContext.afterCommit(() -> dispatcher.enqueueHot(queuedEvent)).
-	•	If enqueueHot fails due to backpressure, MUST NOT throw; rely on Poller fallback and emit metrics/log.
-
-⸻
-
-6. JDBC Repository Contract
-
-6.1 Repository Interface
-
-public interface OutboxRepository {
-  void insertNew(Connection conn, EventEnvelope e); // within tx
-  int markDone(Connection conn, String eventId);    // outside tx OK, idempotent
-  int markRetry(Connection conn, String eventId, Instant nextAt, String error);
-  int markDead(Connection conn, String eventId, String error);
-
-  List<OutboxRow> pollPending(Connection conn, Instant now, Duration skipRecent, int limit);
-}
-
-6.2 JDBC rules
-	•	MUST use PreparedStatement and bind parameters.
-	•	MUST NOT close tx-bound connection (caller manages connection lifecycle).
-	•	For non-tx updates (DONE/RETRY/DEAD), repository may open its own short-lived connection via DataSource (in dispatcher/poller modules), but core keeps it abstract.
-
-6.3 SQL semantics (idempotent updates)
-
-Mark done:
-
-UPDATE outbox_event
-SET status=1, done_at=?
-WHERE event_id=? AND status<>1;
-
-Retry:
-	•	attempts increment and available_at update:
-
-UPDATE outbox_event
-SET status=2,
-    attempts=attempts+1,
-    available_at=?,
-    last_error=?
-WHERE event_id=? AND status<>1;
-
-Dead:
-
-UPDATE outbox_event
-SET status=3,
-    last_error=?
-WHERE event_id=? AND status<>1;
-
-Poll query:
-
-SELECT event_id, event_type, aggregate_type, aggregate_id, tenant_id, payload, headers, attempts, created_at
-FROM outbox_event
-WHERE status IN (0,2)
-  AND available_at <= ?
-  AND created_at <= ?
-ORDER BY created_at
-LIMIT ?;
-
-
-⸻
-
-7. Dispatcher Behavior (Core, No Spring)
-
-7.1 Queue element
-
-QueuedEvent:
-	•	EventEnvelope envelope (payload already present for hot; for cold loaded from DB)
-	•	Source source (HOT/COLD)
-
-7.2 Processing flow
-
-For each queued event:
-	1.	InFlight dedupe: if eventId already inflight, drop.
-	2.	Execute matching Publishers (MQ) and Handlers (in-process).
-	3.	On success: update DB to DONE (idempotent); remove inflight.
-	4.	On failure: update RETRY with backoff or DEAD after maxAttempts; remove inflight.
-
-7.3 DB access for status updates
-
-Dispatcher MUST be constructed with a DataSource (or ConnectionProvider) for short-lived update connections:
-
+```java
 public interface ConnectionProvider {
   Connection getConnection() throws SQLException;
 }
+```
 
-Dispatcher uses:
-	•	open conn
-	•	autoCommit true
-	•	call repository markDone/markRetry/markDead
-	•	close conn
+Used by Dispatcher and Poller for short-lived connections outside the business transaction.
 
-7.4 No DB reads on hot path
-	•	Hot path MUST NOT re-query payload.
-	•	Cold path payload comes from poller.
+### 4.3 Implementations
 
-7.5 Concurrency
-	•	worker pool size configurable.
-	•	hot queue higher priority than cold queue.
+| Implementation | Module | Description |
+|----------------|--------|-------------|
+| `ThreadLocalTxContext` | outbox-jdbc | Manual JDBC transaction management |
+| `SpringTxContext` | outbox-spring-adapter | Spring @Transactional integration |
 
-⸻
+---
 
-8. Poller (Fallback Only)
+## 5. Data Model
 
-8.1 Polling schedule
-	•	intervalMs default 5000
-	•	skipRecentMs default 1000 (poller does not fetch very recent events)
+### 5.1 Table: outbox_event
 
-8.2 Poller behavior
-	•	uses ConnectionProvider to open a short-lived connection.
-	•	calls repository.pollPending(now, skipRecent, batchSize)
-	•	converts rows to EventEnvelope (payload from DB)
-	•	enqueueCold into dispatcher (subject to cold queue backpressure)
+```sql
+CREATE TABLE outbox_event (
+  event_id VARCHAR(36) PRIMARY KEY,
+  event_type VARCHAR(128) NOT NULL,
+  aggregate_type VARCHAR(64),
+  aggregate_id VARCHAR(128),
+  tenant_id VARCHAR(64),
+  payload JSON NOT NULL,
+  headers JSON,
+  status TINYINT NOT NULL,
+  attempts INT NOT NULL DEFAULT 0,
+  available_at DATETIME(6) NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  done_at DATETIME(6),
+  last_error TEXT
+);
 
-⸻
+CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_at);
+```
 
-9. Backpressure & Downgrade
+### 5.2 Status Values
 
-9.1 Bounded queues
-	•	hot and cold queues MUST be bounded.
-	•	unbounded is forbidden.
+| Value | Name | Description |
+|-------|------|-------------|
+| 0 | NEW | Freshly inserted, awaiting processing |
+| 1 | DONE | Successfully processed |
+| 2 | RETRY | Failed, scheduled for retry |
+| 3 | DEAD | Exceeded max attempts |
 
-9.2 Hot queue full behavior (default)
-	•	publish() MUST NOT throw.
-	•	MUST log + increment metric and rely on poller fallback.
+---
 
-9.3 Cold queue full behavior
-	•	poller should stop enqueueing for this cycle and retry next cycle.
+## 6. Event Envelope
 
-⸻
+### 6.1 Fields
 
-10. Retry Policy
+| Field | Type | Required | Default |
+|-------|------|----------|---------|
+| eventId | String | No | UUID.randomUUID() |
+| eventType | String | Yes | - |
+| occurredAt | Instant | No | Instant.now() |
+| aggregateType | String | No | null |
+| aggregateId | String | No | null |
+| tenantId | String | No | null |
+| headers | Map<String,String> | No | empty map |
+| payloadJson | String | Yes* | - |
+| payloadBytes | byte[] | Yes* | - |
 
-Configurable:
-	•	baseDelayMs (default 200)
-	•	maxDelayMs (default 60000)
-	•	maxAttempts (default 10)
-	•	exponential with jitter
+*Either payloadJson or payloadBytes must be set, not both.
 
-Backoff formula (reference):
-	•	delay = min(maxDelay, baseDelay * 2^(attempts-1)) * random(0.5..1.5)
+### 6.2 Constraints
 
-⸻
+- Maximum payload size: **1MB** (1,048,576 bytes)
+- Payload MUST be serialized once and reused for DB insert and dispatch
+- EventEnvelope is immutable (defensive copies for bytes and headers)
 
-11. Idempotency Requirements
-	•	Publishers MUST include eventId in MQ message header/body.
-	•	Downstream must dedupe by eventId.
-	•	Framework assumes at-least-once.
+### 6.3 Builder Pattern
 
-⸻
+```java
+// With type-safe EventType
+EventEnvelope envelope = EventEnvelope.builder(UserEvents.USER_CREATED)
+    .aggregateType(Aggregates.USER)
+    .aggregateId("123")
+    .payloadJson("{\"name\":\"John\"}")
+    .build();
 
-12. Observability
+// With string
+EventEnvelope envelope = EventEnvelope.builder("UserCreated")
+    .payloadJson("{}")
+    .build();
 
-Metrics:
-	•	enqueue counts/drops
-	•	queue depths
-	•	dispatch success/failure/dead
-	•	oldest pending lag (computed by poller)
-Logs:
-	•	WARN on hot enqueue drop (downgrade)
-	•	ERROR on DEAD transition
+// Shorthand
+EventEnvelope envelope = EventEnvelope.ofJson("UserCreated", "{}");
+```
 
-⸻
+---
 
-13. Configuration
+## 7. Type-Safe Event and Aggregate Types
 
-Core should define a POJO config object (no Spring @ConfigurationProperties in core):
+### 7.1 EventType Interface
 
-public final class OutboxConfig {
-  int dispatcherWorkers;
-  int hotQueueCapacity;
-  int coldQueueCapacity;
+```java
+public interface EventType {
+  String name();
+}
+```
 
-  boolean pollerEnabled;
-  long pollerIntervalMs;
-  int pollerBatchSize;
-  long pollerSkipRecentMs;
+### 7.2 Enum Implementation
 
-  long retryBaseDelayMs;
-  long retryMaxDelayMs;
-  int retryMaxAttempts;
+```java
+public enum UserEvents implements EventType {
+  USER_CREATED,
+  USER_UPDATED,
+  USER_DELETED;
 }
 
-Spring adapter may bind external properties to this config.
+// Usage
+EventEnvelope.builder(UserEvents.USER_CREATED)
+    .payloadJson("{}")
+    .build();
+```
 
-⸻
+### 7.3 Dynamic Implementation
 
-14. Acceptance Tests (Core-level)
-	1.	Atomicity
+```java
+EventType type = StringEventType.of("DynamicEvent");
 
-	•	Begin tx manually, publish event, rollback
-	•	Expect: outbox row not present
+EventEnvelope.builder(type)
+    .payloadJson("{}")
+    .build();
+```
 
-	2.	Commit + fast path
+### 7.4 AggregateType Interface
 
-	•	Begin tx, publish event, commit
-	•	Expect: dispatcher receives HOT event; publisher invoked; outbox status DONE
+```java
+public interface AggregateType {
+  String name();
+}
+```
 
-	3.	Queue overflow downgrade
+### 7.5 Aggregate Type Usage
 
-	•	hot queue capacity small, force drop
-	•	Expect: publish returns ok, outbox row NEW
-	•	Start poller, expect row processed to DONE
+```java
+// Enum-based
+public enum Aggregates implements AggregateType {
+  USER, ORDER, PRODUCT
+}
 
-	4.	Retry/Dead
+EventEnvelope.builder(eventType)
+    .aggregateType(Aggregates.USER)
+    .aggregateId("user-123")
+    .build();
 
-	•	publisher fails repeatedly
-	•	expect attempts increments, RETRY then DEAD after maxAttempts
+// Dynamic
+EventEnvelope.builder(eventType)
+    .aggregateType(StringAggregateType.of("CustomAggregate"))
+    .aggregateId("id-456")
+    .build();
+```
 
-⸻
+---
 
-15. Optional Spring Adapter (Not part of core)
+## 8. Public API
 
-Provide module outbox-spring-adapter that implements TxContext using Spring:
-	•	isTransactionActive() via TransactionSynchronizationManager.isActualTransactionActive()
-	•	currentConnection() via DataSourceUtils.getConnection(dataSource)
-	•	afterCommit() via TransactionSynchronizationManager.registerSynchronization(...)
+### 8.1 OutboxClient
 
-This adapter depends on Spring; core must not.
+```java
+public interface OutboxClient {
+  String publish(EventEnvelope event);
+}
+```
 
-⸻
+Semantics:
+- MUST require an active transaction via TxContext
+- MUST insert outbox row (NEW) using `TxContext.currentConnection()` within the current transaction
+- MUST register `TxContext.afterCommit(() -> dispatcher.enqueueHot(event))`
+- If enqueueHot fails due to backpressure, MUST NOT throw; rely on Poller fallback
 
-16. Implementation Notes (Codex Guidance)
-	•	Structure suggested:
-	•	outbox-core (EventEnvelope, OutboxClient, Dispatcher, interfaces, config)
-	•	outbox-jdbc (JDBC repository implementation, default ConnectionProvider)
-	•	outbox-spring-adapter (TxContext Spring implementation)
-	•	Ensure payload serialization happens once and is reused.
-	•	Do not close tx-bound connection in core publish().
-	•	Use BlockingQueue bounded; priority hot > cold.
-	•	Use ConcurrentHashMap/TTL cache for inflight dedupe.
+### 8.2 DefaultOutboxClient
 
+```java
+public DefaultOutboxClient(
+    TxContext txContext,
+    OutboxRepository repository,
+    Dispatcher dispatcher,
+    OutboxMetrics metrics
+)
+```
+
+---
+
+## 9. JDBC Repository
+
+### 9.1 Interface
+
+```java
+public interface OutboxRepository {
+  void insertNew(Connection conn, EventEnvelope event);
+  int markDone(Connection conn, String eventId);
+  int markRetry(Connection conn, String eventId, Instant nextAt, String error);
+  int markDead(Connection conn, String eventId, String error);
+  List<OutboxRow> pollPending(Connection conn, Instant now, Duration skipRecent, int limit);
+}
+```
+
+### 9.2 SQL Semantics
+
+**Insert New:**
+```sql
+INSERT INTO outbox_event (event_id, event_type, aggregate_type, aggregate_id,
+  tenant_id, payload, headers, status, attempts, available_at, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+```
+
+**Mark Done (idempotent):**
+```sql
+UPDATE outbox_event
+SET status = 1, done_at = ?
+WHERE event_id = ? AND status <> 1
+```
+
+**Mark Retry:**
+```sql
+UPDATE outbox_event
+SET status = 2, attempts = attempts + 1, available_at = ?, last_error = ?
+WHERE event_id = ? AND status <> 1
+```
+
+**Mark Dead:**
+```sql
+UPDATE outbox_event
+SET status = 3, last_error = ?
+WHERE event_id = ? AND status <> 1
+```
+
+**Poll Pending:**
+```sql
+SELECT event_id, event_type, aggregate_type, aggregate_id, tenant_id,
+       payload, headers, attempts, created_at
+FROM outbox_event
+WHERE status IN (0, 2)
+  AND available_at <= ?
+  AND created_at <= ?
+ORDER BY created_at
+LIMIT ?
+```
+
+### 9.3 Rules
+
+- MUST use PreparedStatement with bound parameters
+- MUST NOT close transaction-bound connection (caller manages lifecycle)
+- Error messages truncated to 4000 characters
+
+---
+
+## 10. Dispatcher
+
+### 10.1 Constructor
+
+```java
+public Dispatcher(
+    ConnectionProvider connectionProvider,
+    OutboxRepository repository,
+    PublisherRegistry publisherRegistry,
+    HandlerRegistry handlerRegistry,
+    InFlightTracker inFlightTracker,
+    RetryPolicy retryPolicy,
+    int maxAttempts,
+    int workerCount,
+    int hotQueueCapacity,
+    int coldQueueCapacity,
+    OutboxMetrics metrics
+)
+```
+
+### 10.2 Methods
+
+```java
+boolean enqueueHot(QueuedEvent event)  // Returns false if queue full
+boolean enqueueCold(QueuedEvent event) // Returns false if queue full
+void close()                           // Graceful shutdown
+```
+
+### 10.3 Processing Flow
+
+For each queued event:
+1. **Dedupe**: If eventId already inflight, drop
+2. **Execute**: Run all matching Publishers, then all matching Handlers
+3. **Success**: Update DB to DONE; remove from inflight
+4. **Failure**: Update RETRY with backoff, or DEAD after maxAttempts; remove from inflight
+
+### 10.4 Synchronous Execution Model
+
+Workers execute publishers and handlers **synchronously** on the worker thread:
+
+```
+Worker Thread:
+  loop:
+    event = queue.poll()
+    publisher.publish(event)   // blocking
+    handler.handle(event)      // blocking
+    markDone(event)
+```
+
+This is intentional for **natural backpressure**:
+- `workerCount` = maximum concurrent events being processed
+- Slow publishers → workers stay busy → cannot poll more events
+- Queues fill up → `enqueueHot()` returns false → graceful degradation
+- No risk of overwhelming downstream systems (MQ, databases, APIs)
+
+**Tuning:** Adjust `workerCount` to control max parallelism. Higher values increase throughput but may overwhelm downstream services.
+
+### 10.5 Queue Element
+
+```java
+public class QueuedEvent {
+  EventEnvelope envelope;
+  Source source;        // HOT or COLD
+  int attemptNumber;
+}
+```
+
+---
+
+## 11. Poller
+
+### 11.1 Constructor
+
+```java
+public OutboxPoller(
+    ConnectionProvider connectionProvider,
+    OutboxRepository repository,
+    Dispatcher dispatcher,
+    Duration skipRecent,
+    int batchSize,
+    long intervalMs,
+    OutboxMetrics metrics
+)
+```
+
+### 11.2 Methods
+
+```java
+void start()    // Start scheduled polling
+void runOnce()  // Execute single poll cycle
+void close()    // Stop polling
+```
+
+### 11.3 Behavior
+
+- Runs on scheduled interval (default 5000ms)
+- Skips events created within `skipRecent` duration (default 1000ms)
+- Queries status IN (0, 2) with available_at <= now
+- Converts OutboxRow to EventEnvelope
+- Enqueues to cold queue (subject to backpressure)
+- On decode failure: marks event DEAD
+
+---
+
+## 12. Registries
+
+### 12.1 Publisher Interface
+
+```java
+public interface Publisher {
+  void publish(EventEnvelope event) throws Exception;
+}
+```
+
+### 12.2 Handler Interface
+
+```java
+public interface Handler {
+  void handle(EventEnvelope event) throws Exception;
+}
+```
+
+### 12.3 PublisherRegistry
+
+```java
+public interface PublisherRegistry {
+  List<Publisher> publishersFor(String eventType);
+}
+```
+
+### 12.4 DefaultPublisherRegistry
+
+```java
+// Type-safe registration
+registry.register(UserEvents.USER_CREATED, event -> { ... });
+
+// String registration
+registry.register("UserUpdated", event -> { ... });
+
+// Wildcard (matches all events)
+registry.registerAll(event -> { ... });
+```
+
+### 12.5 HandlerRegistry
+
+Same pattern as PublisherRegistry.
+
+### 12.6 Matching Rules
+
+1. Find all publishers/handlers registered for the exact event type
+2. Append all wildcard ("*") registrations
+3. Return combined immutable list
+
+---
+
+## 13. Retry Policy
+
+### 13.1 Interface
+
+```java
+public interface RetryPolicy {
+  long computeDelayMs(int attemptNumber);
+}
+```
+
+### 13.2 ExponentialBackoffRetryPolicy
+
+```java
+public ExponentialBackoffRetryPolicy(long baseDelayMs, long maxDelayMs)
+```
+
+Formula:
+```
+delay = min(maxDelay, baseDelay * 2^(attempts-1)) * jitter
+jitter = random(0.5, 1.5)
+```
+
+### 13.3 Default Values
+
+| Parameter | Default |
+|-----------|---------|
+| baseDelayMs | 200 |
+| maxDelayMs | 60000 |
+| maxAttempts | 10 |
+
+---
+
+## 14. Backpressure and Downgrade
+
+The framework implements backpressure at multiple levels to prevent overwhelming downstream systems.
+
+### 14.1 Backpressure Model
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      BACKPRESSURE FLOW                               │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  [Slow Publisher/Handler]                                            │
+│          │                                                           │
+│          ▼                                                           │
+│  [Workers Blocked] ──► Only N events processed concurrently          │
+│          │              (N = workerCount)                            │
+│          ▼                                                           │
+│  [Queues Fill Up] ──► Bounded capacity prevents memory growth        │
+│          │                                                           │
+│          ▼                                                           │
+│  [enqueueHot() returns false]                                        │
+│          │                                                           │
+│          ▼                                                           │
+│  [Event stays in DB] ──► Poller picks up later when capacity frees   │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 14.2 Bounded Queues
+
+- Hot and cold queues MUST be bounded (`ArrayBlockingQueue`)
+- Unbounded queues are forbidden
+- Default capacity: 1000 each
+
+### 14.3 Synchronous Worker Execution
+
+Workers execute publishers/handlers synchronously (blocking). This provides natural rate limiting:
+
+| Scenario | Effect |
+|----------|--------|
+| Fast publishers | Workers quickly return to polling, high throughput |
+| Slow publishers | Workers blocked, queues fill, automatic throttling |
+| Downstream outage | All workers blocked, queues full, events safe in DB |
+
+**Key insight:** The database acts as a durable buffer when in-memory queues are full.
+
+### 14.4 Hot Queue Full Behavior
+
+- `publish()` MUST NOT throw
+- MUST log WARNING and increment metric
+- Event remains in DB with status NEW
+- Poller picks up when workers have capacity
+
+### 14.5 Cold Queue Full Behavior
+
+- Poller stops enqueueing for current cycle
+- Events remain in DB, retry on next poll cycle
+- No data loss
+
+---
+
+## 15. Configuration
+
+### 15.1 OutboxConfig
+
+```java
+public final class OutboxConfig {
+  // Dispatcher
+  int dispatcherWorkers;      // default: 4
+  int hotQueueCapacity;       // default: 1000
+  int coldQueueCapacity;      // default: 1000
+
+  // Poller
+  boolean pollerEnabled;      // default: true
+  long pollerIntervalMs;      // default: 5000
+  int pollerBatchSize;        // default: 200
+  long pollerSkipRecentMs;    // default: 1000
+
+  // Retry
+  long retryBaseDelayMs;      // default: 200
+  long retryMaxDelayMs;       // default: 60000
+  int retryMaxAttempts;       // default: 10
+}
+```
+
+### 15.2 Fluent Builder
+
+```java
+OutboxConfig config = new OutboxConfig()
+    .setDispatcherWorkers(8)
+    .setHotQueueCapacity(2000)
+    .setPollerBatchSize(500);
+```
+
+---
+
+## 16. Observability
+
+### 16.1 OutboxMetrics Interface
+
+```java
+public interface OutboxMetrics {
+  void incrementHotEnqueued();
+  void incrementHotDropped();
+  void incrementColdEnqueued();
+  void incrementDispatchSuccess();
+  void incrementDispatchFailure();
+  void incrementDispatchDead();
+  void recordQueueDepths(int hotDepth, int coldDepth);
+  void recordOldestLagMs(long lagMs);
+
+  OutboxMetrics NOOP = new NoopOutboxMetrics();
+}
+```
+
+### 16.2 Logging
+
+| Level | Event |
+|-------|-------|
+| WARNING | Hot queue drop (downgrade to poller) |
+| ERROR | DEAD transition |
+| ERROR | Dispatcher/poller loop errors |
+| SEVERE | Decode failures (malformed headers) |
+
+### 16.3 Idempotency Requirements
+
+- Publishers MUST include eventId in MQ message header/body
+- Downstream systems must dedupe by eventId
+- Framework provides at-least-once delivery
+
+---
+
+## 17. Thread Safety
+
+| Component | Strategy |
+|-----------|----------|
+| Dispatcher | Worker pool (ExecutorService), bounded BlockingQueues |
+| Registries | ConcurrentHashMap + CopyOnWriteArrayList |
+| InFlightTracker | ConcurrentHashMap with CAS operations |
+| OutboxPoller | Single-thread ScheduledExecutorService |
+| ThreadLocalTxContext | ThreadLocal storage |
+
+---
+
+## 18. Acceptance Tests
+
+### 18.1 Atomicity
+
+- Begin tx manually, publish event, rollback
+- **Expect**: outbox row not present
+
+### 18.2 Commit + Fast Path
+
+- Begin tx, publish event, commit
+- **Expect**: dispatcher receives HOT event; publisher invoked; outbox status DONE
+
+### 18.3 Queue Overflow Downgrade
+
+- Hot queue capacity small, force drop
+- **Expect**: publish returns OK, outbox row NEW
+- Start poller
+- **Expect**: row processed to DONE
+
+### 18.4 Retry/Dead
+
+- Publisher fails repeatedly
+- **Expect**: attempts increments, RETRY status
+- After maxAttempts
+- **Expect**: DEAD status
+
+### 18.5 Type-Safe EventType
+
+- Register publisher with enum EventType
+- Publish event using same enum
+- **Expect**: publisher invoked
+
+### 18.6 Type-Safe AggregateType
+
+- Publish event with enum AggregateType
+- **Expect**: aggregateType() returns enum name string
+
+---
+
+## Appendix A: Quick Start (Manual JDBC)
+
+```java
+DataSource dataSource = /* your DataSource */;
+
+JdbcOutboxRepository repository = new JdbcOutboxRepository();
+DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
+ThreadLocalTxContext txContext = new ThreadLocalTxContext();
+
+Dispatcher dispatcher = new Dispatcher(
+    connectionProvider,
+    repository,
+    new DefaultPublisherRegistry()
+        .register("UserCreated", event -> {
+          // publish to MQ
+        }),
+    new DefaultHandlerRegistry(),
+    new DefaultInFlightTracker(),
+    new ExponentialBackoffRetryPolicy(200, 60_000),
+    10, 4, 1000, 1000,
+    OutboxMetrics.NOOP
+);
+
+OutboxPoller poller = new OutboxPoller(
+    connectionProvider, repository, dispatcher,
+    Duration.ofMillis(1000), 200, 5000,
+    OutboxMetrics.NOOP
+);
+poller.start();
+
+JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
+
+try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
+  OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
+  client.publish(EventEnvelope.ofJson("UserCreated", "{\"id\":123}"));
+  tx.commit();
+}
+```
+
+## Appendix B: Spring Integration
+
+```java
+SpringTxContext txContext = new SpringTxContext(dataSource);
+// Use DefaultOutboxClient with SpringTxContext inside @Transactional methods
+```

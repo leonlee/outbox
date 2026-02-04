@@ -18,7 +18,7 @@ public final class DefaultInFlightTracker implements InFlightTracker {
   @Override
   public boolean tryAcquire(String eventId) {
     long now = System.currentTimeMillis();
-    for (;;) {
+   for (int attempt = 0; attempt < 10; attempt++) {
       Long existing = inflight.putIfAbsent(eventId, now);
       if (existing == null) {
         return true;
@@ -27,10 +27,12 @@ public final class DefaultInFlightTracker implements InFlightTracker {
         if (inflight.replace(eventId, existing, now)) {
           return true;
         }
+        Thread.yield();
         continue;
       }
       return false;
     }
+    return false;
   }
 
   @Override

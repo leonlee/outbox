@@ -17,6 +17,14 @@ import java.util.ArrayList;
 import java.util.List;
 
 public final class JdbcOutboxRepository implements OutboxRepository {
+  private static final int MAX_ERROR_LENGTH = 4000;
+
+  private static String truncateError(String error) {
+    if (error == null || error.length() <= MAX_ERROR_LENGTH) {
+      return error;
+    }
+    return error.substring(0, MAX_ERROR_LENGTH - 3) + "...";
+  }
   @Override
   public void insertNew(Connection conn, EventEnvelope event) {
     String sql = "INSERT INTO outbox_event (" +
@@ -61,7 +69,7 @@ public final class JdbcOutboxRepository implements OutboxRepository {
         "WHERE event_id=? AND status<>1";
     try (PreparedStatement ps = conn.prepareStatement(sql)) {
       ps.setTimestamp(1, Timestamp.from(nextAt));
-      ps.setString(2, error);
+      ps.setString(2, truncateError(error));
       ps.setString(3, eventId);
       return ps.executeUpdate();
     } catch (SQLException e) {
@@ -73,7 +81,7 @@ public final class JdbcOutboxRepository implements OutboxRepository {
   public int markDead(Connection conn, String eventId, String error) {
     String sql = "UPDATE outbox_event SET status=3, last_error=? WHERE event_id=? AND status<>1";
     try (PreparedStatement ps = conn.prepareStatement(sql)) {
-      ps.setString(1, error);
+      ps.setString(1, truncateError(error));
       ps.setString(2, eventId);
       return ps.executeUpdate();
     } catch (SQLException e) {

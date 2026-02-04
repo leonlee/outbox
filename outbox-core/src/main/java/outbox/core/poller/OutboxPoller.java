@@ -38,7 +38,7 @@ public final class OutboxPoller implements AutoCloseable {
   private final OutboxMetrics metrics;
 
   private final ScheduledExecutorService scheduler;
-  private ScheduledFuture<?> scheduled;
+  private volatile ScheduledFuture<?> pollTask;
 
   public OutboxPoller(
       ConnectionProvider connectionProvider,
@@ -68,57 +68,77 @@ public final class OutboxPoller implements AutoCloseable {
     this.scheduler = Executors.newSingleThreadScheduledExecutor(new PollerThreadFactory());
   }
 
-  public void start() {
-    if (scheduled != null) {
+  public synchronized void start() {
+    if (pollTask != null) {
       return;
     }
-    scheduled = scheduler.scheduleWithFixedDelay(this::runOnce, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
+    pollTask = scheduler.scheduleWithFixedDelay(this::poll, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
   }
 
-  public void runOnce() {
+  public void poll() {
     try {
-      Instant now = Instant.now();
-      List<OutboxRow> rows;
-      try (Connection conn = connectionProvider.getConnection()) {
-        conn.setAutoCommit(true);
-        rows = repository.pollPending(conn, now, skipRecent, batchSize);
-      } catch (SQLException e) {
-        logger.log(Level.SEVERE, "Poller failed to query outbox", e);
+      if (!dispatcher.hasColdQueueCapacity()) {
         return;
       }
 
+      Instant now = Instant.now();
+      List<OutboxRow> rows = fetchPendingRows(now);
       if (rows.isEmpty()) {
         return;
       }
 
-      Instant oldest = rows.get(0).createdAt();
-      for (OutboxRow row : rows) {
-        if (row.createdAt().isBefore(oldest)) {
-          oldest = row.createdAt();
-        }
-        EventEnvelope envelope;
-        try {
-          envelope = toEnvelope(row);
-        } catch (RuntimeException ex) {
-          logger.log(Level.SEVERE, "Failed to decode outbox row eventId=" + row.eventId(), ex);
-          markDead(row.eventId(), ex);
-          continue;
-        }
-        boolean enqueued = dispatcher.enqueueCold(new QueuedEvent(envelope, QueuedEvent.Source.COLD, row.attempts()));
-        if (enqueued) {
-          metrics.incrementColdEnqueued();
-        } else {
-          break;
-        }
+      Instant oldest = dispatchRows(rows);
+      if (oldest != null) {
+        long lagMs = Duration.between(oldest, now).toMillis();
+        metrics.recordOldestLagMs(Math.max(0L, lagMs));
       }
-      long lagMs = Math.max(0L, Duration.between(oldest, now).toMillis());
-      metrics.recordOldestLagMs(lagMs);
     } catch (Throwable t) {
-      logger.log(Level.SEVERE, "Poller run failed", t);
+      logger.log(Level.SEVERE, "Poll cycle failed", t);
     }
   }
 
-  private EventEnvelope toEnvelope(OutboxRow row) {
+  private List<OutboxRow> fetchPendingRows(Instant now) {
+    try (Connection conn = connectionProvider.getConnection()) {
+      conn.setAutoCommit(true);
+      return repository.pollPending(conn, now, skipRecent, batchSize);
+    } catch (SQLException e) {
+      logger.log(Level.SEVERE, "Failed to fetch pending outbox rows", e);
+      return List.of();
+    }
+  }
+
+  private Instant dispatchRows(List<OutboxRow> rows) {
+    Instant oldest = null;
+    for (OutboxRow row : rows) {
+      if (oldest == null || row.createdAt().isBefore(oldest)) {
+        oldest = row.createdAt();
+      }
+      if (!dispatchRow(row)) {
+        break; // cold queue full
+      }
+    }
+    return oldest;
+  }
+
+  private boolean dispatchRow(OutboxRow row) {
+    EventEnvelope envelope;
+    try {
+      envelope = convertToEnvelope(row);
+    } catch (RuntimeException e) {
+      logger.log(Level.SEVERE, "Failed to decode outbox row eventId=" + row.eventId(), e);
+      markDead(row.eventId(), e);
+      return true; // continue processing other rows
+    }
+
+    QueuedEvent event = new QueuedEvent(envelope, QueuedEvent.Source.COLD, row.attempts());
+    boolean enqueued = dispatcher.enqueueCold(event);
+    if (enqueued) {
+      metrics.incrementColdEnqueued();
+    }
+    return enqueued;
+  }
+
+  private EventEnvelope convertToEnvelope(OutboxRow row) {
     Map<String, String> headers = JsonCodec.parseObject(row.headersJson());
     return EventEnvelope.builder(row.eventType())
         .eventId(row.eventId())
@@ -142,10 +162,15 @@ public final class OutboxPoller implements AutoCloseable {
 
   @Override
   public void close() {
-    if (scheduled != null) {
-      scheduled.cancel(false);
+    if (pollTask != null) {
+      pollTask.cancel(false);
     }
     scheduler.shutdownNow();
+    try {
+      scheduler.awaitTermination(5, TimeUnit.SECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   private static final class PollerThreadFactory implements ThreadFactory {

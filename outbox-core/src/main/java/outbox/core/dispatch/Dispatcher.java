@@ -3,10 +3,8 @@ package outbox.core.dispatch;
 import outbox.core.api.EventEnvelope;
 import outbox.core.api.NoopOutboxMetrics;
 import outbox.core.api.OutboxMetrics;
-import outbox.core.registry.Handler;
-import outbox.core.registry.HandlerRegistry;
-import outbox.core.registry.Publisher;
-import outbox.core.registry.PublisherRegistry;
+import outbox.core.registry.EventListener;
+import outbox.core.registry.ListenerRegistry;
 import outbox.core.repo.OutboxRepository;
 import outbox.core.tx.ConnectionProvider;
 
@@ -29,6 +27,9 @@ import java.util.logging.Logger;
 public final class Dispatcher implements AutoCloseable {
   private static final Logger logger = Logger.getLogger(Dispatcher.class.getName());
 
+  private static final long QUEUE_POLL_TIMEOUT_MS = 50;
+  private static final long SHUTDOWN_TIMEOUT_SECONDS = 5;
+
   private final BlockingQueue<QueuedEvent> hotQueue;
   private final BlockingQueue<QueuedEvent> coldQueue;
   private final ExecutorService workers;
@@ -36,8 +37,7 @@ public final class Dispatcher implements AutoCloseable {
 
   private final ConnectionProvider connectionProvider;
   private final OutboxRepository repository;
-  private final PublisherRegistry publisherRegistry;
-  private final HandlerRegistry handlerRegistry;
+  private final ListenerRegistry listenerRegistry;
   private final InFlightTracker inFlightTracker;
   private final RetryPolicy retryPolicy;
   private final int maxAttempts;
@@ -46,8 +46,7 @@ public final class Dispatcher implements AutoCloseable {
   public Dispatcher(
       ConnectionProvider connectionProvider,
       OutboxRepository repository,
-      PublisherRegistry publisherRegistry,
-      HandlerRegistry handlerRegistry,
+      ListenerRegistry listenerRegistry,
       InFlightTracker inFlightTracker,
       RetryPolicy retryPolicy,
       int maxAttempts,
@@ -67,8 +66,7 @@ public final class Dispatcher implements AutoCloseable {
     }
     this.connectionProvider = Objects.requireNonNull(connectionProvider, "connectionProvider");
     this.repository = Objects.requireNonNull(repository, "repository");
-    this.publisherRegistry = Objects.requireNonNull(publisherRegistry, "publisherRegistry");
-    this.handlerRegistry = Objects.requireNonNull(handlerRegistry, "handlerRegistry");
+    this.listenerRegistry = Objects.requireNonNull(listenerRegistry, "listenerRegistry");
     this.inFlightTracker = Objects.requireNonNull(inFlightTracker, "inFlightTracker");
     this.retryPolicy = Objects.requireNonNull(retryPolicy, "retryPolicy");
     this.maxAttempts = maxAttempts;
@@ -76,12 +74,15 @@ public final class Dispatcher implements AutoCloseable {
 
     this.hotQueue = new ArrayBlockingQueue<>(hotQueueCapacity);
     this.coldQueue = new ArrayBlockingQueue<>(coldQueueCapacity);
+
+    // Create thread pool with minimum 1 thread (required by ExecutorService),
+    // but only start workers if workerCount > 0. This allows workerCount=0
+    // for testing scenarios where manual dispatch control is needed.
     int threadCount = Math.max(1, workerCount);
     this.workers = Executors.newFixedThreadPool(threadCount, new DispatcherThreadFactory());
 
-    int startCount = Math.max(0, workerCount);
-    for (int i = 0; i < startCount; i++) {
-      workers.submit(this::runLoop);
+    for (int i = 0; i < workerCount; i++) {
+      workers.submit(this::workerLoop);
     }
   }
 
@@ -97,17 +98,21 @@ public final class Dispatcher implements AutoCloseable {
     return enqueued;
   }
 
-  private void runLoop() {
+  public boolean hasColdQueueCapacity() {
+    return coldQueue.remainingCapacity() > 0;
+  }
+
+  private void workerLoop() {
     while (running.get() && !Thread.currentThread().isInterrupted()) {
       try {
-        QueuedEvent event = hotQueue.poll(50, TimeUnit.MILLISECONDS);
+        QueuedEvent event = hotQueue.poll(QUEUE_POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         if (event == null) {
-          event = coldQueue.poll(50, TimeUnit.MILLISECONDS);
+          event = coldQueue.poll(QUEUE_POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         }
         if (event == null) {
           continue;
         }
-        process(event);
+        dispatchEvent(event);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
       } catch (Throwable t) {
@@ -116,13 +121,13 @@ public final class Dispatcher implements AutoCloseable {
     }
   }
 
-  private void process(QueuedEvent event) {
+  private void dispatchEvent(QueuedEvent event) {
     String eventId = event.envelope().eventId();
     if (!inFlightTracker.tryAcquire(eventId)) {
       return;
     }
     try {
-      executeHandlers(event.envelope());
+      deliverEvent(event.envelope());
       markDone(eventId);
       metrics.incrementDispatchSuccess();
     } catch (Exception e) {
@@ -132,15 +137,10 @@ public final class Dispatcher implements AutoCloseable {
     }
   }
 
-  private void executeHandlers(EventEnvelope envelope) throws Exception {
-    List<Publisher> publishers = publisherRegistry.publishersFor(envelope.eventType());
-    for (Publisher publisher : publishers) {
-      publisher.publish(envelope);
-    }
-
-    List<Handler> handlers = handlerRegistry.handlersFor(envelope.eventType());
-    for (Handler handler : handlers) {
-      handler.handle(envelope);
+  private void deliverEvent(EventEnvelope envelope) throws Exception {
+    List<EventListener> listeners = listenerRegistry.listenersFor(envelope.eventType());
+    for (EventListener listener : listeners) {
+      listener.onEvent(envelope);
     }
   }
 
@@ -190,7 +190,7 @@ public final class Dispatcher implements AutoCloseable {
     running.set(false);
     workers.shutdownNow();
     try {
-      workers.awaitTermination(5, TimeUnit.SECONDS);
+      workers.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
     }

@@ -1,9 +1,8 @@
 package outbox.jdbc;
 
-import outbox.core.registry.DefaultHandlerRegistry;
 import outbox.core.dispatch.DefaultInFlightTracker;
 import outbox.core.client.DefaultOutboxClient;
-import outbox.core.registry.DefaultPublisherRegistry;
+import outbox.core.registry.DefaultListenerRegistry;
 import outbox.core.dispatch.Dispatcher;
 import outbox.core.api.EventEnvelope;
 import outbox.core.dispatch.ExponentialBackoffRetryPolicy;
@@ -78,7 +77,7 @@ class OutboxAcceptanceTest {
   @Test
   void commitFastPathPublishesAndMarksDone() throws Exception {
     CountDownLatch latch = new CountDownLatch(1);
-    DefaultPublisherRegistry publishers = new DefaultPublisherRegistry()
+    DefaultListenerRegistry publishers = new DefaultListenerRegistry()
         .registerAll(event -> latch.countDown());
 
     Dispatcher dispatcher = dispatcher(1, 100, 100, publishers);
@@ -112,7 +111,7 @@ class OutboxAcceptanceTest {
     assertEquals(OutboxStatus.NEW.code(), getStatus(eventId));
 
     CountDownLatch latch = new CountDownLatch(1);
-    DefaultPublisherRegistry publishers = new DefaultPublisherRegistry()
+    DefaultListenerRegistry publishers = new DefaultListenerRegistry()
         .registerAll(event -> latch.countDown());
 
     Dispatcher dispatcher = dispatcher(1, 100, 100, publishers);
@@ -126,7 +125,7 @@ class OutboxAcceptanceTest {
         OutboxMetrics.NOOP
     )) {
       for (int i = 0; i < 20 && getStatus(eventId) != OutboxStatus.DONE.code(); i++) {
-        poller.runOnce();
+        poller.poll();
         Thread.sleep(25);
       }
     }
@@ -140,7 +139,7 @@ class OutboxAcceptanceTest {
 
   @Test
   void retryThenDeadAfterMaxAttempts() throws Exception {
-    DefaultPublisherRegistry publishers = new DefaultPublisherRegistry()
+    DefaultListenerRegistry publishers = new DefaultListenerRegistry()
         .registerAll(event -> { throw new RuntimeException("boom"); });
 
     Dispatcher dispatcher = dispatcher(1, 100, 100, publishers, 3);
@@ -163,7 +162,7 @@ class OutboxAcceptanceTest {
     )) {
       long deadline = System.currentTimeMillis() + 2_000;
       while (System.currentTimeMillis() < deadline && getStatus(eventId) != OutboxStatus.DEAD.code()) {
-        poller.runOnce();
+        poller.poll();
         Thread.sleep(30);
       }
     }
@@ -175,19 +174,18 @@ class OutboxAcceptanceTest {
   }
 
   private Dispatcher dispatcher(int workers, int hotCapacity, int coldCapacity) {
-    return dispatcher(workers, hotCapacity, coldCapacity, new DefaultPublisherRegistry());
+    return dispatcher(workers, hotCapacity, coldCapacity, new DefaultListenerRegistry());
   }
 
-  private Dispatcher dispatcher(int workers, int hotCapacity, int coldCapacity, DefaultPublisherRegistry publishers) {
-    return dispatcher(workers, hotCapacity, coldCapacity, publishers, 10);
+  private Dispatcher dispatcher(int workers, int hotCapacity, int coldCapacity, DefaultListenerRegistry listeners) {
+    return dispatcher(workers, hotCapacity, coldCapacity, listeners, 10);
   }
 
-  private Dispatcher dispatcher(int workers, int hotCapacity, int coldCapacity, DefaultPublisherRegistry publishers, int maxAttempts) {
+  private Dispatcher dispatcher(int workers, int hotCapacity, int coldCapacity, DefaultListenerRegistry listeners, int maxAttempts) {
     return new Dispatcher(
         connectionProvider,
         repository,
-        publishers,
-        new DefaultHandlerRegistry(),
+        listeners,
         new DefaultInFlightTracker(),
         new ExponentialBackoffRetryPolicy(10, 50),
         maxAttempts,

@@ -1,8 +1,7 @@
 package outbox.jdbc;
 
-import outbox.core.registry.DefaultHandlerRegistry;
 import outbox.core.dispatch.DefaultInFlightTracker;
-import outbox.core.registry.DefaultPublisherRegistry;
+import outbox.core.registry.DefaultListenerRegistry;
 import outbox.core.dispatch.Dispatcher;
 import outbox.core.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.core.api.OutboxMetrics;
@@ -68,8 +67,7 @@ class OutboxEdgeCaseTest {
     Dispatcher dispatcher = new Dispatcher(
         connectionProvider,
         repository,
-        new DefaultPublisherRegistry(),
-        new DefaultHandlerRegistry(),
+        new DefaultListenerRegistry(),
         new DefaultInFlightTracker(),
         new ExponentialBackoffRetryPolicy(10, 50),
         10,
@@ -88,7 +86,7 @@ class OutboxEdgeCaseTest {
         10,
         OutboxMetrics.NOOP
     )) {
-      poller.runOnce();
+      poller.poll();
     }
 
     assertEquals(OutboxStatus.DEAD.code(), getStatus(eventId));
@@ -102,8 +100,7 @@ class OutboxEdgeCaseTest {
     assertThrows(IllegalArgumentException.class, () -> new Dispatcher(
         connectionProvider,
         repository,
-        new DefaultPublisherRegistry(),
-        new DefaultHandlerRegistry(),
+        new DefaultListenerRegistry(),
         new DefaultInFlightTracker(),
         new ExponentialBackoffRetryPolicy(10, 50),
         0,
@@ -116,8 +113,7 @@ class OutboxEdgeCaseTest {
     assertThrows(IllegalArgumentException.class, () -> new Dispatcher(
         connectionProvider,
         repository,
-        new DefaultPublisherRegistry(),
-        new DefaultHandlerRegistry(),
+        new DefaultListenerRegistry(),
         new DefaultInFlightTracker(),
         new ExponentialBackoffRetryPolicy(10, 50),
         10,
@@ -130,8 +126,7 @@ class OutboxEdgeCaseTest {
     assertThrows(IllegalArgumentException.class, () -> new Dispatcher(
         connectionProvider,
         repository,
-        new DefaultPublisherRegistry(),
-        new DefaultHandlerRegistry(),
+        new DefaultListenerRegistry(),
         new DefaultInFlightTracker(),
         new ExponentialBackoffRetryPolicy(10, 50),
         10,
@@ -147,8 +142,7 @@ class OutboxEdgeCaseTest {
     Dispatcher dispatcher = new Dispatcher(
         connectionProvider,
         repository,
-        new DefaultPublisherRegistry(),
-        new DefaultHandlerRegistry(),
+        new DefaultListenerRegistry(),
         new DefaultInFlightTracker(),
         new ExponentialBackoffRetryPolicy(10, 50),
         10,

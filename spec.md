@@ -13,8 +13,8 @@ Minimal, Spring-free transactional outbox framework with JDBC persistence, hot-p
 7. [Type-Safe Event and Aggregate Types](#7-type-safe-event-and-aggregate-types)
 8. [Public API](#8-public-api)
 9. [JDBC Repository](#9-jdbc-repository)
-10. [Dispatcher](#10-dispatcher)
-11. [Poller](#11-poller)
+10. [OutboxDispatcher](#10-dispatcher)
+11. [OutboxPoller](#11-poller)
 12. [Registries](#12-registries)
 13. [Retry Policy](#13-retry-policy)
 14. [Backpressure and Downgrade](#14-backpressure-and-downgrade)
@@ -30,10 +30,10 @@ Minimal, Spring-free transactional outbox framework with JDBC persistence, hot-p
 Build a framework that:
 
 1. Persists a unified event record into an outbox table within the current business DB transaction.
-2. After successful transaction commit, enqueues the event (payload in memory) into an in-process Dispatcher (fast path).
-3. Dispatcher executes registered EventListeners (send to MQ, update caches, call APIs, etc.).
-4. On success, Dispatcher updates outbox status to DONE; on failure updates to RETRY/DEAD.
-5. A low-frequency Poller scans DB as fallback only (node crash, enqueue downgrade, missed enqueue) and enqueues unfinished events.
+2. After successful transaction commit, enqueues the event (payload in memory) into an in-process OutboxDispatcher (fast path).
+3. OutboxDispatcher executes registered EventListeners (send to MQ, update caches, call APIs, etc.).
+4. On success, OutboxDispatcher updates outbox status to DONE; on failure updates to RETRY/DEAD.
+5. A low-frequency OutboxPoller scans DB as fallback only (node crash, enqueue downgrade, missed enqueue) and enqueues unfinished events.
 6. Delivery semantics: **at-least-once**; duplicates are allowed and must be handled downstream by `eventId`.
 
 ### Constraints
@@ -58,43 +58,43 @@ Build a framework that:
 | **OutboxClient** | API used by business code inside a transaction context |
 | **TxContext** | Abstraction for transaction lifecycle hooks (afterCommit/afterRollback) |
 | **OutboxRepository** | Insert/update/query via `java.sql.Connection` |
-| **Dispatcher** | Hot/cold queues + worker pool; executes listeners; updates status |
+| **OutboxDispatcher** | Hot/cold queues + worker pool; executes listeners; updates status |
 | **ListenerRegistry** | Maps event types to event listeners |
-| **Poller** | Low-frequency fallback DB scan; enqueues cold events |
+| **OutboxPoller** | Low-frequency fallback DB scan; enqueues cold events |
 | **InFlightTracker** | In-memory deduplication |
 
 ### 2.2 Event Flow
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                            HOT PATH (Fast)                               │
-├─────────────────────────────────────────────────────────────────────────┤
-│  Business TX    OutboxClient     afterCommit      Dispatcher    DB      │
-│      │               │               │               │          │       │
-│      │──publish()───>│               │               │          │       │
-│      │               │──insertNew()──────────────────────────-->│       │
-│      │               │──register()──>│               │          │       │
-│      │──commit()─────────────────────│               │          │       │
-│      │               │               │──enqueueHot()>│          │       │
-│      │               │               │               │──markDone│       │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              HOT PATH (Fast)                                  │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  Business TX    OutboxClient     afterCommit    OutboxDispatcher    DB       │
+│      │               │               │               │              │        │
+│      │──publish()───>│               │               │              │        │
+│      │               │──insertNew()─────────────────────────────────>│       │
+│      │               │──register()──>│               │              │        │
+│      │──commit()─────────────────────│               │              │        │
+│      │               │               │──enqueueHot()>│              │        │
+│      │               │               │               │──markDone───>│        │
+└──────────────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         COLD PATH (Fallback)                             │
-├─────────────────────────────────────────────────────────────────────────┤
-│     Poller          DB           Dispatcher                              │
-│       │              │               │                                   │
-│       │──pollPending>│               │                                   │
-│       │<──rows───────│               │                                   │
-│       │──enqueueCold────────────────>│                                   │
-│       │              │               │──process()                        │
-│       │              │<──markDone────│                                   │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                           COLD PATH (Fallback)                                │
+├──────────────────────────────────────────────────────────────────────────────┤
+│   OutboxPoller          DB           OutboxDispatcher                         │
+│       │                 │                 │                                   │
+│       │──pollPending───>│                 │                                   │
+│       │<──rows──────────│                 │                                   │
+│       │──enqueueCold─────────────────────>│                                   │
+│       │                 │                 │──process()                        │
+│       │                 │<──markDone──────│                                   │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 2.3 Queue Priority
 
-Dispatcher MUST prioritize:
+OutboxDispatcher MUST prioritize:
 - **Hot Queue**: afterCommit enqueue from business thread (priority)
 - **Cold Queue**: poller enqueue fallback
 
@@ -109,7 +109,7 @@ Core interfaces, dispatcher, poller, and registries. **Zero external dependencie
 Packages:
 - `outbox.core.api` - Public API and domain types
 - `outbox.core.client` - DefaultOutboxClient implementation
-- `outbox.core.dispatch` - Dispatcher, retry policy, inflight tracking
+- `outbox.core.dispatch` - OutboxDispatcher, retry policy, inflight tracking
 - `outbox.core.poller` - OutboxPoller
 - `outbox.core.registry` - Listener registry
 - `outbox.core.repo` - Repository interface and OutboxRow
@@ -169,7 +169,7 @@ public interface ConnectionProvider {
 }
 ```
 
-Used by Dispatcher and Poller for short-lived connections outside the business transaction.
+Used by OutboxDispatcher and OutboxPoller for short-lived connections outside the business transaction.
 
 ### 4.3 Implementations
 
@@ -366,7 +366,7 @@ Semantics:
 - MUST require an active transaction via TxContext
 - MUST insert outbox row (NEW) using `TxContext.currentConnection()` within the current transaction
 - MUST register `TxContext.afterCommit(() -> dispatcher.enqueueHot(event))`
-- If enqueueHot fails due to backpressure, MUST NOT throw; rely on Poller fallback
+- If enqueueHot fails due to backpressure, MUST NOT throw; rely on OutboxPoller fallback
 
 ### 8.2 DefaultOutboxClient
 
@@ -374,7 +374,7 @@ Semantics:
 public DefaultOutboxClient(
     TxContext txContext,
     OutboxRepository repository,
-    Dispatcher dispatcher,
+    OutboxDispatcher dispatcher,
     OutboxMetrics metrics
 )
 ```
@@ -445,12 +445,12 @@ LIMIT ?
 
 ---
 
-## 10. Dispatcher
+## 10. OutboxDispatcher
 
 ### 10.1 Constructor
 
 ```java
-public Dispatcher(
+public OutboxDispatcher(
     ConnectionProvider connectionProvider,
     OutboxRepository repository,
     ListenerRegistry listenerRegistry,
@@ -534,7 +534,7 @@ new DefaultInFlightTracker(long ttlMs) // With TTL for stale entry recovery
 
 ---
 
-## 11. Poller
+## 11. OutboxPoller
 
 ### 11.1 Constructor
 
@@ -542,7 +542,7 @@ new DefaultInFlightTracker(long ttlMs) // With TTL for stale entry recovery
 public OutboxPoller(
     ConnectionProvider connectionProvider,
     OutboxRepository repository,
-    Dispatcher dispatcher,
+    OutboxDispatcher dispatcher,
     Duration skipRecent,
     int batchSize,
     long intervalMs,
@@ -661,25 +661,25 @@ The framework implements backpressure at multiple levels to prevent overwhelming
 ### 14.1 Backpressure Model
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                      BACKPRESSURE FLOW                               │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  [Slow Listener]                                                     │
-│          │                                                           │
-│          ▼                                                           │
-│  [Workers Blocked] ──► Only N events processed concurrently          │
-│          │              (N = workerCount)                            │
-│          ▼                                                           │
-│  [Queues Fill Up] ──► Bounded capacity prevents memory growth        │
-│          │                                                           │
-│          ▼                                                           │
-│  [enqueueHot() returns false]                                        │
-│          │                                                           │
-│          ▼                                                           │
-│  [Event stays in DB] ──► Poller picks up later when capacity frees   │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                         BACKPRESSURE FLOW                                 │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  [Slow Listener]                                                          │
+│          │                                                                │
+│          ▼                                                                │
+│  [Workers Blocked] ──► Only N events processed concurrently               │
+│          │              (N = workerCount)                                 │
+│          ▼                                                                │
+│  [Queues Fill Up] ──► Bounded capacity prevents memory growth             │
+│          │                                                                │
+│          ▼                                                                │
+│  [enqueueHot() returns false]                                             │
+│          │                                                                │
+│          ▼                                                                │
+│  [Event stays in DB] ──► OutboxPoller picks up when capacity frees        │
+│                                                                           │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 14.2 Bounded Queues
@@ -705,11 +705,11 @@ Workers execute listeners synchronously (blocking). This provides natural rate l
 - `publish()` MUST NOT throw
 - MUST log WARNING and increment metric
 - Event remains in DB with status NEW
-- Poller picks up when workers have capacity
+- OutboxPoller picks up when workers have capacity
 
 ### 14.5 Cold Queue Full Behavior
 
-- Poller stops enqueueing for current cycle
+- OutboxPoller stops enqueueing for current cycle
 - Events remain in DB, retry on next poll cycle
 - No data loss
 
@@ -721,12 +721,12 @@ Workers execute listeners synchronously (blocking). This provides natural rate l
 
 ```java
 public final class OutboxConfig {
-  // Dispatcher
+  // OutboxDispatcher
   int dispatcherWorkers;      // default: 4
   int hotQueueCapacity;       // default: 1000
   int coldQueueCapacity;      // default: 1000
 
-  // Poller
+  // OutboxPoller
   boolean pollerEnabled;      // default: true
   long pollerIntervalMs;      // default: 5000
   int pollerBatchSize;        // default: 200
@@ -775,7 +775,7 @@ public interface OutboxMetrics {
 |-------|-------|
 | WARNING | Hot queue drop (downgrade to poller) |
 | ERROR | DEAD transition |
-| ERROR | Dispatcher/poller loop errors |
+| ERROR | OutboxDispatcher/poller loop errors |
 | SEVERE | Decode failures (malformed headers) |
 
 ### 16.3 Idempotency Requirements
@@ -790,7 +790,7 @@ public interface OutboxMetrics {
 
 | Component | Strategy |
 |-----------|----------|
-| Dispatcher | Worker pool (ExecutorService), bounded BlockingQueues |
+| OutboxDispatcher | Worker pool (ExecutorService), bounded BlockingQueues |
 | Registries | ConcurrentHashMap + CopyOnWriteArrayList |
 | InFlightTracker | ConcurrentHashMap with CAS operations |
 | OutboxPoller | Single-thread ScheduledExecutorService |
@@ -846,7 +846,7 @@ JdbcOutboxRepository repository = new JdbcOutboxRepository();
 DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
 ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 
-Dispatcher dispatcher = new Dispatcher(
+OutboxDispatcher dispatcher = new OutboxDispatcher(
     connectionProvider,
     repository,
     new DefaultListenerRegistry()

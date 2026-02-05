@@ -24,8 +24,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-public final class Dispatcher implements AutoCloseable {
-  private static final Logger logger = Logger.getLogger(Dispatcher.class.getName());
+public final class OutboxDispatcher implements AutoCloseable {
+  private static final Logger logger = Logger.getLogger(OutboxDispatcher.class.getName());
 
   private static final long QUEUE_POLL_TIMEOUT_MS = 50;
   private static final long SHUTDOWN_TIMEOUT_SECONDS = 5;
@@ -43,7 +43,7 @@ public final class Dispatcher implements AutoCloseable {
   private final int maxAttempts;
   private final OutboxMetrics metrics;
 
-  public Dispatcher(
+  public OutboxDispatcher(
       ConnectionProvider connectionProvider,
       OutboxRepository repository,
       ListenerRegistry listenerRegistry,

@@ -3,7 +3,7 @@ package outbox.spring;
 import outbox.core.dispatch.DefaultInFlightTracker;
 import outbox.core.client.DefaultOutboxClient;
 import outbox.core.registry.DefaultListenerRegistry;
-import outbox.core.dispatch.Dispatcher;
+import outbox.core.dispatch.OutboxDispatcher;
 import outbox.core.api.EventEnvelope;
 import outbox.core.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.core.api.OutboxClient;
@@ -68,7 +68,7 @@ class SpringAdapterIntegrationTest {
     DefaultListenerRegistry listeners = new DefaultListenerRegistry()
         .registerAll(event -> latch.countDown());
 
-    Dispatcher dispatcher = dispatcher(1, 100, 100, listeners);
+    OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
     OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
 
     TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
@@ -93,7 +93,7 @@ class SpringAdapterIntegrationTest {
     DefaultListenerRegistry listeners = new DefaultListenerRegistry()
         .registerAll(event -> latch.countDown());
 
-    Dispatcher dispatcher = dispatcher(1, 100, 100, listeners);
+    OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
     OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
 
     TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
@@ -112,8 +112,8 @@ class SpringAdapterIntegrationTest {
     dispatcher.close();
   }
 
-  private Dispatcher dispatcher(int workers, int hotCapacity, int coldCapacity, DefaultListenerRegistry listeners) {
-    return new Dispatcher(
+  private OutboxDispatcher dispatcher(int workers, int hotCapacity, int coldCapacity, DefaultListenerRegistry listeners) {
+    return new OutboxDispatcher(
         connectionProvider,
         repository,
         listeners,

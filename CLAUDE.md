@@ -31,16 +31,16 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 
 - **TxContext**: Abstracts transaction lifecycle (`isTransactionActive()`, `currentConnection()`, `afterCommit()`, `afterRollback()`). Implementations: `ThreadLocalTxContext` (JDBC), `SpringTxContext` (Spring).
 - **OutboxRepository**: Persistence contract (`insertNew`, `markDone`, `markRetry`, `markDead`, `pollPending`). Implemented by `JdbcOutboxRepository`.
-- **Dispatcher**: Dual-queue event processor with hot queue (afterCommit callbacks) and cold queue (poller fallback). Uses `InFlightTracker` for deduplication and `RetryPolicy` for exponential backoff.
+- **OutboxDispatcher**: Dual-queue event processor with hot queue (afterCommit callbacks) and cold queue (poller fallback). Uses `InFlightTracker` for deduplication and `RetryPolicy` for exponential backoff.
 - **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails.
 - **ListenerRegistry**: Maps event types to `EventListener` instances. Supports wildcard "*" registration for audit/logging listeners.
 
 ### Event Flow
 
 1. `OutboxClient.publish()` inserts event to DB within caller's transaction
-2. `afterCommit` callback enqueues to Dispatcher's hot queue
+2. `afterCommit` callback enqueues to OutboxDispatcher's hot queue
 3. If hot queue full, event is dropped (logged) and poller picks it up later
-4. Dispatcher workers process events, update status to DONE/RETRY/DEAD
+4. OutboxDispatcher workers process events, update status to DONE/RETRY/DEAD
 
 ## Coding Style
 

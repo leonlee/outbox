@@ -30,13 +30,13 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
    enqueue hot                                      poll pending
       |                                                  ^
       v                                                  |
-  +-----------+                                      +-----------+
-  | Hot Queue |                                      | Outbox    |
-  +-----+-----+                                      | Poller    |
-        |                                            +-----+-----+
-        v                                                  |
-  +------------------+                                     | enqueue cold
-  |    Dispatcher    | <-----------------------------------+
+  +-----------+                                       +--------------+
+  | Hot Queue |                                       | OutboxPoller |
+  +-----+-----+                                       +------+-------+
+        |                                                    |
+        v                                                    | enqueue cold
+  +------------------+                                       |
+  | OutboxDispatcher | <-------------------------------------+
   +--------+---------+
            |
            v
@@ -47,7 +47,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
            +--------------------------> | Listener B |
                                          +------------+
 
-  Dispatcher ---> mark DONE/RETRY/DEAD ---> OutboxRepository
+  OutboxDispatcher ---> mark DONE/RETRY/DEAD ---> OutboxRepository
 ```
 
 ## Quick Start (Manual JDBC)
@@ -55,7 +55,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 ```java
 import outbox.core.dispatch.DefaultInFlightTracker;
 import outbox.core.client.DefaultOutboxClient;
-import outbox.core.dispatch.Dispatcher;
+import outbox.core.dispatch.OutboxDispatcher;
 import outbox.core.api.EventEnvelope;
 import outbox.core.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.core.api.OutboxClient;
@@ -76,7 +76,7 @@ JdbcOutboxRepository repository = new JdbcOutboxRepository();
 DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
 ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 
-Dispatcher dispatcher = new Dispatcher(
+OutboxDispatcher dispatcher = new OutboxDispatcher(
     connectionProvider,
     repository,
     new DefaultListenerRegistry()
@@ -118,7 +118,7 @@ try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
 ```java
 import outbox.core.dispatch.DefaultInFlightTracker;
 import outbox.core.client.DefaultOutboxClient;
-import outbox.core.dispatch.Dispatcher;
+import outbox.core.dispatch.OutboxDispatcher;
 import outbox.core.api.EventEnvelope;
 import outbox.core.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.core.api.OutboxClient;
@@ -168,7 +168,7 @@ public final class OutboxExample {
     ThreadLocalTxContext txContext = new ThreadLocalTxContext();
     JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
 
-    Dispatcher dispatcher = new Dispatcher(
+    OutboxDispatcher dispatcher = new OutboxDispatcher(
         connectionProvider,
         repository,
         new DefaultListenerRegistry()

@@ -3,7 +3,7 @@ package outbox.core.poller;
 import outbox.core.api.EventEnvelope;
 import outbox.core.api.NoopOutboxMetrics;
 import outbox.core.api.OutboxMetrics;
-import outbox.core.dispatch.Dispatcher;
+import outbox.core.dispatch.OutboxDispatcher;
 import outbox.core.dispatch.QueuedEvent;
 import outbox.core.repo.OutboxRepository;
 import outbox.core.repo.OutboxRow;
@@ -31,7 +31,7 @@ public final class OutboxPoller implements AutoCloseable {
 
   private final ConnectionProvider connectionProvider;
   private final OutboxRepository repository;
-  private final Dispatcher dispatcher;
+  private final OutboxDispatcher dispatcher;
   private final Duration skipRecent;
   private final int batchSize;
   private final long intervalMs;
@@ -43,7 +43,7 @@ public final class OutboxPoller implements AutoCloseable {
   public OutboxPoller(
       ConnectionProvider connectionProvider,
       OutboxRepository repository,
-      Dispatcher dispatcher,
+      OutboxDispatcher dispatcher,
       Duration skipRecent,
       int batchSize,
       long intervalMs,

@@ -1,5 +1,7 @@
 package outbox.core.api;
 
+import com.github.f4b6a3.ulid.UlidCreator;
+
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Arrays;
@@ -7,7 +9,6 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
-import java.util.UUID;
 
 public final class EventEnvelope {
   public static final int MAX_PAYLOAD_BYTES = 1024 * 1024; // 1MB
@@ -202,6 +203,6 @@ public final class EventEnvelope {
   }
 
   private static String newEventId() {
-    return UUID.randomUUID().toString();
+    return UlidCreator.getMonotonicUlid().toString();
   }
 }

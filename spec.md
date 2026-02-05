@@ -221,7 +221,7 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 
 | Field | Type | Required | Default |
 |-------|------|----------|---------|
-| eventId | String | No | UUID.randomUUID() |
+| eventId | String | No | ULID (monotonic) |
 | eventType | String | Yes | - |
 | occurredAt | Instant | No | Instant.now() |
 | aggregateType | String | No | null |

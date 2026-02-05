@@ -270,6 +270,10 @@ CREATE TABLE outbox_event (
 CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_at);
 ```
 
+## Requirements
+
+- Java 17 or later
+
 ## Notes
 
 - Delivery is **at-least-once**. Use `eventId` for downstream dedupe.

@@ -31,7 +31,7 @@ Build a framework that:
 
 1. Persists a unified event record into an outbox table within the current business DB transaction.
 2. After successful transaction commit, enqueues the event (payload in memory) into an in-process Dispatcher (fast path).
-3. Dispatcher executes registered Publishers (send to MQ) and/or in-process async Handlers.
+3. Dispatcher executes registered EventListeners (send to MQ, update caches, call APIs, etc.).
 4. On success, Dispatcher updates outbox status to DONE; on failure updates to RETRY/DEAD.
 5. A low-frequency Poller scans DB as fallback only (node crash, enqueue downgrade, missed enqueue) and enqueues unfinished events.
 6. Delivery semantics: **at-least-once**; duplicates are allowed and must be handled downstream by `eventId`.
@@ -139,7 +139,7 @@ Standalone H2 demonstration (no Spring).
 
 ### 3.5 outbox-spring-demo
 
-Spring Boot REST API demonstration (requires Java 17).
+Spring Boot REST API demonstration.
 
 ---
 
@@ -257,6 +257,33 @@ EventEnvelope envelope = EventEnvelope.builder("UserCreated")
 // Shorthand
 EventEnvelope envelope = EventEnvelope.ofJson("UserCreated", "{}");
 ```
+
+### 6.4 Multi-Tenancy Support
+
+The `tenantId` field provides **pass-through metadata** for multi-tenant applications:
+
+```java
+EventEnvelope envelope = EventEnvelope.builder("OrderCreated")
+    .tenantId("tenant-123")
+    .aggregateId("order-456")
+    .payloadJson("{...}")
+    .build();
+```
+
+**Framework behavior:**
+- `tenantId` is stored in the `outbox_event` table
+- `tenantId` is included when polling and dispatching events
+- Listeners receive `tenantId` via `event.tenantId()`
+
+**Framework does NOT provide:**
+- Tenant-based filtering during polling
+- Tenant isolation or partitioning
+- Per-tenant configuration
+
+**Application responsibility:**
+- Set `tenantId` when publishing events
+- Use `tenantId` in listeners to route events or apply tenant-specific logic
+- Implement tenant isolation at the database level if required (e.g., row-level security, separate schemas)
 
 ---
 
@@ -442,6 +469,7 @@ public Dispatcher(
 ```java
 boolean enqueueHot(QueuedEvent event)  // Returns false if queue full
 boolean enqueueCold(QueuedEvent event) // Returns false if queue full
+boolean hasColdQueueCapacity()         // Check if cold queue has space
 void close()                           // Graceful shutdown
 ```
 
@@ -480,9 +508,29 @@ This is intentional for **natural backpressure**:
 public class QueuedEvent {
   EventEnvelope envelope;
   Source source;        // HOT or COLD
-  int attemptNumber;
+  int attempts;
 }
 ```
+
+### 10.6 InFlightTracker
+
+Prevents concurrent processing of the same event.
+
+```java
+public interface InFlightTracker {
+  boolean tryAcquire(String eventId);  // Returns false if already in-flight
+  void release(String eventId);         // Remove from tracking
+}
+```
+
+**DefaultInFlightTracker**:
+```java
+new DefaultInFlightTracker()           // No TTL
+new DefaultInFlightTracker(long ttlMs) // With TTL for stale entry recovery
+```
+
+- Uses ConcurrentHashMap for thread-safe tracking
+- TTL allows recovery from stuck entries (e.g., worker crash)
 
 ---
 
@@ -506,13 +554,14 @@ public OutboxPoller(
 
 ```java
 void start()    // Start scheduled polling
-void runOnce()  // Execute single poll cycle
+void poll()     // Execute single poll cycle
 void close()    // Stop polling
 ```
 
 ### 11.3 Behavior
 
 - Runs on scheduled interval (default 5000ms)
+- Checks cold queue capacity before polling; skips cycle if full
 - Skips events created within `skipRecent` duration (default 1000ms)
 - Queries status IN (0, 2) with available_at <= now
 - Converts OutboxRow to EventEnvelope
@@ -579,7 +628,7 @@ registry.registerAll(event -> {
 
 ```java
 public interface RetryPolicy {
-  long computeDelayMs(int attemptNumber);
+  long computeDelayMs(int attempts);
 }
 ```
 
@@ -616,7 +665,7 @@ The framework implements backpressure at multiple levels to prevent overwhelming
 │                      BACKPRESSURE FLOW                               │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
-│  [Slow Publisher/Handler]                                            │
+│  [Slow Listener]                                                     │
 │          │                                                           │
 │          ▼                                                           │
 │  [Workers Blocked] ──► Only N events processed concurrently          │

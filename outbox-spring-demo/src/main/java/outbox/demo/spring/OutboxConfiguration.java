@@ -4,7 +4,7 @@ import outbox.core.api.OutboxClient;
 import outbox.core.api.OutboxMetrics;
 import outbox.core.client.DefaultOutboxClient;
 import outbox.core.dispatch.DefaultInFlightTracker;
-import outbox.core.dispatch.Dispatcher;
+import outbox.core.dispatch.OutboxDispatcher;
 import outbox.core.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.core.poller.OutboxPoller;
 import outbox.core.registry.DefaultListenerRegistry;
@@ -60,12 +60,12 @@ public class OutboxConfiguration {
   }
 
   @Bean
-  public Dispatcher dispatcher(
+  public OutboxOutboxDispatcher dispatcher(
       DataSourceConnectionProvider connectionProvider,
       JdbcOutboxRepository repository,
       ListenerRegistry listenerRegistry
   ) {
-    return new Dispatcher(
+    return new OutboxDispatcher(
         connectionProvider,
         repository,
         listenerRegistry,
@@ -83,7 +83,7 @@ public class OutboxConfiguration {
   public OutboxPoller outboxPoller(
       DataSourceConnectionProvider connectionProvider,
       JdbcOutboxRepository repository,
-      Dispatcher dispatcher
+      OutboxDispatcher dispatcher
   ) {
     OutboxPoller poller = new OutboxPoller(
         connectionProvider,
@@ -103,7 +103,7 @@ public class OutboxConfiguration {
   public OutboxClient outboxClient(
       TxContext txContext,
       JdbcOutboxRepository repository,
-      Dispatcher dispatcher
+      OutboxDispatcher dispatcher
   ) {
     return new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
   }

@@ -2,7 +2,7 @@ package outbox.jdbc;
 
 import outbox.core.dispatch.DefaultInFlightTracker;
 import outbox.core.registry.DefaultListenerRegistry;
-import outbox.core.dispatch.Dispatcher;
+import outbox.core.dispatch.OutboxDispatcher;
 import outbox.core.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.core.api.OutboxMetrics;
 import outbox.core.poller.OutboxPoller;
@@ -64,7 +64,7 @@ class OutboxEdgeCaseTest {
       }
     }
 
-    Dispatcher dispatcher = new Dispatcher(
+    OutboxDispatcher dispatcher = new OutboxDispatcher(
         connectionProvider,
         repository,
         new DefaultListenerRegistry(),
@@ -97,7 +97,7 @@ class OutboxEdgeCaseTest {
 
   @Test
   void dispatcherRejectsInvalidArgs() {
-    assertThrows(IllegalArgumentException.class, () -> new Dispatcher(
+    assertThrows(IllegalArgumentException.class, () -> new OutboxDispatcher(
         connectionProvider,
         repository,
         new DefaultListenerRegistry(),
@@ -110,7 +110,7 @@ class OutboxEdgeCaseTest {
         OutboxMetrics.NOOP
     ));
 
-    assertThrows(IllegalArgumentException.class, () -> new Dispatcher(
+    assertThrows(IllegalArgumentException.class, () -> new OutboxDispatcher(
         connectionProvider,
         repository,
         new DefaultListenerRegistry(),
@@ -123,7 +123,7 @@ class OutboxEdgeCaseTest {
         OutboxMetrics.NOOP
     ));
 
-    assertThrows(IllegalArgumentException.class, () -> new Dispatcher(
+    assertThrows(IllegalArgumentException.class, () -> new OutboxDispatcher(
         connectionProvider,
         repository,
         new DefaultListenerRegistry(),
@@ -139,7 +139,7 @@ class OutboxEdgeCaseTest {
 
   @Test
   void pollerRejectsInvalidArgs() {
-    Dispatcher dispatcher = new Dispatcher(
+    OutboxDispatcher dispatcher = new OutboxDispatcher(
         connectionProvider,
         repository,
         new DefaultListenerRegistry(),

@@ -5,7 +5,7 @@ import outbox.core.api.OutboxClient;
 import outbox.core.api.OutboxMetrics;
 import outbox.core.client.DefaultOutboxClient;
 import outbox.core.dispatch.DefaultInFlightTracker;
-import outbox.core.dispatch.Dispatcher;
+import outbox.core.dispatch.OutboxDispatcher;
 import outbox.core.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.core.poller.OutboxPoller;
 import outbox.core.registry.DefaultListenerRegistry;
@@ -49,7 +49,7 @@ public final class OutboxDemo {
     CountDownLatch latch = new CountDownLatch(3);
 
     // 3. Create dispatcher with listeners
-    Dispatcher dispatcher = new Dispatcher(
+    OutboxDispatcher dispatcher = new OutboxDispatcher(
         connectionProvider,
         repository,
         new DefaultListenerRegistry()

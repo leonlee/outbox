@@ -3,7 +3,7 @@ package outbox.jdbc;
 import outbox.core.dispatch.DefaultInFlightTracker;
 import outbox.core.client.DefaultOutboxClient;
 import outbox.core.registry.DefaultListenerRegistry;
-import outbox.core.dispatch.Dispatcher;
+import outbox.core.dispatch.OutboxDispatcher;
 import outbox.core.api.EventEnvelope;
 import outbox.core.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.core.api.OutboxClient;
@@ -62,7 +62,7 @@ class OutboxAcceptanceTest {
 
   @Test
   void atomicityRollbackDoesNotPersist() throws Exception {
-    Dispatcher dispatcher = dispatcher(0, 10, 10);
+    OutboxDispatcher dispatcher = dispatcher(0, 10, 10);
     OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
 
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
@@ -80,7 +80,7 @@ class OutboxAcceptanceTest {
     DefaultListenerRegistry publishers = new DefaultListenerRegistry()
         .registerAll(event -> latch.countDown());
 
-    Dispatcher dispatcher = dispatcher(1, 100, 100, publishers);
+    OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers);
     OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
 
     String eventId;
@@ -97,7 +97,7 @@ class OutboxAcceptanceTest {
 
   @Test
   void queueOverflowDowngradesToPoller() throws Exception {
-    Dispatcher noWorkers = dispatcher(0, 1, 1);
+    OutboxDispatcher noWorkers = dispatcher(0, 1, 1);
     noWorkers.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("Preload", "{}"), QueuedEvent.Source.HOT, 0));
 
     OutboxClient client = new DefaultOutboxClient(txContext, repository, noWorkers, OutboxMetrics.NOOP);
@@ -114,7 +114,7 @@ class OutboxAcceptanceTest {
     DefaultListenerRegistry publishers = new DefaultListenerRegistry()
         .registerAll(event -> latch.countDown());
 
-    Dispatcher dispatcher = dispatcher(1, 100, 100, publishers);
+    OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers);
     try (OutboxPoller poller = new OutboxPoller(
         connectionProvider,
         repository,
@@ -142,7 +142,7 @@ class OutboxAcceptanceTest {
     DefaultListenerRegistry publishers = new DefaultListenerRegistry()
         .registerAll(event -> { throw new RuntimeException("boom"); });
 
-    Dispatcher dispatcher = dispatcher(1, 100, 100, publishers, 3);
+    OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers, 3);
     OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
 
     String eventId;
@@ -173,16 +173,16 @@ class OutboxAcceptanceTest {
     dispatcher.close();
   }
 
-  private Dispatcher dispatcher(int workers, int hotCapacity, int coldCapacity) {
+  private OutboxDispatcher dispatcher(int workers, int hotCapacity, int coldCapacity) {
     return dispatcher(workers, hotCapacity, coldCapacity, new DefaultListenerRegistry());
   }
 
-  private Dispatcher dispatcher(int workers, int hotCapacity, int coldCapacity, DefaultListenerRegistry listeners) {
+  private OutboxDispatcher dispatcher(int workers, int hotCapacity, int coldCapacity, DefaultListenerRegistry listeners) {
     return dispatcher(workers, hotCapacity, coldCapacity, listeners, 10);
   }
 
-  private Dispatcher dispatcher(int workers, int hotCapacity, int coldCapacity, DefaultListenerRegistry listeners, int maxAttempts) {
-    return new Dispatcher(
+  private OutboxDispatcher dispatcher(int workers, int hotCapacity, int coldCapacity, DefaultListenerRegistry listeners, int maxAttempts) {
+    return new OutboxDispatcher(
         connectionProvider,
         repository,
         listeners,

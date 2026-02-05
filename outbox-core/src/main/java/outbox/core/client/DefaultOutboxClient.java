@@ -4,7 +4,7 @@ import outbox.core.api.EventEnvelope;
 import outbox.core.api.NoopOutboxMetrics;
 import outbox.core.api.OutboxClient;
 import outbox.core.api.OutboxMetrics;
-import outbox.core.dispatch.Dispatcher;
+import outbox.core.dispatch.OutboxDispatcher;
 import outbox.core.dispatch.QueuedEvent;
 import outbox.core.repo.OutboxRepository;
 import outbox.core.tx.TxContext;
@@ -19,13 +19,13 @@ public final class DefaultOutboxClient implements OutboxClient {
 
   private final TxContext txContext;
   private final OutboxRepository repository;
-  private final Dispatcher dispatcher;
+  private final OutboxDispatcher dispatcher;
   private final OutboxMetrics metrics;
 
   public DefaultOutboxClient(
       TxContext txContext,
       OutboxRepository repository,
-      Dispatcher dispatcher,
+      OutboxDispatcher dispatcher,
       OutboxMetrics metrics
   ) {
     this.txContext = Objects.requireNonNull(txContext, "txContext");

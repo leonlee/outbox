@@ -14,7 +14,7 @@
 - `mvn -pl outbox-core -am package`: build the core module and its dependencies.
 - `mvn -DskipTests package`: build all jars without tests.
 
-Java 11 is the baseline (see root `pom.xml`).
+Java 17 is the baseline (see root `pom.xml`).
 
 ## Coding Style & Naming Conventions
 - Indentation is 2 spaces; braces are on the same line as declarations.

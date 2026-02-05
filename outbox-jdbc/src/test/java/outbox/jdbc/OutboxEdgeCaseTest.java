@@ -1,12 +1,12 @@
 package outbox.jdbc;
 
-import outbox.core.dispatch.DefaultInFlightTracker;
-import outbox.core.registry.DefaultListenerRegistry;
-import outbox.core.dispatch.OutboxDispatcher;
-import outbox.core.dispatch.ExponentialBackoffRetryPolicy;
-import outbox.core.api.OutboxMetrics;
-import outbox.core.poller.OutboxPoller;
-import outbox.core.api.OutboxStatus;
+import outbox.dispatch.DefaultInFlightTracker;
+import outbox.registry.DefaultListenerRegistry;
+import outbox.dispatch.OutboxDispatcher;
+import outbox.dispatch.ExponentialBackoffRetryPolicy;
+import outbox.spi.MetricsExporter;
+import outbox.poller.OutboxPoller;
+import outbox.model.EventStatus;
 
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;
@@ -55,7 +55,7 @@ class OutboxEdgeCaseTest {
         ps.setString(2, "BadHeaders");
         ps.setString(3, "{}");
         ps.setString(4, "not-json");
-        ps.setInt(5, OutboxStatus.NEW.code());
+        ps.setInt(5, EventStatus.NEW.code());
         ps.setInt(6, 0);
         Timestamp now = Timestamp.from(Instant.now().minusSeconds(5));
         ps.setTimestamp(7, now);
@@ -74,7 +74,7 @@ class OutboxEdgeCaseTest {
         1,
         10,
         10,
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     );
 
     try (OutboxPoller poller = new OutboxPoller(
@@ -84,12 +84,12 @@ class OutboxEdgeCaseTest {
         Duration.ofMillis(0),
         10,
         10,
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     )) {
       poller.poll();
     }
 
-    assertEquals(OutboxStatus.DEAD.code(), getStatus(eventId));
+    assertEquals(EventStatus.DEAD.code(), getStatus(eventId));
     assertNotNull(getLastError(eventId));
 
     dispatcher.close();
@@ -107,7 +107,7 @@ class OutboxEdgeCaseTest {
         1,
         10,
         10,
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     ));
 
     assertThrows(IllegalArgumentException.class, () -> new OutboxDispatcher(
@@ -120,7 +120,7 @@ class OutboxEdgeCaseTest {
         -1,
         10,
         10,
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     ));
 
     assertThrows(IllegalArgumentException.class, () -> new OutboxDispatcher(
@@ -133,7 +133,7 @@ class OutboxEdgeCaseTest {
         1,
         0,
         10,
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     ));
   }
 
@@ -149,7 +149,7 @@ class OutboxEdgeCaseTest {
         1,
         10,
         10,
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     );
 
     assertThrows(IllegalArgumentException.class, () -> new OutboxPoller(
@@ -159,7 +159,7 @@ class OutboxEdgeCaseTest {
         Duration.ofMillis(0),
         0,
         10,
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     ));
 
     assertThrows(IllegalArgumentException.class, () -> new OutboxPoller(
@@ -169,7 +169,7 @@ class OutboxEdgeCaseTest {
         Duration.ofMillis(0),
         10,
         0,
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     ));
 
     assertThrows(IllegalArgumentException.class, () -> new OutboxPoller(
@@ -179,7 +179,7 @@ class OutboxEdgeCaseTest {
         Duration.ofMillis(-1),
         10,
         10,
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     ));
 
     dispatcher.close();

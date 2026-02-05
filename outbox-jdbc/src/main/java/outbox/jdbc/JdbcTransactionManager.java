@@ -1,6 +1,6 @@
 package outbox.jdbc;
 
-import outbox.core.tx.ConnectionProvider;
+import outbox.spi.ConnectionProvider;
 
 import java.sql.Connection;
 import java.sql.SQLException;

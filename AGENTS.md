@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `outbox-core/src/main/java/outbox/core`: core APIs and runtime (client, dispatcher, poller, registry, repo contracts).
+- `outbox-core/src/main/java/outbox`: core APIs and runtime (client, dispatcher, poller, registry, SPI contracts).
 - `outbox-jdbc/src/main/java/outbox/jdbc`: JDBC implementations (repository, transaction helpers, connection providers).
 - `outbox-spring-adapter/src/main/java/outbox/spring`: Spring `TxContext` adapter.
 - Tests live in `*/src/test/java` (currently in `outbox-jdbc` and `outbox-spring-adapter`).
@@ -18,7 +18,7 @@ Java 17 is the baseline (see root `pom.xml`).
 
 ## Coding Style & Naming Conventions
 - Indentation is 2 spaces; braces are on the same line as declarations.
-- Package names follow `outbox.<module>` (for example, `outbox.core.dispatch`).
+- Package names follow `outbox.<feature>` (for example, `outbox.dispatch`, `outbox.spi`).
 - Classes use `UpperCamelCase`, methods use `lowerCamelCase`, constants use `UPPER_SNAKE_CASE`.
 - There is no formatter or linter configured; keep changes consistent with existing files.
 

@@ -3,9 +3,9 @@ package outbox.jdbc;
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import outbox.core.api.EventEnvelope;
-import outbox.core.api.OutboxStatus;
-import outbox.core.repo.OutboxRow;
+import outbox.EventEnvelope;
+import outbox.model.EventStatus;
+import outbox.model.OutboxEvent;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -68,7 +68,7 @@ class JdbcOutboxRepositoryTest {
         ps.setString(1, event.eventId());
         ResultSet rs = ps.executeQuery();
         assertTrue(rs.next());
-        assertEquals(OutboxStatus.NEW.code(), rs.getInt("status"));
+        assertEquals(EventStatus.NEW.code(), rs.getInt("status"));
         assertEquals(0, rs.getInt("attempts"));
       }
     }
@@ -117,7 +117,7 @@ class JdbcOutboxRepositoryTest {
         ps.setString(1, eventId);
         ResultSet rs = ps.executeQuery();
         assertTrue(rs.next());
-        assertEquals(OutboxStatus.DONE.code(), rs.getInt("status"));
+        assertEquals(EventStatus.DONE.code(), rs.getInt("status"));
         assertNotNull(rs.getTimestamp("done_at"));
       }
     }
@@ -151,7 +151,7 @@ class JdbcOutboxRepositoryTest {
         ps.setString(1, eventId);
         ResultSet rs = ps.executeQuery();
         assertTrue(rs.next());
-        assertEquals(OutboxStatus.RETRY.code(), rs.getInt("status"));
+        assertEquals(EventStatus.RETRY.code(), rs.getInt("status"));
         assertEquals(1, rs.getInt("attempts"));
         assertEquals("Connection failed", rs.getString("last_error"));
       }
@@ -195,7 +195,7 @@ class JdbcOutboxRepositoryTest {
         ps.setString(1, eventId);
         ResultSet rs = ps.executeQuery();
         assertTrue(rs.next());
-        assertEquals(OutboxStatus.DEAD.code(), rs.getInt("status"));
+        assertEquals(EventStatus.DEAD.code(), rs.getInt("status"));
         assertEquals("Max retries exceeded", rs.getString("last_error"));
       }
     }
@@ -206,7 +206,7 @@ class JdbcOutboxRepositoryTest {
     String eventId = insertTestEvent();
 
     try (Connection conn = dataSource.getConnection()) {
-      List<OutboxRow> rows = repository.pollPending(conn, Instant.now().plusSeconds(1),
+      List<OutboxEvent> rows = repository.pollPending(conn, Instant.now().plusSeconds(1),
           Duration.ZERO, 10);
 
       assertEquals(1, rows.size());
@@ -221,7 +221,7 @@ class JdbcOutboxRepositoryTest {
     try (Connection conn = dataSource.getConnection()) {
       repository.markRetry(conn, eventId, Instant.now().minusSeconds(10), "error");
 
-      List<OutboxRow> rows = repository.pollPending(conn, Instant.now(),
+      List<OutboxEvent> rows = repository.pollPending(conn, Instant.now(),
           Duration.ZERO, 10);
 
       assertEquals(1, rows.size());
@@ -236,7 +236,7 @@ class JdbcOutboxRepositoryTest {
     try (Connection conn = dataSource.getConnection()) {
       repository.markDone(conn, eventId);
 
-      List<OutboxRow> rows = repository.pollPending(conn, Instant.now().plusSeconds(1),
+      List<OutboxEvent> rows = repository.pollPending(conn, Instant.now().plusSeconds(1),
           Duration.ZERO, 10);
 
       assertTrue(rows.isEmpty());
@@ -250,7 +250,7 @@ class JdbcOutboxRepositoryTest {
     try (Connection conn = dataSource.getConnection()) {
       repository.markDead(conn, eventId, "dead");
 
-      List<OutboxRow> rows = repository.pollPending(conn, Instant.now().plusSeconds(1),
+      List<OutboxEvent> rows = repository.pollPending(conn, Instant.now().plusSeconds(1),
           Duration.ZERO, 10);
 
       assertTrue(rows.isEmpty());
@@ -263,7 +263,7 @@ class JdbcOutboxRepositoryTest {
 
     try (Connection conn = dataSource.getConnection()) {
       // Skip events created in the last hour
-      List<OutboxRow> rows = repository.pollPending(conn, Instant.now(),
+      List<OutboxEvent> rows = repository.pollPending(conn, Instant.now(),
           Duration.ofHours(1), 10);
 
       assertTrue(rows.isEmpty());
@@ -277,7 +277,7 @@ class JdbcOutboxRepositoryTest {
     }
 
     try (Connection conn = dataSource.getConnection()) {
-      List<OutboxRow> rows = repository.pollPending(conn, Instant.now().plusSeconds(1),
+      List<OutboxEvent> rows = repository.pollPending(conn, Instant.now().plusSeconds(1),
           Duration.ZERO, 3);
 
       assertEquals(3, rows.size());
@@ -292,7 +292,7 @@ class JdbcOutboxRepositoryTest {
       // Set available_at to future
       repository.markRetry(conn, eventId, Instant.now().plus(Duration.ofHours(1)), "delayed");
 
-      List<OutboxRow> rows = repository.pollPending(conn, Instant.now(),
+      List<OutboxEvent> rows = repository.pollPending(conn, Instant.now(),
           Duration.ZERO, 10);
 
       assertTrue(rows.isEmpty());

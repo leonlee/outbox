@@ -1,16 +1,15 @@
 package outbox.jdbc;
 
-import outbox.core.dispatch.DefaultInFlightTracker;
-import outbox.core.client.DefaultOutboxClient;
-import outbox.core.registry.DefaultListenerRegistry;
-import outbox.core.dispatch.OutboxDispatcher;
-import outbox.core.api.EventEnvelope;
-import outbox.core.dispatch.ExponentialBackoffRetryPolicy;
-import outbox.core.api.OutboxClient;
-import outbox.core.api.OutboxMetrics;
-import outbox.core.poller.OutboxPoller;
-import outbox.core.api.OutboxStatus;
-import outbox.core.dispatch.QueuedEvent;
+import outbox.dispatch.DefaultInFlightTracker;
+import outbox.OutboxClient;
+import outbox.registry.DefaultListenerRegistry;
+import outbox.dispatch.OutboxDispatcher;
+import outbox.EventEnvelope;
+import outbox.dispatch.ExponentialBackoffRetryPolicy;
+import outbox.spi.MetricsExporter;
+import outbox.poller.OutboxPoller;
+import outbox.model.EventStatus;
+import outbox.dispatch.QueuedEvent;
 
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.AfterEach;
@@ -63,7 +62,7 @@ class OutboxAcceptanceTest {
   @Test
   void atomicityRollbackDoesNotPersist() throws Exception {
     OutboxDispatcher dispatcher = dispatcher(0, 10, 10);
-    OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
+    OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
 
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
       client.publish(EventEnvelope.ofJson("TestEvent", "{}"));
@@ -81,7 +80,7 @@ class OutboxAcceptanceTest {
         .registerAll(event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers);
-    OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
+    OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
 
     String eventId;
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
@@ -90,7 +89,7 @@ class OutboxAcceptanceTest {
     }
 
     assertTrue(latch.await(2, TimeUnit.SECONDS));
-    awaitStatus(eventId, OutboxStatus.DONE, 2_000);
+    awaitStatus(eventId, EventStatus.DONE, 2_000);
 
     dispatcher.close();
   }
@@ -100,7 +99,7 @@ class OutboxAcceptanceTest {
     OutboxDispatcher noWorkers = dispatcher(0, 1, 1);
     noWorkers.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("Preload", "{}"), QueuedEvent.Source.HOT, 0));
 
-    OutboxClient client = new DefaultOutboxClient(txContext, repository, noWorkers, OutboxMetrics.NOOP);
+    OutboxClient client = new OutboxClient(txContext, repository, noWorkers, MetricsExporter.NOOP);
 
     String eventId;
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
@@ -108,7 +107,7 @@ class OutboxAcceptanceTest {
       tx.commit();
     }
 
-    assertEquals(OutboxStatus.NEW.code(), getStatus(eventId));
+    assertEquals(EventStatus.NEW.code(), getStatus(eventId));
 
     CountDownLatch latch = new CountDownLatch(1);
     DefaultListenerRegistry publishers = new DefaultListenerRegistry()
@@ -122,16 +121,16 @@ class OutboxAcceptanceTest {
         Duration.ofMillis(0),
         10,
         10,
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     )) {
-      for (int i = 0; i < 20 && getStatus(eventId) != OutboxStatus.DONE.code(); i++) {
+      for (int i = 0; i < 20 && getStatus(eventId) != EventStatus.DONE.code(); i++) {
         poller.poll();
         Thread.sleep(25);
       }
     }
 
     assertTrue(latch.await(2, TimeUnit.SECONDS));
-    awaitStatus(eventId, OutboxStatus.DONE, 2_000);
+    awaitStatus(eventId, EventStatus.DONE, 2_000);
 
     dispatcher.close();
     noWorkers.close();
@@ -143,7 +142,7 @@ class OutboxAcceptanceTest {
         .registerAll(event -> { throw new RuntimeException("boom"); });
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers, 3);
-    OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
+    OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
 
     String eventId;
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
@@ -158,16 +157,16 @@ class OutboxAcceptanceTest {
         Duration.ofMillis(0),
         10,
         10,
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     )) {
       long deadline = System.currentTimeMillis() + 2_000;
-      while (System.currentTimeMillis() < deadline && getStatus(eventId) != OutboxStatus.DEAD.code()) {
+      while (System.currentTimeMillis() < deadline && getStatus(eventId) != EventStatus.DEAD.code()) {
         poller.poll();
         Thread.sleep(30);
       }
     }
 
-    assertEquals(OutboxStatus.DEAD.code(), getStatus(eventId));
+    assertEquals(EventStatus.DEAD.code(), getStatus(eventId));
     assertNotNull(getLastError(eventId));
 
     dispatcher.close();
@@ -192,7 +191,7 @@ class OutboxAcceptanceTest {
         workers,
         hotCapacity,
         coldCapacity,
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     );
   }
 
@@ -254,7 +253,7 @@ class OutboxAcceptanceTest {
     }
   }
 
-  private void awaitStatus(String eventId, OutboxStatus status, long timeoutMs) throws Exception {
+  private void awaitStatus(String eventId, EventStatus status, long timeoutMs) throws Exception {
     long deadline = System.currentTimeMillis() + timeoutMs;
     while (System.currentTimeMillis() < deadline) {
       if (getStatus(eventId) == status.code()) {

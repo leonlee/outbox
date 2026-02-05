@@ -57,7 +57,7 @@ Build a framework that:
 |-----------|----------------|
 | **OutboxClient** | API used by business code inside a transaction context |
 | **TxContext** | Abstraction for transaction lifecycle hooks (afterCommit/afterRollback) |
-| **OutboxRepository** | Insert/update/query via `java.sql.Connection` |
+| **EventStore** | Insert/update/query via `java.sql.Connection` |
 | **OutboxDispatcher** | Hot/cold queues + worker pool; executes listeners; updates status |
 | **ListenerRegistry** | Maps event types to event listeners |
 | **OutboxPoller** | Low-frequency fallback DB scan; enqueues cold events |
@@ -107,21 +107,20 @@ OutboxDispatcher MUST prioritize:
 Core interfaces, dispatcher, poller, and registries. **Zero external dependencies.**
 
 Packages:
-- `outbox.core.api` - Public API and domain types
-- `outbox.core.client` - DefaultOutboxClient implementation
-- `outbox.core.dispatch` - OutboxDispatcher, retry policy, inflight tracking
-- `outbox.core.poller` - OutboxPoller
-- `outbox.core.registry` - Listener registry
-- `outbox.core.repo` - Repository interface and OutboxRow
-- `outbox.core.tx` - TxContext and ConnectionProvider interfaces
-- `outbox.core.util` - JsonCodec (no external JSON library)
+- `outbox` - Main API: OutboxClient, EventEnvelope, EventType, AggregateType, EventListener
+- `outbox.spi` - Extension point interfaces: TxContext, ConnectionProvider, EventStore, MetricsExporter
+- `outbox.model` - Domain objects: OutboxEvent, EventStatus
+- `outbox.dispatch` - OutboxDispatcher, retry policy, inflight tracking
+- `outbox.poller` - OutboxPoller
+- `outbox.registry` - Listener registry
+- `outbox.util` - JsonCodec (no external JSON library)
 
 ### 3.2 outbox-jdbc
 
 JDBC repository implementation and manual transaction helpers.
 
 Classes:
-- `JdbcOutboxRepository` - Implements OutboxRepository with PreparedStatement
+- `JdbcOutboxRepository` - Implements EventStore with PreparedStatement
 - `ThreadLocalTxContext` - ThreadLocal-based TxContext for manual transactions
 - `JdbcTransactionManager` - Helper for manual JDBC transactions
 - `DataSourceConnectionProvider` - ConnectionProvider from DataSource
@@ -357,8 +356,15 @@ EventEnvelope.builder(eventType)
 ### 8.1 OutboxClient
 
 ```java
-public interface OutboxClient {
-  String publish(EventEnvelope event);
+public final class OutboxClient {
+  public OutboxClient(
+      TxContext txContext,
+      EventStore eventStore,
+      OutboxDispatcher dispatcher,
+      MetricsExporter metrics
+  );
+
+  public String publish(EventEnvelope event);
 }
 ```
 
@@ -368,17 +374,6 @@ Semantics:
 - MUST register `TxContext.afterCommit(() -> dispatcher.enqueueHot(event))`
 - If enqueueHot fails due to backpressure, MUST NOT throw; rely on OutboxPoller fallback
 
-### 8.2 DefaultOutboxClient
-
-```java
-public DefaultOutboxClient(
-    TxContext txContext,
-    OutboxRepository repository,
-    OutboxDispatcher dispatcher,
-    OutboxMetrics metrics
-)
-```
-
 ---
 
 ## 9. JDBC Repository
@@ -386,12 +381,12 @@ public DefaultOutboxClient(
 ### 9.1 Interface
 
 ```java
-public interface OutboxRepository {
+public interface EventStore {
   void insertNew(Connection conn, EventEnvelope event);
   int markDone(Connection conn, String eventId);
   int markRetry(Connection conn, String eventId, Instant nextAt, String error);
   int markDead(Connection conn, String eventId, String error);
-  List<OutboxRow> pollPending(Connection conn, Instant now, Duration skipRecent, int limit);
+  List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit);
 }
 ```
 
@@ -452,7 +447,7 @@ LIMIT ?
 ```java
 public OutboxDispatcher(
     ConnectionProvider connectionProvider,
-    OutboxRepository repository,
+    EventStore eventStore,
     ListenerRegistry listenerRegistry,
     InFlightTracker inFlightTracker,
     RetryPolicy retryPolicy,
@@ -460,7 +455,7 @@ public OutboxDispatcher(
     int workerCount,
     int hotQueueCapacity,
     int coldQueueCapacity,
-    OutboxMetrics metrics
+    MetricsExporter metrics
 )
 ```
 
@@ -541,12 +536,12 @@ new DefaultInFlightTracker(long ttlMs) // With TTL for stale entry recovery
 ```java
 public OutboxPoller(
     ConnectionProvider connectionProvider,
-    OutboxRepository repository,
+    EventStore eventStore,
     OutboxDispatcher dispatcher,
     Duration skipRecent,
     int batchSize,
     long intervalMs,
-    OutboxMetrics metrics
+    MetricsExporter metrics
 )
 ```
 
@@ -564,7 +559,7 @@ void close()    // Stop polling
 - Checks cold queue capacity before polling; skips cycle if full
 - Skips events created within `skipRecent` duration (default 1000ms)
 - Queries status IN (0, 2) with available_at <= now
-- Converts OutboxRow to EventEnvelope
+- Converts OutboxEvent to EventEnvelope
 - Enqueues to cold queue (subject to backpressure)
 - On decode failure: marks event DEAD
 
@@ -752,10 +747,10 @@ OutboxConfig config = new OutboxConfig()
 
 ## 16. Observability
 
-### 16.1 OutboxMetrics Interface
+### 16.1 MetricsExporter Interface
 
 ```java
-public interface OutboxMetrics {
+public interface MetricsExporter {
   void incrementHotEnqueued();
   void incrementHotDropped();
   void incrementColdEnqueued();
@@ -765,7 +760,7 @@ public interface OutboxMetrics {
   void recordQueueDepths(int hotDepth, int coldDepth);
   void recordOldestLagMs(long lagMs);
 
-  OutboxMetrics NOOP = new NoopOutboxMetrics();
+  MetricsExporter NOOP = new Noop();
 }
 ```
 
@@ -859,20 +854,20 @@ OutboxDispatcher dispatcher = new OutboxDispatcher(
     new DefaultInFlightTracker(),
     new ExponentialBackoffRetryPolicy(200, 60_000),
     10, 4, 1000, 1000,
-    OutboxMetrics.NOOP
+    MetricsExporter.NOOP
 );
 
 OutboxPoller poller = new OutboxPoller(
     connectionProvider, repository, dispatcher,
     Duration.ofMillis(1000), 200, 5000,
-    OutboxMetrics.NOOP
+    MetricsExporter.NOOP
 );
 poller.start();
 
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
 
 try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-  OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
+  OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
   client.publish(EventEnvelope.ofJson("UserCreated", "{\"id\":123}"));
   tx.commit();
 }
@@ -882,5 +877,5 @@ try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
 
 ```java
 SpringTxContext txContext = new SpringTxContext(dataSource);
-// Use DefaultOutboxClient with SpringTxContext inside @Transactional methods
+// Use OutboxClient with SpringTxContext inside @Transactional methods
 ```

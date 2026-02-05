@@ -1,7 +1,7 @@
 package outbox.demo.spring;
 
-import outbox.core.api.EventEnvelope;
-import outbox.core.api.OutboxClient;
+import outbox.EventEnvelope;
+import outbox.OutboxClient;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;

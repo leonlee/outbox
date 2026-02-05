@@ -1,14 +1,13 @@
 package outbox.demo;
 
-import outbox.core.api.EventEnvelope;
-import outbox.core.api.OutboxClient;
-import outbox.core.api.OutboxMetrics;
-import outbox.core.client.DefaultOutboxClient;
-import outbox.core.dispatch.DefaultInFlightTracker;
-import outbox.core.dispatch.OutboxDispatcher;
-import outbox.core.dispatch.ExponentialBackoffRetryPolicy;
-import outbox.core.poller.OutboxPoller;
-import outbox.core.registry.DefaultListenerRegistry;
+import outbox.EventEnvelope;
+import outbox.OutboxClient;
+import outbox.spi.MetricsExporter;
+import outbox.dispatch.DefaultInFlightTracker;
+import outbox.dispatch.OutboxDispatcher;
+import outbox.dispatch.ExponentialBackoffRetryPolicy;
+import outbox.poller.OutboxPoller;
+import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
 import outbox.jdbc.JdbcOutboxRepository;
 import outbox.jdbc.JdbcTransactionManager;
@@ -73,7 +72,7 @@ public final class OutboxDemo {
         2,    // workerCount
         100,  // hotQueueCapacity
         100,  // coldQueueCapacity
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     );
 
     // 4. Create poller (fallback for missed events)
@@ -84,7 +83,7 @@ public final class OutboxDemo {
         Duration.ofMillis(500),  // skipRecent
         50,                       // batchSize
         1000,                     // intervalMs
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     );
     poller.start();
 
@@ -95,7 +94,7 @@ public final class OutboxDemo {
 
     // 6. Publish events within transactions
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-      OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
+      OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
 
       // Simple event
       String eventId1 = client.publish(EventEnvelope.ofJson("UserCreated",
@@ -118,7 +117,7 @@ public final class OutboxDemo {
 
     // 7. Publish another event in separate transaction
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-      OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
+      OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
 
       String eventId = client.publish(EventEnvelope.builder("UserCreated")
           .aggregateType("User")

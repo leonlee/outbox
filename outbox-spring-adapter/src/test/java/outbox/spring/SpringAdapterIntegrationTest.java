@@ -1,14 +1,13 @@
 package outbox.spring;
 
-import outbox.core.dispatch.DefaultInFlightTracker;
-import outbox.core.client.DefaultOutboxClient;
-import outbox.core.registry.DefaultListenerRegistry;
-import outbox.core.dispatch.OutboxDispatcher;
-import outbox.core.api.EventEnvelope;
-import outbox.core.dispatch.ExponentialBackoffRetryPolicy;
-import outbox.core.api.OutboxClient;
-import outbox.core.api.OutboxMetrics;
-import outbox.core.api.OutboxStatus;
+import outbox.dispatch.DefaultInFlightTracker;
+import outbox.OutboxClient;
+import outbox.registry.DefaultListenerRegistry;
+import outbox.dispatch.OutboxDispatcher;
+import outbox.EventEnvelope;
+import outbox.dispatch.ExponentialBackoffRetryPolicy;
+import outbox.spi.MetricsExporter;
+import outbox.model.EventStatus;
 import outbox.jdbc.DataSourceConnectionProvider;
 import outbox.jdbc.JdbcOutboxRepository;
 
@@ -69,7 +68,7 @@ class SpringAdapterIntegrationTest {
         .registerAll(event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
-    OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
+    OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
 
     TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
     String eventId;
@@ -82,7 +81,7 @@ class SpringAdapterIntegrationTest {
     }
 
     assertTrue(latch.await(2, TimeUnit.SECONDS));
-    awaitStatus(eventId, OutboxStatus.DONE, 2_000);
+    awaitStatus(eventId, EventStatus.DONE, 2_000);
 
     dispatcher.close();
   }
@@ -94,7 +93,7 @@ class SpringAdapterIntegrationTest {
         .registerAll(event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
-    OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
+    OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
 
     TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
     String eventId;
@@ -123,7 +122,7 @@ class SpringAdapterIntegrationTest {
         workers,
         hotCapacity,
         coldCapacity,
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     );
   }
 
@@ -163,7 +162,7 @@ class SpringAdapterIntegrationTest {
     }
   }
 
-  private void awaitStatus(String eventId, OutboxStatus status, long timeoutMs) throws Exception {
+  private void awaitStatus(String eventId, EventStatus status, long timeoutMs) throws Exception {
     long deadline = System.currentTimeMillis() + timeoutMs;
     while (System.currentTimeMillis() < deadline) {
       if (getStatus(eventId) == status.code()) {

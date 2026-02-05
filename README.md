@@ -13,19 +13,19 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 ## Architecture
 
 ```text
-  +-----------------------+        publish()        +----------------------+
-  | Application / Domain | ----------------------> | DefaultOutboxClient  |
-  +-----------------------+                         +----------+-----------+
-                                                     | insert
-                                                     v
-                                             +--------------------+
-                                             |  OutboxRepository |
-                                             +---------+----------+
-                                                       | persist
-                                                       v
-                                             +--------------------+
-                                             |   Outbox Table     |
-                                             +--------------------+
+  +-----------------------+        publish()        +---------------+
+  | Application / Domain | ----------------------> | OutboxClient  |
+  +-----------------------+                         +-------+-------+
+                                                    | insert
+                                                    v
+                                            +--------------------+
+                                            |    EventStore      |
+                                            +---------+----------+
+                                                      | persist
+                                                      v
+                                            +--------------------+
+                                            |   Outbox Table     |
+                                            +--------------------+
 
    enqueue hot                                      poll pending
       |                                                  ^
@@ -47,21 +47,20 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
            +--------------------------> | Listener B |
                                          +------------+
 
-  OutboxDispatcher ---> mark DONE/RETRY/DEAD ---> OutboxRepository
+  OutboxDispatcher ---> mark DONE/RETRY/DEAD ---> EventStore
 ```
 
 ## Quick Start (Manual JDBC)
 
 ```java
-import outbox.core.dispatch.DefaultInFlightTracker;
-import outbox.core.client.DefaultOutboxClient;
-import outbox.core.dispatch.OutboxDispatcher;
-import outbox.core.api.EventEnvelope;
-import outbox.core.dispatch.ExponentialBackoffRetryPolicy;
-import outbox.core.api.OutboxClient;
-import outbox.core.api.OutboxMetrics;
-import outbox.core.poller.OutboxPoller;
-import outbox.core.registry.DefaultListenerRegistry;
+import outbox.EventEnvelope;
+import outbox.OutboxClient;
+import outbox.spi.MetricsExporter;
+import outbox.dispatch.DefaultInFlightTracker;
+import outbox.dispatch.OutboxDispatcher;
+import outbox.dispatch.ExponentialBackoffRetryPolicy;
+import outbox.poller.OutboxPoller;
+import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
 import outbox.jdbc.JdbcOutboxRepository;
 import outbox.jdbc.JdbcTransactionManager;
@@ -89,7 +88,7 @@ OutboxDispatcher dispatcher = new OutboxDispatcher(
     4,  // workerCount
     1000,
     1000,
-    OutboxMetrics.NOOP
+    MetricsExporter.NOOP
 );
 
 OutboxPoller poller = new OutboxPoller(
@@ -99,7 +98,7 @@ OutboxPoller poller = new OutboxPoller(
     Duration.ofMillis(1000),
     200,
     5000,
-    OutboxMetrics.NOOP
+    MetricsExporter.NOOP
 );
 
 poller.start();
@@ -107,7 +106,7 @@ poller.start();
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
 
 try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-  OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
+  OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
   client.publish(EventEnvelope.ofJson("UserCreated", "{\"id\":123}"));
   tx.commit();
 }
@@ -116,15 +115,14 @@ try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
 ## Full End-to-End Example (H2 In-Memory)
 
 ```java
-import outbox.core.dispatch.DefaultInFlightTracker;
-import outbox.core.client.DefaultOutboxClient;
-import outbox.core.dispatch.OutboxDispatcher;
-import outbox.core.api.EventEnvelope;
-import outbox.core.dispatch.ExponentialBackoffRetryPolicy;
-import outbox.core.api.OutboxClient;
-import outbox.core.api.OutboxMetrics;
-import outbox.core.poller.OutboxPoller;
-import outbox.core.registry.DefaultListenerRegistry;
+import outbox.EventEnvelope;
+import outbox.OutboxClient;
+import outbox.spi.MetricsExporter;
+import outbox.dispatch.DefaultInFlightTracker;
+import outbox.dispatch.OutboxDispatcher;
+import outbox.dispatch.ExponentialBackoffRetryPolicy;
+import outbox.poller.OutboxPoller;
+import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
 import outbox.jdbc.JdbcOutboxRepository;
 import outbox.jdbc.JdbcTransactionManager;
@@ -180,7 +178,7 @@ public final class OutboxExample {
         2,
         100,
         100,
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     );
 
     OutboxPoller poller = new OutboxPoller(
@@ -190,12 +188,12 @@ public final class OutboxExample {
         Duration.ofMillis(500),
         50,
         1000,
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     );
     poller.start();
 
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-      OutboxClient client = new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
+      OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
       client.publish(EventEnvelope.ofJson("UserCreated", "{\"id\":123}"));
       tx.commit();
     }
@@ -213,15 +211,15 @@ public final class OutboxExample {
 import outbox.spring.SpringTxContext;
 
 SpringTxContext txContext = new SpringTxContext(dataSource);
-// Use DefaultOutboxClient with this TxContext
+// Use OutboxClient with this TxContext
 ```
 
 ## Type-safe Event + Aggregate Types (Optional)
 
 ```java
-import outbox.core.api.AggregateType;
-import outbox.core.api.EventEnvelope;
-import outbox.core.api.EventType;
+import outbox.AggregateType;
+import outbox.EventEnvelope;
+import outbox.EventType;
 
 enum UserEvents implements EventType {
   USER_CREATED;

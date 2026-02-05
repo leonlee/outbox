@@ -27,10 +27,57 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 - **outbox-demo**: Simple runnable demo with H2 (no Spring).
 - **outbox-spring-demo**: Spring Boot demo with REST API (standalone).
 
+### Package Structure (JDBI-inspired)
+
+```
+outbox-core/src/main/java/
+└── outbox/
+    │  # Main API (root package)
+    ├── OutboxClient.java
+    ├── EventEnvelope.java
+    ├── EventType.java (interface)
+    ├── AggregateType.java (interface)
+    ├── StringEventType.java
+    ├── StringAggregateType.java
+    ├── OutboxConfig.java
+    ├── EventListener.java (interface)
+    │
+    │  # SPI - Extension Point Interfaces
+    ├── spi/
+    │   ├── TxContext.java
+    │   ├── ConnectionProvider.java
+    │   ├── EventStore.java
+    │   └── MetricsExporter.java (contains Noop inner class)
+    │
+    │  # Model - Domain objects
+    ├── model/
+    │   ├── OutboxEvent.java
+    │   └── EventStatus.java
+    │
+    │  # Feature Packages
+    ├── dispatch/
+    │   ├── OutboxDispatcher.java
+    │   ├── RetryPolicy.java (interface)
+    │   ├── ExponentialBackoffRetryPolicy.java
+    │   ├── InFlightTracker.java (interface)
+    │   ├── DefaultInFlightTracker.java
+    │   └── QueuedEvent.java
+    │
+    ├── poller/
+    │   └── OutboxPoller.java
+    │
+    ├── registry/
+    │   ├── ListenerRegistry.java (interface)
+    │   └── DefaultListenerRegistry.java
+    │
+    └── util/
+        └── JsonCodec.java
+```
+
 ### Key Abstractions
 
 - **TxContext**: Abstracts transaction lifecycle (`isTransactionActive()`, `currentConnection()`, `afterCommit()`, `afterRollback()`). Implementations: `ThreadLocalTxContext` (JDBC), `SpringTxContext` (Spring).
-- **OutboxRepository**: Persistence contract (`insertNew`, `markDone`, `markRetry`, `markDead`, `pollPending`). Implemented by `JdbcOutboxRepository`.
+- **EventStore**: Persistence contract (`insertNew`, `markDone`, `markRetry`, `markDead`, `pollPending`). Implemented by `JdbcOutboxRepository`.
 - **OutboxDispatcher**: Dual-queue event processor with hot queue (afterCommit callbacks) and cold queue (poller fallback). Uses `InFlightTracker` for deduplication and `RetryPolicy` for exponential backoff.
 - **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails.
 - **ListenerRegistry**: Maps event types to `EventListener` instances. Supports wildcard "*" registration for audit/logging listeners.
@@ -45,7 +92,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 ## Coding Style
 
 - 2-space indentation, braces on same line
-- Package names: `outbox.<module>` (e.g., `outbox.core.dispatch`)
+- Package names: `outbox.<feature>` (e.g., `outbox.dispatch`, `outbox.spi`)
 - Classes: `UpperCamelCase`, methods: `lowerCamelCase`, constants: `UPPER_SNAKE_CASE`
 - No formatter configured; match existing style
 
@@ -53,7 +100,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 
 - JUnit Jupiter with `*Test` suffix (integration tests use `*IntegrationTest`)
 - H2 in-memory database for tests
-- Tests in `outbox-jdbc/src/test` and `outbox-spring-adapter/src/test`
+- Tests in `outbox-core/src/test`, `outbox-jdbc/src/test`, and `outbox-spring-adapter/src/test`
 
 ## Documentation
 

@@ -1,15 +1,14 @@
 package outbox.demo.spring;
 
-import outbox.core.api.OutboxClient;
-import outbox.core.api.OutboxMetrics;
-import outbox.core.client.DefaultOutboxClient;
-import outbox.core.dispatch.DefaultInFlightTracker;
-import outbox.core.dispatch.OutboxDispatcher;
-import outbox.core.dispatch.ExponentialBackoffRetryPolicy;
-import outbox.core.poller.OutboxPoller;
-import outbox.core.registry.DefaultListenerRegistry;
-import outbox.core.registry.ListenerRegistry;
-import outbox.core.tx.TxContext;
+import outbox.OutboxClient;
+import outbox.spi.MetricsExporter;
+import outbox.spi.TxContext;
+import outbox.dispatch.DefaultInFlightTracker;
+import outbox.dispatch.OutboxDispatcher;
+import outbox.dispatch.ExponentialBackoffRetryPolicy;
+import outbox.poller.OutboxPoller;
+import outbox.registry.DefaultListenerRegistry;
+import outbox.registry.ListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
 import outbox.jdbc.JdbcOutboxRepository;
 import outbox.spring.SpringTxContext;
@@ -59,8 +58,8 @@ public class OutboxConfiguration {
         });
   }
 
-  @Bean
-  public OutboxOutboxDispatcher dispatcher(
+  @Bean(destroyMethod = "close")
+  public OutboxDispatcher dispatcher(
       DataSourceConnectionProvider connectionProvider,
       JdbcOutboxRepository repository,
       ListenerRegistry listenerRegistry
@@ -75,7 +74,7 @@ public class OutboxConfiguration {
         2,    // workerCount
         1000, // hotQueueCapacity
         1000, // coldQueueCapacity
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     );
   }
 
@@ -92,7 +91,7 @@ public class OutboxConfiguration {
         Duration.ofMillis(500),
         100,
         5000,
-        OutboxMetrics.NOOP
+        MetricsExporter.NOOP
     );
     poller.start();
     log.info("OutboxPoller started");
@@ -105,6 +104,6 @@ public class OutboxConfiguration {
       JdbcOutboxRepository repository,
       OutboxDispatcher dispatcher
   ) {
-    return new DefaultOutboxClient(txContext, repository, dispatcher, OutboxMetrics.NOOP);
+    return new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
   }
 }

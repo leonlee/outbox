@@ -1,6 +1,6 @@
 package outbox.jdbc;
 
-import outbox.core.tx.TxContext;
+import outbox.spi.TxContext;
 
 import java.sql.Connection;
 import java.util.ArrayList;

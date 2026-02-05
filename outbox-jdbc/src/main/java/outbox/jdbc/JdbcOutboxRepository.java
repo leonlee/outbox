@@ -1,10 +1,10 @@
 package outbox.jdbc;
 
-import outbox.core.api.EventEnvelope;
-import outbox.core.util.JsonCodec;
-import outbox.core.repo.OutboxRepository;
-import outbox.core.repo.OutboxRow;
-import outbox.core.api.OutboxStatus;
+import outbox.EventEnvelope;
+import outbox.model.EventStatus;
+import outbox.model.OutboxEvent;
+import outbox.spi.EventStore;
+import outbox.util.JsonCodec;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -16,7 +16,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
-public final class JdbcOutboxRepository implements OutboxRepository {
+public final class JdbcOutboxRepository implements EventStore {
   private static final int MAX_ERROR_LENGTH = 4000;
 
   private static String truncateError(String error) {
@@ -40,7 +40,7 @@ public final class JdbcOutboxRepository implements OutboxRepository {
       ps.setString(5, event.tenantId());
       ps.setString(6, event.payloadJson());
       ps.setString(7, JsonCodec.toJson(event.headers()));
-      ps.setInt(8, OutboxStatus.NEW.code());
+      ps.setInt(8, EventStatus.NEW.code());
       ps.setInt(9, 0);
       Timestamp now = Timestamp.from(event.occurredAt());
       ps.setTimestamp(10, now);
@@ -90,12 +90,12 @@ public final class JdbcOutboxRepository implements OutboxRepository {
   }
 
   @Override
-  public List<OutboxRow> pollPending(Connection conn, Instant now, Duration skipRecent, int limit) {
+  public List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit) {
     String sql = "SELECT event_id, event_type, aggregate_type, aggregate_id, tenant_id, payload, headers, attempts, created_at " +
         "FROM outbox_event WHERE status IN (0,2) AND available_at <= ? AND created_at <= ? " +
         "ORDER BY created_at LIMIT ?";
     Instant recentCutoff = skipRecent == null ? now : now.minus(skipRecent);
-    List<OutboxRow> results = new ArrayList<>();
+    List<OutboxEvent> results = new ArrayList<>();
 
     try (PreparedStatement ps = conn.prepareStatement(sql)) {
       ps.setTimestamp(1, Timestamp.from(now));
@@ -103,7 +103,7 @@ public final class JdbcOutboxRepository implements OutboxRepository {
       ps.setInt(3, limit);
       try (ResultSet rs = ps.executeQuery()) {
         while (rs.next()) {
-          results.add(new OutboxRow(
+          results.add(new OutboxEvent(
               rs.getString("event_id"),
               rs.getString("event_type"),
               rs.getString("aggregate_type"),

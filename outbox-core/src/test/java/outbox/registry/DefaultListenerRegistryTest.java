@@ -110,4 +110,22 @@ class DefaultListenerRegistryTest {
     assertEquals(2, registry.listenersFor("B").size());
     assertEquals(1, registry.listenersFor("C").size());
   }
+
+  @Test
+  void preservesRegistrationOrderAcrossWildcard() throws Exception {
+    DefaultListenerRegistry registry = new DefaultListenerRegistry();
+    StringBuilder order = new StringBuilder();
+
+    registry.registerAll(event -> order.append("A"));
+    registry.register("UserCreated", event -> order.append("B"));
+    registry.registerAll(event -> order.append("C"));
+    registry.register("UserCreated", event -> order.append("D"));
+
+    List<EventListener> listeners = registry.listenersFor("UserCreated");
+    for (EventListener listener : listeners) {
+      listener.onEvent(null);
+    }
+
+    assertEquals("ABCD", order.toString());
+  }
 }

@@ -6,9 +6,8 @@ import outbox.EventType;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.Objects;
 
 /**
  * Thread-safe registry for event listeners.
@@ -38,7 +37,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public final class DefaultListenerRegistry implements ListenerRegistry {
   public static final String ALL_EVENTS = "*";
 
-  private final Map<String, CopyOnWriteArrayList<EventListener>> listeners = new ConcurrentHashMap<>();
+  private final CopyOnWriteArrayList<Registration> registrations = new CopyOnWriteArrayList<>();
 
   /**
    * Registers a listener for a type-safe event type.
@@ -59,7 +58,7 @@ public final class DefaultListenerRegistry implements ListenerRegistry {
    * @return this registry for chaining
    */
   public DefaultListenerRegistry register(String eventType, EventListener listener) {
-    listeners.computeIfAbsent(eventType, ignored -> new CopyOnWriteArrayList<>()).add(listener);
+    registrations.add(new Registration(eventType, listener));
     return this;
   }
 
@@ -76,14 +75,22 @@ public final class DefaultListenerRegistry implements ListenerRegistry {
   @Override
   public List<EventListener> listenersFor(String eventType) {
     List<EventListener> result = new ArrayList<>();
-    CopyOnWriteArrayList<EventListener> specific = listeners.get(eventType);
-    if (specific != null) {
-      result.addAll(specific);
-    }
-    CopyOnWriteArrayList<EventListener> all = listeners.get(ALL_EVENTS);
-    if (all != null) {
-      result.addAll(all);
+    for (Registration registration : registrations) {
+      if (ALL_EVENTS.equals(registration.eventType)
+          || Objects.equals(registration.eventType, eventType)) {
+        result.add(registration.listener);
+      }
     }
     return Collections.unmodifiableList(result);
+  }
+
+  private static final class Registration {
+    private final String eventType;
+    private final EventListener listener;
+
+    private Registration(String eventType, EventListener listener) {
+      this.eventType = eventType;
+      this.listener = listener;
+    }
   }
 }

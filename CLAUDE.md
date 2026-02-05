@@ -13,7 +13,7 @@ mvn install -DskipTests && mvn -pl outbox-demo exec:java  # Run demo
 mvn install -DskipTests && mvn -f outbox-spring-demo/pom.xml spring-boot:run  # Run Spring Boot demo
 ```
 
-Java 11 is the baseline.
+Java 17 is the baseline.
 
 ## Architecture
 
@@ -25,7 +25,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 - **outbox-jdbc**: JDBC repository implementation and manual transaction helpers (`JdbcTransactionManager`, `ThreadLocalTxContext`).
 - **outbox-spring-adapter**: Optional `SpringTxContext` for Spring transaction integration.
 - **outbox-demo**: Simple runnable demo with H2 (no Spring).
-- **outbox-spring-demo**: Spring Boot demo with REST API (standalone, requires Java 17).
+- **outbox-spring-demo**: Spring Boot demo with REST API (standalone).
 
 ### Key Abstractions
 

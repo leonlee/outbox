@@ -20,6 +20,9 @@
     <maven.compiler.target>17</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <junit.version>5.10.2</junit.version>
+    <h2.version>2.2.224</h2.version>
+    <spring.version>6.1.6</spring.version>
+    <ulid-creator.version>5.2.3</ulid-creator.version>
   </properties>
 
   <dependencyManagement>
@@ -29,6 +32,26 @@
         <artifactId>junit-jupiter</artifactId>
         <version>${junit.version}</version>
         <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.github.f4b6a3</groupId>
+        <artifactId>ulid-creator</artifactId>
+        <version>${ulid-creator.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.h2database</groupId>
+        <artifactId>h2</artifactId>
+        <version>${h2.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.springframework</groupId>
+        <artifactId>spring-jdbc</artifactId>
+        <version>${spring.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.springframework</groupId>
+        <artifactId>spring-tx</artifactId>
+        <version>${spring.version}</version>
       </dependency>
     </dependencies>
   </dependencyManagement>

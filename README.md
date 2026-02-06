@@ -61,7 +61,7 @@ import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcEventStore;
+import outbox.jdbc.JdbcEventStores;
 import outbox.jdbc.JdbcTransactionManager;
 import outbox.jdbc.ThreadLocalTxContext;
 
@@ -70,7 +70,7 @@ import java.time.Duration;
 
 DataSource dataSource = /* your DataSource */;
 
-JdbcEventStore eventStore = new JdbcEventStore();
+var eventStore = JdbcEventStores.detect(dataSource);
 DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
 ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 
@@ -116,7 +116,7 @@ import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcEventStore;
+import outbox.jdbc.H2EventStore;
 import outbox.jdbc.JdbcTransactionManager;
 import outbox.jdbc.ThreadLocalTxContext;
 
@@ -155,7 +155,7 @@ public final class OutboxExample {
       );
     }
 
-    JdbcEventStore eventStore = new JdbcEventStore();
+    var eventStore = new H2EventStore();
     DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
     ThreadLocalTxContext txContext = new ThreadLocalTxContext();
     JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);

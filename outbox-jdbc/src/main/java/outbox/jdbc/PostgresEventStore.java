@@ -1,17 +1,28 @@
-package outbox.jdbc.dialect;
+package outbox.jdbc;
 
-import outbox.jdbc.JdbcTemplate;
 import outbox.model.OutboxEvent;
 
 import java.sql.Connection;
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
 /**
- * PostgreSQL dialect.
+ * PostgreSQL event store.
+ *
+ * <p>Uses {@code FOR UPDATE SKIP LOCKED} with {@code RETURNING} for
+ * single-round-trip claim.
  */
-public final class PostgresDialect extends AbstractDialect {
+public final class PostgresEventStore extends AbstractJdbcEventStore {
+
+  public PostgresEventStore() {
+    super();
+  }
+
+  public PostgresEventStore(String tableName) {
+    super(tableName);
+  }
 
   @Override
   public String name() {
@@ -24,12 +35,13 @@ public final class PostgresDialect extends AbstractDialect {
   }
 
   @Override
-  public List<OutboxEvent> claimPending(Connection conn, String table, String ownerId,
-      Instant now, Instant lockExpiry, Instant recentCutoff, int limit) {
+  public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
+      Instant lockExpiry, Duration skipRecent, int limit) {
+    Instant recentCutoff = recentCutoff(now, skipRecent);
     // Single round-trip: FOR UPDATE SKIP LOCKED + RETURNING
-    String sql = "UPDATE " + table + " SET locked_by=?, locked_at=? " +
+    String sql = "UPDATE " + tableName() + " SET locked_by=?, locked_at=? " +
         "WHERE event_id IN (" +
-        "SELECT event_id FROM " + table +
+        "SELECT event_id FROM " + tableName() +
         " WHERE status IN (0,2) AND available_at <= ?" +
         " AND (locked_by IS NULL OR locked_at < ?)" +
         " AND created_at <= ? ORDER BY created_at LIMIT ?" +

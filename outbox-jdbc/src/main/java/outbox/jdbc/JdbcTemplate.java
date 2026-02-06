@@ -9,7 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Lightweight JDBC helper to reduce boilerplate in Dialect implementations.
+ * Lightweight JDBC helper to reduce boilerplate in event store implementations.
  */
 public final class JdbcTemplate {
 

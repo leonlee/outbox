@@ -18,14 +18,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-import outbox.jdbc.dialect.Dialects;
-
 import static org.junit.jupiter.api.Assertions.*;
 
 class JdbcEventStoreTest {
 
   private JdbcDataSource dataSource;
-  private JdbcEventStore eventStore;
+  private H2EventStore eventStore;
 
   @BeforeEach
   void setUp() throws SQLException {
@@ -54,7 +52,7 @@ class JdbcEventStoreTest {
       );
     }
 
-    eventStore = new JdbcEventStore(Dialects.get("h2"));
+    eventStore = new H2EventStore();
   }
 
   @Test

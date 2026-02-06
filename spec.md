@@ -117,10 +117,14 @@ Packages:
 
 ### 3.2 outbox-jdbc
 
-JDBC event store implementation and manual transaction helpers.
+JDBC event store hierarchy and manual transaction helpers.
 
 Classes:
-- `JdbcEventStore` - Implements EventStore with PreparedStatement
+- `AbstractJdbcEventStore` - Base event store with shared SQL, row mapper, and H2-compatible default claim
+- `H2EventStore` - H2 (inherits default subquery-based claim)
+- `MySqlEventStore` - MySQL/TiDB (UPDATE...ORDER BY...LIMIT claim)
+- `PostgresEventStore` - PostgreSQL (FOR UPDATE SKIP LOCKED + RETURNING claim)
+- `JdbcEventStores` - ServiceLoader registry with `detect(DataSource)` auto-detection
 - `ThreadLocalTxContext` - ThreadLocal-based TxContext for manual transactions
 - `JdbcTransactionManager` - Helper for manual JDBC transactions
 - `DataSourceConnectionProvider` - ConnectionProvider from DataSource
@@ -629,7 +633,7 @@ When `ownerId` is provided (9-arg constructor), the poller uses claim-based lock
 - **Claim**: Sets `locked_by` and `locked_at` on pending events atomically
 - **Expiry**: Locks older than `lockTimeout` are considered expired and can be reclaimed
 - **Release**: `markDone`/`markRetry`/`markDead` clear `locked_by` and `locked_at`
-- **Dialect-specific**: PostgreSQL uses `FOR UPDATE SKIP LOCKED` + `RETURNING`; MySQL uses `UPDATE...ORDER BY...LIMIT`; H2 uses subquery-based two-phase claim
+- **Database-specific**: PostgreSQL uses `FOR UPDATE SKIP LOCKED` + `RETURNING`; MySQL uses `UPDATE...ORDER BY...LIMIT`; H2 uses subquery-based two-phase claim
 
 ---
 
@@ -899,7 +903,7 @@ public interface MetricsExporter {
 ```java
 DataSource dataSource = /* your DataSource */;
 
-JdbcEventStore eventStore = new JdbcEventStore();
+var eventStore = JdbcEventStores.detect(dataSource);
 DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
 ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 

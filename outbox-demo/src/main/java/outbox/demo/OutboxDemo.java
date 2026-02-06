@@ -9,10 +9,9 @@ import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcEventStore;
+import outbox.jdbc.JdbcEventStores;
 import outbox.jdbc.JdbcTransactionManager;
 import outbox.jdbc.ThreadLocalTxContext;
-import outbox.jdbc.dialect.Dialects;
 
 import org.h2.jdbcx.JdbcDataSource;
 
@@ -40,7 +39,7 @@ public final class OutboxDemo {
     createSchema(dataSource);
 
     // 2. Create core components
-    JdbcEventStore eventStore = new JdbcEventStore(Dialects.detect(dataSource));
+    var eventStore = JdbcEventStores.detect(dataSource);
     DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
     ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 

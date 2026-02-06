@@ -22,6 +22,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
+import outbox.jdbc.dialect.Dialects;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -36,7 +38,7 @@ class OutboxEdgeCaseTest {
     JdbcDataSource ds = new JdbcDataSource();
     ds.setURL("jdbc:h2:mem:outbox_edge_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
     this.dataSource = ds;
-    this.repository = new JdbcOutboxRepository();
+    this.repository = new JdbcOutboxRepository(Dialects.get("h2"));
     this.connectionProvider = new DataSourceConnectionProvider(ds);
 
     try (Connection conn = ds.getConnection()) {

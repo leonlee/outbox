@@ -24,14 +24,12 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import outbox.jdbc.dialect.Dialects;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class OutboxPollerTest {
   private DataSource dataSource;
-  private JdbcEventStore eventStore;
+  private H2EventStore eventStore;
   private DataSourceConnectionProvider connectionProvider;
 
   @BeforeEach
@@ -39,7 +37,7 @@ class OutboxPollerTest {
     JdbcDataSource ds = new JdbcDataSource();
     ds.setURL("jdbc:h2:mem:outbox_poller_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
     this.dataSource = ds;
-    this.eventStore = new JdbcEventStore(Dialects.get("h2"));
+    this.eventStore = new H2EventStore();
     this.connectionProvider = new DataSourceConnectionProvider(ds);
 
     try (Connection conn = ds.getConnection()) {

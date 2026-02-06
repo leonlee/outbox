@@ -25,15 +25,13 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import outbox.jdbc.dialect.Dialects;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class OutboxAcceptanceTest {
   private DataSource dataSource;
-  private JdbcEventStore eventStore;
+  private H2EventStore eventStore;
   private DataSourceConnectionProvider connectionProvider;
   private ThreadLocalTxContext txContext;
   private JdbcTransactionManager txManager;
@@ -43,7 +41,7 @@ class OutboxAcceptanceTest {
     JdbcDataSource ds = new JdbcDataSource();
     ds.setURL("jdbc:h2:mem:outbox_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
     this.dataSource = ds;
-    this.eventStore = new JdbcEventStore(Dialects.get("h2"));
+    this.eventStore = new H2EventStore();
     this.connectionProvider = new DataSourceConnectionProvider(ds);
     this.txContext = new ThreadLocalTxContext();
     this.txManager = new JdbcTransactionManager(connectionProvider, txContext);

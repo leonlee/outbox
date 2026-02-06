@@ -367,14 +367,13 @@ EventEnvelope.builder(eventType)
 
 ```java
 public final class OutboxClient {
-  public OutboxClient(
-      TxContext txContext,
-      EventStore eventStore,
-      OutboxDispatcher dispatcher,
-      MetricsExporter metrics
-  );
+  public OutboxClient(TxContext txContext, EventStore eventStore, OutboxDispatcher dispatcher);
+  public OutboxClient(TxContext txContext, EventStore eventStore, OutboxDispatcher dispatcher, MetricsExporter metrics);
 
   public String publish(EventEnvelope event);
+  public String publish(String eventType, String payloadJson);
+  public String publish(EventType eventType, String payloadJson);
+  public List<String> publishAll(List<EventEnvelope> events);
 }
 ```
 
@@ -927,9 +926,10 @@ poller.start();
 
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
 
+OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher);
+
 try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-  OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
-  client.publish(EventEnvelope.ofJson("UserCreated", "{\"id\":123}"));
+  client.publish("UserCreated", "{\"id\":123}");
   tx.commit();
 }
 ```

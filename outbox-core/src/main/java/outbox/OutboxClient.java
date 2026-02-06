@@ -7,6 +7,8 @@ import outbox.spi.MetricsExporter;
 import outbox.spi.TxContext;
 
 import java.sql.Connection;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -18,6 +20,10 @@ public final class OutboxClient {
   private final EventStore eventStore;
   private final OutboxDispatcher dispatcher;
   private final MetricsExporter metrics;
+
+  public OutboxClient(TxContext txContext, EventStore eventStore, OutboxDispatcher dispatcher) {
+    this(txContext, eventStore, dispatcher, null);
+  }
 
   public OutboxClient(
       TxContext txContext,
@@ -56,5 +62,25 @@ public final class OutboxClient {
     });
 
     return event.eventId();
+  }
+
+  public String publish(String eventType, String payloadJson) {
+    return publish(EventEnvelope.ofJson(eventType, payloadJson));
+  }
+
+  public String publish(EventType eventType, String payloadJson) {
+    return publish(EventEnvelope.ofJson(eventType, payloadJson));
+  }
+
+  public List<String> publishAll(List<EventEnvelope> events) {
+    if (!txContext.isTransactionActive()) {
+      throw new IllegalStateException("No active transaction");
+    }
+    Objects.requireNonNull(events, "events");
+    List<String> ids = new ArrayList<>(events.size());
+    for (EventEnvelope event : events) {
+      ids.add(publish(event));
+    }
+    return ids;
   }
 }

@@ -61,7 +61,7 @@ class OutboxAcceptanceTest {
   @Test
   void atomicityRollbackDoesNotPersist() throws Exception {
     OutboxDispatcher dispatcher = dispatcher(0, 10, 10);
-    OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
+    OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher);
 
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
       client.publish(EventEnvelope.ofJson("TestEvent", "{}"));
@@ -79,7 +79,7 @@ class OutboxAcceptanceTest {
         .register("UserCreated", event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers);
-    OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
+    OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher);
 
     String eventId;
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
@@ -98,7 +98,7 @@ class OutboxAcceptanceTest {
     OutboxDispatcher noWorkers = dispatcher(0, 1, 1);
     noWorkers.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("Preload", "{}"), QueuedEvent.Source.HOT, 0));
 
-    OutboxClient client = new OutboxClient(txContext, eventStore, noWorkers, MetricsExporter.NOOP);
+    OutboxClient client = new OutboxClient(txContext, eventStore, noWorkers);
 
     String eventId;
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
@@ -141,7 +141,7 @@ class OutboxAcceptanceTest {
         .register("Failing", event -> { throw new RuntimeException("boom"); });
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers, 3);
-    OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
+    OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher);
 
     String eventId;
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {

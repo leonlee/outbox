@@ -99,6 +99,6 @@ public class OutboxConfiguration {
       AbstractJdbcEventStore eventStore,
       OutboxDispatcher dispatcher
   ) {
-    return new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
+    return new OutboxClient(txContext, eventStore, dispatcher);
   }
 }

@@ -5,7 +5,6 @@ import outbox.registry.DefaultListenerRegistry;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.EventEnvelope;
 import outbox.dispatch.ExponentialBackoffRetryPolicy;
-import outbox.spi.MetricsExporter;
 import outbox.model.EventStatus;
 import outbox.jdbc.DataSourceConnectionProvider;
 import outbox.jdbc.H2EventStore;
@@ -67,7 +66,7 @@ class SpringAdapterIntegrationTest {
         .register("UserCreated", event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
-    OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
+    OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher);
 
     TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
     String eventId;
@@ -92,7 +91,7 @@ class SpringAdapterIntegrationTest {
         .register("UserCreated", event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
-    OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
+    OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher);
 
     TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
     String eventId;

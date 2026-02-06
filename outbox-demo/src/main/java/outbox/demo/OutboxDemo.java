@@ -90,13 +90,12 @@ public final class OutboxDemo {
 
     // 5. Create transaction manager and client
     JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
+    OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher);
 
     System.out.println("=== Outbox Demo ===\n");
 
     // 6. Publish events within transactions
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-      OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
-
       // Simple event
       String eventId1 = client.publish(EventEnvelope.ofJson("UserCreated",
           "{\"userId\": 1, \"name\": \"Alice\"}"));
@@ -118,8 +117,6 @@ public final class OutboxDemo {
 
     // 7. Publish another event in separate transaction
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-      OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
-
       String eventId = client.publish(EventEnvelope.builder("UserCreated")
           .aggregateType("User")
           .aggregateId("user-2")

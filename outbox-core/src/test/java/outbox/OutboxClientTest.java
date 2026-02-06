@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class OutboxClientTest {
@@ -33,7 +34,7 @@ class OutboxClientTest {
     RecordingEventStore store = new RecordingEventStore();
     OutboxDispatcher dispatcher = newDispatcher();
 
-    OutboxClient client = new OutboxClient(txContext, store, dispatcher, MetricsExporter.NOOP);
+    OutboxClient client = new OutboxClient(txContext, store, dispatcher);
 
     assertThrows(IllegalStateException.class, () ->
         client.publish(EventEnvelope.ofJson("Test", "{}")));
@@ -57,6 +58,86 @@ class OutboxClientTest {
     assertDoesNotThrow(txContext::runAfterCommit);
     assertEquals(1, store.insertCount.get());
     assertEquals(1, metrics.hotDropped.get());
+
+    dispatcher.close();
+  }
+
+  @Test
+  void threeArgConstructorDefaultsMetricsToNoop() {
+    StubTxContext txContext = new StubTxContext(true);
+    RecordingEventStore store = new RecordingEventStore();
+    OutboxDispatcher dispatcher = newDispatcher();
+
+    OutboxClient client = new OutboxClient(txContext, store, dispatcher);
+
+    String eventId = client.publish(EventEnvelope.ofJson("Test", "{}"));
+    assertNotNull(eventId);
+    assertEquals(1, store.insertCount.get());
+
+    dispatcher.close();
+  }
+
+  @Test
+  void publishWithStringEventTypeAndPayload() {
+    StubTxContext txContext = new StubTxContext(true);
+    RecordingEventStore store = new RecordingEventStore();
+    OutboxDispatcher dispatcher = newDispatcher();
+
+    OutboxClient client = new OutboxClient(txContext, store, dispatcher);
+
+    String eventId = client.publish("UserCreated", "{\"id\":1}");
+    assertNotNull(eventId);
+    assertEquals(1, store.insertCount.get());
+
+    dispatcher.close();
+  }
+
+  @Test
+  void publishWithTypedEventTypeAndPayload() {
+    StubTxContext txContext = new StubTxContext(true);
+    RecordingEventStore store = new RecordingEventStore();
+    OutboxDispatcher dispatcher = newDispatcher();
+
+    OutboxClient client = new OutboxClient(txContext, store, dispatcher);
+
+    EventType eventType = StringEventType.of("OrderPlaced");
+    String eventId = client.publish(eventType, "{\"orderId\":1}");
+    assertNotNull(eventId);
+    assertEquals(1, store.insertCount.get());
+
+    dispatcher.close();
+  }
+
+  @Test
+  void publishAllInsertsMultipleEvents() {
+    StubTxContext txContext = new StubTxContext(true);
+    RecordingEventStore store = new RecordingEventStore();
+    OutboxDispatcher dispatcher = newDispatcher();
+
+    OutboxClient client = new OutboxClient(txContext, store, dispatcher);
+
+    List<EventEnvelope> events = List.of(
+        EventEnvelope.ofJson("EventA", "{}"),
+        EventEnvelope.ofJson("EventB", "{}"),
+        EventEnvelope.ofJson("EventC", "{}")
+    );
+    List<String> ids = client.publishAll(events);
+    assertEquals(3, ids.size());
+    assertEquals(3, store.insertCount.get());
+
+    dispatcher.close();
+  }
+
+  @Test
+  void publishAllThrowsWhenNoActiveTransaction() {
+    StubTxContext txContext = new StubTxContext(false);
+    RecordingEventStore store = new RecordingEventStore();
+    OutboxDispatcher dispatcher = newDispatcher();
+
+    OutboxClient client = new OutboxClient(txContext, store, dispatcher);
+
+    assertThrows(IllegalStateException.class, () ->
+        client.publishAll(List.of(EventEnvelope.ofJson("Test", "{}"))));
 
     dispatcher.close();
   }

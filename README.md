@@ -98,10 +98,10 @@ OutboxPoller poller = new OutboxPoller(
 poller.start();
 
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
+OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher);
 
 try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-  OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
-  client.publish(EventEnvelope.ofJson("UserCreated", "{\"id\":123}"));
+  client.publish("UserCreated", "{\"id\":123}");
   tx.commit();
 }
 ```
@@ -182,9 +182,10 @@ public final class OutboxExample {
     );
     poller.start();
 
+    OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher);
+
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-      OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
-      client.publish(EventEnvelope.ofJson("UserCreated", "{\"id\":123}"));
+      client.publish("UserCreated", "{\"id\":123}");
       tx.commit();
     }
 

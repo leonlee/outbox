@@ -18,18 +18,18 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-public final class JdbcOutboxRepository implements EventStore {
+public final class JdbcEventStore implements EventStore {
   private static final int MAX_ERROR_LENGTH = 4000;
   private static final String DEFAULT_TABLE = "outbox_event";
 
   private final Dialect dialect;
   private final String tableName;
 
-  public JdbcOutboxRepository(Dialect dialect) {
+  public JdbcEventStore(Dialect dialect) {
     this(dialect, DEFAULT_TABLE);
   }
 
-  public JdbcOutboxRepository(Dialect dialect, String tableName) {
+  public JdbcEventStore(Dialect dialect, String tableName) {
     this.dialect = Objects.requireNonNull(dialect, "dialect");
     this.tableName = Objects.requireNonNull(tableName, "tableName");
   }
@@ -60,7 +60,7 @@ public final class JdbcOutboxRepository implements EventStore {
       ps.setTimestamp(11, now);
       ps.executeUpdate();
     } catch (SQLException e) {
-      throw new OutboxRepositoryException("Failed to insert outbox row", e);
+      throw new EventStoreException("Failed to insert outbox row", e);
     }
   }
 
@@ -72,7 +72,7 @@ public final class JdbcOutboxRepository implements EventStore {
       ps.setString(2, eventId);
       return ps.executeUpdate();
     } catch (SQLException e) {
-      throw new OutboxRepositoryException("Failed to mark DONE", e);
+      throw new EventStoreException("Failed to mark DONE", e);
     }
   }
 
@@ -85,7 +85,7 @@ public final class JdbcOutboxRepository implements EventStore {
       ps.setString(3, eventId);
       return ps.executeUpdate();
     } catch (SQLException e) {
-      throw new OutboxRepositoryException("Failed to mark RETRY", e);
+      throw new EventStoreException("Failed to mark RETRY", e);
     }
   }
 
@@ -97,8 +97,15 @@ public final class JdbcOutboxRepository implements EventStore {
       ps.setString(2, eventId);
       return ps.executeUpdate();
     } catch (SQLException e) {
-      throw new OutboxRepositoryException("Failed to mark DEAD", e);
+      throw new EventStoreException("Failed to mark DEAD", e);
     }
+  }
+
+  @Override
+  public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
+      Instant lockExpiry, Duration skipRecent, int limit) {
+    Instant recentCutoff = skipRecent == null ? now : now.minus(skipRecent);
+    return dialect.claimPending(conn, tableName, ownerId, now, lockExpiry, recentCutoff, limit);
   }
 
   @Override
@@ -127,7 +134,7 @@ public final class JdbcOutboxRepository implements EventStore {
         }
       }
     } catch (SQLException e) {
-      throw new OutboxRepositoryException("Failed to poll pending outbox rows", e);
+      throw new EventStoreException("Failed to poll pending outbox rows", e);
     }
 
     return results;

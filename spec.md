@@ -12,7 +12,7 @@ Minimal, Spring-free transactional outbox framework with JDBC persistence, hot-p
 6. [Event Envelope](#6-event-envelope)
 7. [Type-Safe Event and Aggregate Types](#7-type-safe-event-and-aggregate-types)
 8. [Public API](#8-public-api)
-9. [JDBC Repository](#9-jdbc-repository)
+9. [JDBC Event Store](#9-jdbc-event-store)
 10. [OutboxDispatcher](#10-dispatcher)
 11. [OutboxPoller](#11-poller)
 12. [Registries](#12-registries)
@@ -117,10 +117,10 @@ Packages:
 
 ### 3.2 outbox-jdbc
 
-JDBC repository implementation and manual transaction helpers.
+JDBC event store implementation and manual transaction helpers.
 
 Classes:
-- `JdbcOutboxRepository` - Implements EventStore with PreparedStatement
+- `JdbcEventStore` - Implements EventStore with PreparedStatement
 - `ThreadLocalTxContext` - ThreadLocal-based TxContext for manual transactions
 - `JdbcTransactionManager` - Helper for manual JDBC transactions
 - `DataSourceConnectionProvider` - ConnectionProvider from DataSource
@@ -197,7 +197,9 @@ CREATE TABLE outbox_event (
   available_at DATETIME(6) NOT NULL,
   created_at DATETIME(6) NOT NULL,
   done_at DATETIME(6),
-  last_error TEXT
+  last_error TEXT,
+  locked_by VARCHAR(128),
+  locked_at DATETIME(6)
 );
 
 CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_at);
@@ -376,7 +378,7 @@ Semantics:
 
 ---
 
-## 9. JDBC Repository
+## 9. JDBC Event Store
 
 ### 9.1 Interface
 
@@ -387,6 +389,11 @@ public interface EventStore {
   int markRetry(Connection conn, String eventId, Instant nextAt, String error);
   int markDead(Connection conn, String eventId, String error);
   List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit);
+
+  // Claim-based locking (default falls back to pollPending)
+  default List<OutboxEvent> claimPending(
+      Connection conn, String ownerId, Instant now,
+      Instant lockExpiry, Duration skipRecent, int limit);
 }
 ```
 
@@ -402,21 +409,22 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
 **Mark Done (idempotent):**
 ```sql
 UPDATE outbox_event
-SET status = 1, done_at = ?
+SET status = 1, done_at = ?, locked_by = NULL, locked_at = NULL
 WHERE event_id = ? AND status <> 1
 ```
 
 **Mark Retry:**
 ```sql
 UPDATE outbox_event
-SET status = 2, attempts = attempts + 1, available_at = ?, last_error = ?
+SET status = 2, attempts = attempts + 1, available_at = ?, last_error = ?,
+    locked_by = NULL, locked_at = NULL
 WHERE event_id = ? AND status <> 1
 ```
 
 **Mark Dead:**
 ```sql
 UPDATE outbox_event
-SET status = 3, last_error = ?
+SET status = 3, last_error = ?, locked_by = NULL, locked_at = NULL
 WHERE event_id = ? AND status <> 1
 ```
 
@@ -534,6 +542,7 @@ new DefaultInFlightTracker(long ttlMs) // With TTL for stale entry recovery
 ### 11.1 Constructor
 
 ```java
+// 7-arg: no locking (single-instance mode)
 public OutboxPoller(
     ConnectionProvider connectionProvider,
     EventStore eventStore,
@@ -542,6 +551,19 @@ public OutboxPoller(
     int batchSize,
     long intervalMs,
     MetricsExporter metrics
+)
+
+// 9-arg: claim-based locking (multi-instance mode)
+public OutboxPoller(
+    ConnectionProvider connectionProvider,
+    EventStore eventStore,
+    OutboxDispatcher dispatcher,
+    Duration skipRecent,
+    int batchSize,
+    long intervalMs,
+    MetricsExporter metrics,
+    String ownerId,         // null to auto-generate
+    Duration lockTimeout    // null defaults to 5 minutes
 )
 ```
 
@@ -562,6 +584,15 @@ void close()    // Stop polling
 - Converts OutboxEvent to EventEnvelope
 - Enqueues to cold queue (subject to backpressure)
 - On decode failure: marks event DEAD
+
+### 11.4 Event Locking
+
+When `ownerId` is provided (9-arg constructor), the poller uses claim-based locking:
+
+- **Claim**: Sets `locked_by` and `locked_at` on pending events atomically
+- **Expiry**: Locks older than `lockTimeout` are considered expired and can be reclaimed
+- **Release**: `markDone`/`markRetry`/`markDead` clear `locked_by` and `locked_at`
+- **Dialect-specific**: PostgreSQL uses `FOR UPDATE SKIP LOCKED` + `RETURNING`; MySQL uses `UPDATE...ORDER BY...LIMIT`; H2 uses subquery-based two-phase claim
 
 ---
 
@@ -837,13 +868,13 @@ public interface MetricsExporter {
 ```java
 DataSource dataSource = /* your DataSource */;
 
-JdbcOutboxRepository repository = new JdbcOutboxRepository();
+JdbcEventStore eventStore = new JdbcEventStore();
 DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
 ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 
 OutboxDispatcher dispatcher = new OutboxDispatcher(
     connectionProvider,
-    repository,
+    eventStore,
     new DefaultListenerRegistry()
         .register("UserCreated", event -> {
           // publish to MQ, update cache, call API, etc.
@@ -858,7 +889,7 @@ OutboxDispatcher dispatcher = new OutboxDispatcher(
 );
 
 OutboxPoller poller = new OutboxPoller(
-    connectionProvider, repository, dispatcher,
+    connectionProvider, eventStore, dispatcher,
     Duration.ofMillis(1000), 200, 5000,
     MetricsExporter.NOOP
 );
@@ -867,7 +898,7 @@ poller.start();
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
 
 try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-  OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
+  OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
   client.publish(EventEnvelope.ofJson("UserCreated", "{\"id\":123}"));
   tx.commit();
 }

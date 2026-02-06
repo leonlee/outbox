@@ -9,7 +9,7 @@ import outbox.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.spi.MetricsExporter;
 import outbox.model.EventStatus;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcOutboxRepository;
+import outbox.jdbc.JdbcEventStore;
 
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.AfterEach;
@@ -36,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SpringAdapterIntegrationTest {
   private DataSource dataSource;
-  private JdbcOutboxRepository repository;
+  private JdbcEventStore eventStore;
   private DataSourceConnectionProvider connectionProvider;
   private SpringTxContext txContext;
   private DataSourceTransactionManager txManager;
@@ -46,7 +46,7 @@ class SpringAdapterIntegrationTest {
     JdbcDataSource ds = new JdbcDataSource();
     ds.setURL("jdbc:h2:mem:outbox_spring_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
     this.dataSource = ds;
-    this.repository = new JdbcOutboxRepository(Dialects.get("h2"));
+    this.eventStore = new JdbcEventStore(Dialects.get("h2"));
     this.connectionProvider = new DataSourceConnectionProvider(ds);
     this.txContext = new SpringTxContext(ds);
     this.txManager = new DataSourceTransactionManager(ds);
@@ -70,7 +70,7 @@ class SpringAdapterIntegrationTest {
         .registerAll(event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
-    OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
+    OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
 
     TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
     String eventId;
@@ -95,7 +95,7 @@ class SpringAdapterIntegrationTest {
         .registerAll(event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
-    OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
+    OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
 
     TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
     String eventId;
@@ -116,7 +116,7 @@ class SpringAdapterIntegrationTest {
   private OutboxDispatcher dispatcher(int workers, int hotCapacity, int coldCapacity, DefaultListenerRegistry listeners) {
     return new OutboxDispatcher(
         connectionProvider,
-        repository,
+        eventStore,
         listeners,
         new DefaultInFlightTracker(),
         new ExponentialBackoffRetryPolicy(10, 50),
@@ -143,7 +143,9 @@ class SpringAdapterIntegrationTest {
             "available_at TIMESTAMP NOT NULL," +
             "created_at TIMESTAMP NOT NULL," +
             "done_at TIMESTAMP," +
-            "last_error CLOB" +
+            "last_error CLOB," +
+            "locked_by VARCHAR(128)," +
+            "locked_at TIMESTAMP" +
             ")"
     );
     conn.createStatement().execute(

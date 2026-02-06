@@ -10,7 +10,7 @@ import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.registry.ListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcOutboxRepository;
+import outbox.jdbc.JdbcEventStore;
 import outbox.jdbc.dialect.Dialects;
 import outbox.spring.SpringTxContext;
 
@@ -28,8 +28,8 @@ public class OutboxConfiguration {
   private static final Logger log = LoggerFactory.getLogger(OutboxConfiguration.class);
 
   @Bean
-  public JdbcOutboxRepository outboxRepository(DataSource dataSource) {
-    return new JdbcOutboxRepository(Dialects.detect(dataSource));
+  public JdbcEventStore eventStore(DataSource dataSource) {
+    return new JdbcEventStore(Dialects.detect(dataSource));
   }
 
   @Bean
@@ -62,12 +62,12 @@ public class OutboxConfiguration {
   @Bean(destroyMethod = "close")
   public OutboxDispatcher dispatcher(
       DataSourceConnectionProvider connectionProvider,
-      JdbcOutboxRepository repository,
+      JdbcEventStore eventStore,
       ListenerRegistry listenerRegistry
   ) {
     return new OutboxDispatcher(
         connectionProvider,
-        repository,
+        eventStore,
         listenerRegistry,
         new DefaultInFlightTracker(30_000),
         new ExponentialBackoffRetryPolicy(200, 60_000),
@@ -82,12 +82,12 @@ public class OutboxConfiguration {
   @Bean(destroyMethod = "close")
   public OutboxPoller outboxPoller(
       DataSourceConnectionProvider connectionProvider,
-      JdbcOutboxRepository repository,
+      JdbcEventStore eventStore,
       OutboxDispatcher dispatcher
   ) {
     OutboxPoller poller = new OutboxPoller(
         connectionProvider,
-        repository,
+        eventStore,
         dispatcher,
         Duration.ofMillis(500),
         100,
@@ -102,9 +102,9 @@ public class OutboxConfiguration {
   @Bean
   public OutboxClient outboxClient(
       TxContext txContext,
-      JdbcOutboxRepository repository,
+      JdbcEventStore eventStore,
       OutboxDispatcher dispatcher
   ) {
-    return new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
+    return new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
   }
 }

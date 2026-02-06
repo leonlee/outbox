@@ -5,7 +5,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 ## Modules
 
 - `outbox-core`: core APIs, dispatcher, poller, and registries.
-- `outbox-jdbc`: JDBC repository and transaction helpers.
+- `outbox-jdbc`: JDBC event store and transaction helpers.
 - `outbox-spring-adapter`: optional `TxContext` implementation for Spring.
 - `outbox-demo`: minimal, non-Spring demo (H2).
 - `outbox-spring-demo`: Spring demo app.
@@ -62,7 +62,7 @@ import outbox.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcOutboxRepository;
+import outbox.jdbc.JdbcEventStore;
 import outbox.jdbc.JdbcTransactionManager;
 import outbox.jdbc.ThreadLocalTxContext;
 
@@ -71,13 +71,13 @@ import java.time.Duration;
 
 DataSource dataSource = /* your DataSource */;
 
-JdbcOutboxRepository repository = new JdbcOutboxRepository();
+JdbcEventStore eventStore = new JdbcEventStore();
 DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
 ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 
 OutboxDispatcher dispatcher = new OutboxDispatcher(
     connectionProvider,
-    repository,
+    eventStore,
     new DefaultListenerRegistry()
         .register("UserCreated", event -> {
           // publish to MQ; include event.eventId() for dedupe
@@ -93,7 +93,7 @@ OutboxDispatcher dispatcher = new OutboxDispatcher(
 
 OutboxPoller poller = new OutboxPoller(
     connectionProvider,
-    repository,
+    eventStore,
     dispatcher,
     Duration.ofMillis(1000),
     200,
@@ -106,7 +106,7 @@ poller.start();
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
 
 try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-  OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
+  OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
   client.publish(EventEnvelope.ofJson("UserCreated", "{\"id\":123}"));
   tx.commit();
 }
@@ -124,7 +124,7 @@ import outbox.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcOutboxRepository;
+import outbox.jdbc.JdbcEventStore;
 import outbox.jdbc.JdbcTransactionManager;
 import outbox.jdbc.ThreadLocalTxContext;
 
@@ -153,7 +153,9 @@ public final class OutboxExample {
               "available_at TIMESTAMP NOT NULL," +
               "created_at TIMESTAMP NOT NULL," +
               "done_at TIMESTAMP," +
-              "last_error CLOB" +
+              "last_error CLOB," +
+              "locked_by VARCHAR(128)," +
+              "locked_at TIMESTAMP" +
               ")"
       );
       conn.createStatement().execute(
@@ -161,14 +163,14 @@ public final class OutboxExample {
       );
     }
 
-    JdbcOutboxRepository repository = new JdbcOutboxRepository();
+    JdbcEventStore eventStore = new JdbcEventStore();
     DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
     ThreadLocalTxContext txContext = new ThreadLocalTxContext();
     JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
 
     OutboxDispatcher dispatcher = new OutboxDispatcher(
         connectionProvider,
-        repository,
+        eventStore,
         new DefaultListenerRegistry()
             .register("UserCreated", event ->
                 System.out.println("Published to MQ: " + event.eventId())),
@@ -183,7 +185,7 @@ public final class OutboxExample {
 
     OutboxPoller poller = new OutboxPoller(
         connectionProvider,
-        repository,
+        eventStore,
         dispatcher,
         Duration.ofMillis(500),
         50,
@@ -193,7 +195,7 @@ public final class OutboxExample {
     poller.start();
 
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-      OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
+      OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
       client.publish(EventEnvelope.ofJson("UserCreated", "{\"id\":123}"));
       tx.commit();
     }
@@ -262,7 +264,9 @@ CREATE TABLE outbox_event (
   available_at DATETIME(6) NOT NULL,
   created_at DATETIME(6) NOT NULL,
   done_at DATETIME(6),
-  last_error TEXT
+  last_error TEXT,
+  locked_by VARCHAR(128),
+  locked_at DATETIME(6)
 );
 
 CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_at);
@@ -271,6 +275,29 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 ## Requirements
 
 - Java 17 or later
+
+## Poller Event Locking
+
+For multi-instance deployments, enable claim-based locking so pollers don't compete for the same events:
+
+```java
+OutboxPoller poller = new OutboxPoller(
+    connectionProvider,
+    eventStore,
+    dispatcher,
+    Duration.ofMillis(1000),  // skipRecent
+    200,                       // batchSize
+    5000,                      // intervalMs
+    MetricsExporter.NOOP,
+    "poller-node-1",           // ownerId (or null to auto-generate)
+    Duration.ofMinutes(5)      // lockTimeout
+);
+```
+
+- Each poller claims events by setting `locked_by`/`locked_at` columns
+- Expired locks (older than `lockTimeout`) are automatically reclaimed
+- Locks are cleared when events reach DONE, RETRY, or DEAD status
+- Use the 7-arg constructor (without `ownerId`/`lockTimeout`) for single-instance mode (no locking)
 
 ## Notes
 

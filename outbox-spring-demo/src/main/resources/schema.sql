@@ -11,7 +11,9 @@ CREATE TABLE IF NOT EXISTS outbox_event (
   available_at TIMESTAMP NOT NULL,
   created_at TIMESTAMP NOT NULL,
   done_at TIMESTAMP,
-  last_error CLOB
+  last_error CLOB,
+  locked_by VARCHAR(128),
+  locked_at TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_status_available ON outbox_event(status, available_at, created_at);

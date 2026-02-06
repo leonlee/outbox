@@ -1,5 +1,9 @@
 package outbox.jdbc.spi;
 
+import outbox.model.OutboxEvent;
+
+import java.sql.Connection;
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -74,4 +78,25 @@ public interface Dialect {
    * tenant_id, payload, headers, attempts, created_at
    */
   String pollPendingSql(String table);
+
+  /**
+   * Claim and return pending events atomically.
+   *
+   * <p>Sets {@code locked_by} and {@code locked_at} on claimed rows.
+   * Default implementation returns empty (no locking).
+   *
+   * @param conn        JDBC connection
+   * @param table       table name
+   * @param ownerId     poller instance identifier
+   * @param now         current time
+   * @param lockExpiry  locks older than this are considered expired
+   * @param recentCutoff events created after this are skipped
+   * @param limit       max rows to claim
+   * @return claimed events
+   */
+  default List<OutboxEvent> claimPending(
+      Connection conn, String table, String ownerId,
+      Instant now, Instant lockExpiry, Instant recentCutoff, int limit) {
+    return List.of();
+  }
 }

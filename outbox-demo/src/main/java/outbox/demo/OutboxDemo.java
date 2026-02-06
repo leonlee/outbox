@@ -9,7 +9,7 @@ import outbox.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcOutboxRepository;
+import outbox.jdbc.JdbcEventStore;
 import outbox.jdbc.JdbcTransactionManager;
 import outbox.jdbc.ThreadLocalTxContext;
 import outbox.jdbc.dialect.Dialects;
@@ -40,7 +40,7 @@ public final class OutboxDemo {
     createSchema(dataSource);
 
     // 2. Create core components
-    JdbcOutboxRepository repository = new JdbcOutboxRepository(Dialects.detect(dataSource));
+    JdbcEventStore eventStore = new JdbcEventStore(Dialects.detect(dataSource));
     DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
     ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 
@@ -51,7 +51,7 @@ public final class OutboxDemo {
     // 3. Create dispatcher with listeners
     OutboxDispatcher dispatcher = new OutboxDispatcher(
         connectionProvider,
-        repository,
+        eventStore,
         new DefaultListenerRegistry()
             .register("UserCreated", event -> {
               System.out.println("[Listener] UserCreated: " + event.payloadJson());
@@ -79,7 +79,7 @@ public final class OutboxDemo {
     // 4. Create poller (fallback for missed events)
     OutboxPoller poller = new OutboxPoller(
         connectionProvider,
-        repository,
+        eventStore,
         dispatcher,
         Duration.ofMillis(500),  // skipRecent
         50,                       // batchSize
@@ -95,7 +95,7 @@ public final class OutboxDemo {
 
     // 6. Publish events within transactions
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-      OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
+      OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
 
       // Simple event
       String eventId1 = client.publish(EventEnvelope.ofJson("UserCreated",
@@ -118,7 +118,7 @@ public final class OutboxDemo {
 
     // 7. Publish another event in separate transaction
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-      OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
+      OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
 
       String eventId = client.publish(EventEnvelope.builder("UserCreated")
           .aggregateType("User")
@@ -168,7 +168,9 @@ public final class OutboxDemo {
               "available_at TIMESTAMP NOT NULL," +
               "created_at TIMESTAMP NOT NULL," +
               "done_at TIMESTAMP," +
-              "last_error CLOB" +
+              "last_error CLOB," +
+              "locked_by VARCHAR(128)," +
+              "locked_at TIMESTAMP" +
               ")"
       );
       conn.createStatement().execute(

@@ -16,6 +16,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -27,6 +28,7 @@ import java.util.logging.Logger;
 
 public final class OutboxPoller implements AutoCloseable {
   private static final Logger logger = Logger.getLogger(OutboxPoller.class.getName());
+  private static final Duration DEFAULT_LOCK_TIMEOUT = Duration.ofMinutes(5);
 
   private final ConnectionProvider connectionProvider;
   private final EventStore eventStore;
@@ -35,6 +37,8 @@ public final class OutboxPoller implements AutoCloseable {
   private final int batchSize;
   private final long intervalMs;
   private final MetricsExporter metrics;
+  private final String ownerId;
+  private final Duration lockTimeout;
 
   private final ScheduledExecutorService scheduler;
   private volatile ScheduledFuture<?> pollTask;
@@ -47,6 +51,21 @@ public final class OutboxPoller implements AutoCloseable {
       int batchSize,
       long intervalMs,
       MetricsExporter metrics
+  ) {
+    this(connectionProvider, eventStore, dispatcher, skipRecent,
+        batchSize, intervalMs, metrics, null, null);
+  }
+
+  public OutboxPoller(
+      ConnectionProvider connectionProvider,
+      EventStore eventStore,
+      OutboxDispatcher dispatcher,
+      Duration skipRecent,
+      int batchSize,
+      long intervalMs,
+      MetricsExporter metrics,
+      String ownerId,
+      Duration lockTimeout
   ) {
     if (batchSize <= 0) {
       throw new IllegalArgumentException("batchSize must be > 0");
@@ -64,6 +83,10 @@ public final class OutboxPoller implements AutoCloseable {
     this.batchSize = batchSize;
     this.intervalMs = intervalMs;
     this.metrics = metrics == null ? MetricsExporter.NOOP : metrics;
+    this.ownerId = ownerId != null
+        ? ownerId
+        : (lockTimeout != null ? "poller-" + UUID.randomUUID().toString().substring(0, 8) : null);
+    this.lockTimeout = lockTimeout != null ? lockTimeout : DEFAULT_LOCK_TIMEOUT;
     this.scheduler = Executors.newSingleThreadScheduledExecutor(new PollerThreadFactory());
   }
 
@@ -99,6 +122,10 @@ public final class OutboxPoller implements AutoCloseable {
   private List<OutboxEvent> fetchPendingRows(Instant now) {
     try (Connection conn = connectionProvider.getConnection()) {
       conn.setAutoCommit(true);
+      if (ownerId != null) {
+        Instant lockExpiry = now.minus(lockTimeout);
+        return eventStore.claimPending(conn, ownerId, now, lockExpiry, skipRecent, batchSize);
+      }
       return eventStore.pollPending(conn, now, skipRecent, batchSize);
     } catch (SQLException e) {
       logger.log(Level.SEVERE, "Failed to fetch pending outbox rows", e);

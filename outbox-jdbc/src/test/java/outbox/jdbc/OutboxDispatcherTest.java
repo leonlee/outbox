@@ -35,7 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class OutboxDispatcherTest {
   private DataSource dataSource;
-  private JdbcOutboxRepository repository;
+  private JdbcEventStore eventStore;
   private DataSourceConnectionProvider connectionProvider;
 
   @BeforeEach
@@ -43,7 +43,7 @@ class OutboxDispatcherTest {
     JdbcDataSource ds = new JdbcDataSource();
     ds.setURL("jdbc:h2:mem:outbox_dispatcher_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
     this.dataSource = ds;
-    this.repository = new JdbcOutboxRepository(Dialects.get("h2"));
+    this.eventStore = new JdbcEventStore(Dialects.get("h2"));
     this.connectionProvider = new DataSourceConnectionProvider(ds);
 
     try (Connection conn = ds.getConnection()) {
@@ -71,7 +71,7 @@ class OutboxDispatcherTest {
 
     OutboxDispatcher dispatcher = new OutboxDispatcher(
         connectionProvider,
-        repository,
+        eventStore,
         listeners,
         new DefaultInFlightTracker(),
         attempts -> 0L,
@@ -113,7 +113,7 @@ class OutboxDispatcherTest {
 
     OutboxDispatcher dispatcher = new OutboxDispatcher(
         connectionProvider,
-        repository,
+        eventStore,
         listeners,
         new DefaultInFlightTracker(),
         attempts -> 0L,
@@ -142,7 +142,7 @@ class OutboxDispatcherTest {
 
     OutboxDispatcher dispatcher = new OutboxDispatcher(
         connectionProvider,
-        repository,
+        eventStore,
         listeners,
         new DefaultInFlightTracker(),
         attempts -> 0L,
@@ -181,7 +181,7 @@ class OutboxDispatcherTest {
 
     OutboxDispatcher dispatcher = new OutboxDispatcher(
         connectionProvider,
-        repository,
+        eventStore,
         listeners,
         inFlightTracker,
         attempts -> 0L,
@@ -240,7 +240,7 @@ class OutboxDispatcherTest {
 
   private void insertEvent(EventEnvelope event) throws SQLException {
     try (Connection conn = dataSource.getConnection()) {
-      repository.insertNew(conn, event);
+      eventStore.insertNew(conn, event);
     }
   }
 
@@ -307,7 +307,9 @@ class OutboxDispatcherTest {
             "available_at TIMESTAMP NOT NULL," +
             "created_at TIMESTAMP NOT NULL," +
             "done_at TIMESTAMP," +
-            "last_error CLOB" +
+            "last_error CLOB," +
+            "locked_by VARCHAR(128)," +
+            "locked_at TIMESTAMP" +
             ")"
     );
     conn.createStatement().execute(

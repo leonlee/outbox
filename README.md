@@ -153,7 +153,9 @@ public final class OutboxExample {
               "available_at TIMESTAMP NOT NULL," +
               "created_at TIMESTAMP NOT NULL," +
               "done_at TIMESTAMP," +
-              "last_error CLOB" +
+              "last_error CLOB," +
+              "locked_by VARCHAR(128)," +
+              "locked_at TIMESTAMP" +
               ")"
       );
       conn.createStatement().execute(
@@ -262,7 +264,9 @@ CREATE TABLE outbox_event (
   available_at DATETIME(6) NOT NULL,
   created_at DATETIME(6) NOT NULL,
   done_at DATETIME(6),
-  last_error TEXT
+  last_error TEXT,
+  locked_by VARCHAR(128),
+  locked_at DATETIME(6)
 );
 
 CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_at);
@@ -271,6 +275,29 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 ## Requirements
 
 - Java 17 or later
+
+## Poller Event Locking
+
+For multi-instance deployments, enable claim-based locking so pollers don't compete for the same events:
+
+```java
+OutboxPoller poller = new OutboxPoller(
+    connectionProvider,
+    repository,
+    dispatcher,
+    Duration.ofMillis(1000),  // skipRecent
+    200,                       // batchSize
+    5000,                      // intervalMs
+    MetricsExporter.NOOP,
+    "poller-node-1",           // ownerId (or null to auto-generate)
+    Duration.ofMinutes(5)      // lockTimeout
+);
+```
+
+- Each poller claims events by setting `locked_by`/`locked_at` columns
+- Expired locks (older than `lockTimeout`) are automatically reclaimed
+- Locks are cleared when events reach DONE, RETRY, or DEAD status
+- Use the 7-arg constructor (without `ownerId`/`lockTimeout`) for single-instance mode (no locking)
 
 ## Notes
 

@@ -307,7 +307,9 @@ class OutboxDispatcherTest {
             "available_at TIMESTAMP NOT NULL," +
             "created_at TIMESTAMP NOT NULL," +
             "done_at TIMESTAMP," +
-            "last_error CLOB" +
+            "last_error CLOB," +
+            "locked_by VARCHAR(128)," +
+            "locked_at TIMESTAMP" +
             ")"
     );
     conn.createStatement().execute(

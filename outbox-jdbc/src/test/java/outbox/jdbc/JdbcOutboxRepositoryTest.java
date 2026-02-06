@@ -11,6 +11,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -46,7 +47,9 @@ class JdbcOutboxRepositoryTest {
               "available_at TIMESTAMP NOT NULL," +
               "created_at TIMESTAMP NOT NULL," +
               "done_at TIMESTAMP," +
-              "last_error CLOB" +
+              "last_error CLOB," +
+              "locked_by VARCHAR(128)," +
+              "locked_at TIMESTAMP" +
               ")"
       );
     }
@@ -298,6 +301,155 @@ class JdbcOutboxRepositoryTest {
           Duration.ZERO, 10);
 
       assertTrue(rows.isEmpty());
+    }
+  }
+
+  @Test
+  void claimPendingLocksRows() throws SQLException {
+    insertTestEvent();
+    insertTestEvent();
+    insertTestEvent();
+
+    Instant now = Instant.now().plusSeconds(1);
+    Instant lockExpiry = now.minus(Duration.ofMinutes(5));
+
+    try (Connection conn = dataSource.getConnection()) {
+      List<OutboxEvent> claimed = repository.claimPending(
+          conn, "owner-A", now, lockExpiry, Duration.ZERO, 2);
+
+      assertEquals(2, claimed.size());
+
+      // Verify lock columns are set
+      try (PreparedStatement ps = conn.prepareStatement(
+          "SELECT locked_by, locked_at FROM outbox_event WHERE locked_by IS NOT NULL")) {
+        ResultSet rs = ps.executeQuery();
+        int lockedCount = 0;
+        while (rs.next()) {
+          assertEquals("owner-A", rs.getString("locked_by"));
+          assertNotNull(rs.getTimestamp("locked_at"));
+          lockedCount++;
+        }
+        assertEquals(2, lockedCount);
+      }
+    }
+  }
+
+  @Test
+  void claimPendingSkipsLockedRows() throws SQLException {
+    insertTestEvent();
+    insertTestEvent();
+
+    Instant now = Instant.now().plusSeconds(1);
+    Instant lockExpiry = now.minus(Duration.ofMinutes(5));
+
+    try (Connection conn = dataSource.getConnection()) {
+      List<OutboxEvent> claimedA = repository.claimPending(
+          conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
+      assertEquals(2, claimedA.size());
+
+      // owner-B should get 0 because all are locked by owner-A with non-expired locks
+      List<OutboxEvent> claimedB = repository.claimPending(
+          conn, "owner-B", now, lockExpiry, Duration.ZERO, 10);
+      assertEquals(0, claimedB.size());
+    }
+  }
+
+  @Test
+  void claimPendingReclaimsExpiredLocks() throws SQLException {
+    insertTestEvent();
+
+    Instant now = Instant.now().plusSeconds(1);
+    Instant lockExpiry = now.minus(Duration.ofMinutes(5));
+
+    try (Connection conn = dataSource.getConnection()) {
+      // owner-A claims the event
+      List<OutboxEvent> claimedA = repository.claimPending(
+          conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
+      assertEquals(1, claimedA.size());
+
+      // Simulate expired lock by setting locked_at to the past
+      conn.createStatement().execute(
+          "UPDATE outbox_event SET locked_at = TIMESTAMP '2020-01-01 00:00:00'");
+
+      // owner-B should reclaim the expired lock
+      List<OutboxEvent> claimedB = repository.claimPending(
+          conn, "owner-B", now, lockExpiry, Duration.ZERO, 10);
+      assertEquals(1, claimedB.size());
+
+      // Verify lock is now owner-B
+      try (PreparedStatement ps = conn.prepareStatement(
+          "SELECT locked_by FROM outbox_event WHERE event_id = ?")) {
+        ps.setString(1, claimedB.get(0).eventId());
+        ResultSet rs = ps.executeQuery();
+        assertTrue(rs.next());
+        assertEquals("owner-B", rs.getString("locked_by"));
+      }
+    }
+  }
+
+  @Test
+  void markDoneClearsLock() throws SQLException {
+    String eventId = insertTestEvent();
+
+    try (Connection conn = dataSource.getConnection()) {
+      Instant now = Instant.now().plusSeconds(1);
+      Instant lockExpiry = now.minus(Duration.ofMinutes(5));
+      repository.claimPending(conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
+
+      repository.markDone(conn, eventId);
+
+      try (PreparedStatement ps = conn.prepareStatement(
+          "SELECT locked_by, locked_at FROM outbox_event WHERE event_id = ?")) {
+        ps.setString(1, eventId);
+        ResultSet rs = ps.executeQuery();
+        assertTrue(rs.next());
+        assertNull(rs.getString("locked_by"));
+        assertNull(rs.getTimestamp("locked_at"));
+      }
+    }
+  }
+
+  @Test
+  void markRetryClearsLock() throws SQLException {
+    String eventId = insertTestEvent();
+
+    try (Connection conn = dataSource.getConnection()) {
+      Instant now = Instant.now().plusSeconds(1);
+      Instant lockExpiry = now.minus(Duration.ofMinutes(5));
+      repository.claimPending(conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
+
+      repository.markRetry(conn, eventId, Instant.now().plusSeconds(60), "retry error");
+
+      try (PreparedStatement ps = conn.prepareStatement(
+          "SELECT locked_by, locked_at FROM outbox_event WHERE event_id = ?")) {
+        ps.setString(1, eventId);
+        ResultSet rs = ps.executeQuery();
+        assertTrue(rs.next());
+        assertNull(rs.getString("locked_by"));
+        assertNull(rs.getTimestamp("locked_at"));
+      }
+    }
+  }
+
+  @Test
+  void markDeadClearsLock() throws SQLException {
+    String eventId = insertTestEvent();
+
+    try (Connection conn = dataSource.getConnection()) {
+      Instant now = Instant.now().plusSeconds(1);
+      Instant lockExpiry = now.minus(Duration.ofMinutes(5));
+      repository.claimPending(conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
+
+      repository.markDead(conn, eventId, "dead");
+
+      try (PreparedStatement ps = conn.prepareStatement(
+          "SELECT locked_by, locked_at FROM outbox_event WHERE event_id = ?")) {
+        ps.setString(1, eventId);
+        ResultSet rs = ps.executeQuery();
+        assertTrue(rs.next());
+        assertNull(rs.getString("locked_by"));
+        assertNull(rs.getTimestamp("locked_at"));
+      }
     }
   }
 

@@ -18,4 +18,15 @@ public interface EventStore {
   int markDead(Connection conn, String eventId, String error);
 
   List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit);
+
+  /**
+   * Claim and return pending events with locking.
+   *
+   * <p>Default falls back to {@link #pollPending} (no locking).
+   */
+  default List<OutboxEvent> claimPending(
+      Connection conn, String ownerId, Instant now,
+      Instant lockExpiry, Duration skipRecent, int limit) {
+    return pollPending(conn, now, skipRecent, limit);
+  }
 }

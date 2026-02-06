@@ -22,7 +22,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 ### Modules
 
 - **outbox-core**: Core interfaces, dispatcher, poller, registries. Zero external dependencies.
-- **outbox-jdbc**: JDBC repository implementation and manual transaction helpers (`JdbcTransactionManager`, `ThreadLocalTxContext`).
+- **outbox-jdbc**: JDBC repository implementation, `JdbcTemplate` utility, manual transaction helpers (`JdbcTransactionManager`, `ThreadLocalTxContext`), and multi-database dialect support.
 - **outbox-spring-adapter**: Optional `SpringTxContext` for Spring transaction integration.
 - **outbox-demo**: Simple runnable demo with H2 (no Spring).
 - **outbox-spring-demo**: Spring Boot demo with REST API (standalone).
@@ -77,9 +77,11 @@ outbox-core/src/main/java/
 ### Key Abstractions
 
 - **TxContext**: Abstracts transaction lifecycle (`isTransactionActive()`, `currentConnection()`, `afterCommit()`, `afterRollback()`). Implementations: `ThreadLocalTxContext` (JDBC), `SpringTxContext` (Spring).
-- **EventStore**: Persistence contract (`insertNew`, `markDone`, `markRetry`, `markDead`, `pollPending`). Implemented by `JdbcOutboxRepository`.
+- **EventStore**: Persistence contract (`insertNew`, `markDone`, `markRetry`, `markDead`, `pollPending`, `claimPending`). Implemented by `JdbcOutboxRepository`.
 - **OutboxDispatcher**: Dual-queue event processor with hot queue (afterCommit callbacks) and cold queue (poller fallback). Uses `InFlightTracker` for deduplication and `RetryPolicy` for exponential backoff.
-- **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails.
+- **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails. Supports claim-based locking via `ownerId`/`lockTimeout` for multi-instance deployments.
+- **JdbcTemplate**: Lightweight JDBC helper (`update`, `query`, `updateReturning`) used by Dialect implementations.
+- **Dialect**: SPI for database-specific SQL including `claimPending()` strategy. PostgreSQL uses `FOR UPDATE SKIP LOCKED` + `RETURNING`; MySQL uses `UPDATE...ORDER BY...LIMIT`; H2 uses subquery-based two-phase claim.
 - **ListenerRegistry**: Maps event types to `EventListener` instances. Supports wildcard "*" registration for audit/logging listeners.
 
 ### Event Flow

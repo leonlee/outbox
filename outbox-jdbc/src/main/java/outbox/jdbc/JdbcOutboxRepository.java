@@ -102,6 +102,13 @@ public final class JdbcOutboxRepository implements EventStore {
   }
 
   @Override
+  public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
+      Instant lockExpiry, Duration skipRecent, int limit) {
+    Instant recentCutoff = skipRecent == null ? now : now.minus(skipRecent);
+    return dialect.claimPending(conn, tableName, ownerId, now, lockExpiry, recentCutoff, limit);
+  }
+
+  @Override
   public List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit) {
     String sql = dialect.pollPendingSql(tableName);
     Instant recentCutoff = skipRecent == null ? now : now.minus(skipRecent);

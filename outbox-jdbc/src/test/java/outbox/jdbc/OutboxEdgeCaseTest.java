@@ -1,6 +1,5 @@
 package outbox.jdbc;
 
-import outbox.dispatch.DefaultInFlightTracker;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.dispatch.ExponentialBackoffRetryPolicy;
@@ -66,18 +65,13 @@ class OutboxEdgeCaseTest {
       }
     }
 
-    OutboxDispatcher dispatcher = new OutboxDispatcher(
-        connectionProvider,
-        eventStore,
-        new DefaultListenerRegistry(),
-        new DefaultInFlightTracker(),
-        new ExponentialBackoffRetryPolicy(10, 50),
-        10,
-        1,
-        10,
-        10,
-        MetricsExporter.NOOP
-    );
+    OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .listenerRegistry(new DefaultListenerRegistry())
+        .retryPolicy(new ExponentialBackoffRetryPolicy(10, 50))
+        .workerCount(1)
+        .build();
 
     try (OutboxPoller poller = new OutboxPoller(
         connectionProvider,
@@ -99,60 +93,40 @@ class OutboxEdgeCaseTest {
 
   @Test
   void dispatcherRejectsInvalidArgs() {
-    assertThrows(IllegalArgumentException.class, () -> new OutboxDispatcher(
-        connectionProvider,
-        eventStore,
-        new DefaultListenerRegistry(),
-        new DefaultInFlightTracker(),
-        new ExponentialBackoffRetryPolicy(10, 50),
-        0,
-        1,
-        10,
-        10,
-        MetricsExporter.NOOP
-    ));
+    assertThrows(IllegalArgumentException.class, () ->
+        OutboxDispatcher.builder()
+            .connectionProvider(connectionProvider)
+            .eventStore(eventStore)
+            .listenerRegistry(new DefaultListenerRegistry())
+            .maxAttempts(0)
+            .build());
 
-    assertThrows(IllegalArgumentException.class, () -> new OutboxDispatcher(
-        connectionProvider,
-        eventStore,
-        new DefaultListenerRegistry(),
-        new DefaultInFlightTracker(),
-        new ExponentialBackoffRetryPolicy(10, 50),
-        10,
-        -1,
-        10,
-        10,
-        MetricsExporter.NOOP
-    ));
+    assertThrows(IllegalArgumentException.class, () ->
+        OutboxDispatcher.builder()
+            .connectionProvider(connectionProvider)
+            .eventStore(eventStore)
+            .listenerRegistry(new DefaultListenerRegistry())
+            .workerCount(-1)
+            .build());
 
-    assertThrows(IllegalArgumentException.class, () -> new OutboxDispatcher(
-        connectionProvider,
-        eventStore,
-        new DefaultListenerRegistry(),
-        new DefaultInFlightTracker(),
-        new ExponentialBackoffRetryPolicy(10, 50),
-        10,
-        1,
-        0,
-        10,
-        MetricsExporter.NOOP
-    ));
+    assertThrows(IllegalArgumentException.class, () ->
+        OutboxDispatcher.builder()
+            .connectionProvider(connectionProvider)
+            .eventStore(eventStore)
+            .listenerRegistry(new DefaultListenerRegistry())
+            .hotQueueCapacity(0)
+            .build());
   }
 
   @Test
   void pollerRejectsInvalidArgs() {
-    OutboxDispatcher dispatcher = new OutboxDispatcher(
-        connectionProvider,
-        eventStore,
-        new DefaultListenerRegistry(),
-        new DefaultInFlightTracker(),
-        new ExponentialBackoffRetryPolicy(10, 50),
-        10,
-        1,
-        10,
-        10,
-        MetricsExporter.NOOP
-    );
+    OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .listenerRegistry(new DefaultListenerRegistry())
+        .retryPolicy(new ExponentialBackoffRetryPolicy(10, 50))
+        .workerCount(1)
+        .build();
 
     assertThrows(IllegalArgumentException.class, () -> new OutboxPoller(
         connectionProvider,

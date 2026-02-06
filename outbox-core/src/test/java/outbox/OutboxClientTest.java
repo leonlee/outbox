@@ -89,18 +89,18 @@ class OutboxClientTest {
       }
     };
 
-    return new OutboxDispatcher(
-        connectionProvider,
-        store,
-        new DefaultListenerRegistry(),
-        new DefaultInFlightTracker(),
-        attempts -> 0L,
-        1,
-        0,
-        1,
-        1,
-        MetricsExporter.NOOP
-    );
+    return OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(store)
+        .listenerRegistry(new DefaultListenerRegistry())
+        .inFlightTracker(new DefaultInFlightTracker())
+        .retryPolicy(attempts -> 0L)
+        .maxAttempts(1)
+        .workerCount(0)
+        .hotQueueCapacity(1)
+        .coldQueueCapacity(1)
+        .metrics(MetricsExporter.NOOP)
+        .build();
   }
 
   private void replaceHotQueueWithThrowingQueue(OutboxDispatcher dispatcher) throws Exception {

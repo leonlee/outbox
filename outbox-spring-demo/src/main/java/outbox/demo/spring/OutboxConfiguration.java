@@ -4,8 +4,8 @@ import outbox.OutboxClient;
 import outbox.spi.MetricsExporter;
 import outbox.spi.TxContext;
 import outbox.dispatch.DefaultInFlightTracker;
+import outbox.dispatch.EventInterceptor;
 import outbox.dispatch.OutboxDispatcher;
-import outbox.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.registry.ListenerRegistry;
@@ -52,10 +52,6 @@ public class OutboxConfiguration {
         .register("OrderPlaced", event -> {
           log.info("[Listener] OrderPlaced: id={}, payload={}",
               event.eventId(), event.payloadJson());
-        })
-        .registerAll(event -> {
-          log.info("[Audit] Event dispatched: type={}, aggregateId={}",
-              event.eventType(), event.aggregateId());
         });
   }
 
@@ -65,18 +61,16 @@ public class OutboxConfiguration {
       JdbcEventStore eventStore,
       ListenerRegistry listenerRegistry
   ) {
-    return new OutboxDispatcher(
-        connectionProvider,
-        eventStore,
-        listenerRegistry,
-        new DefaultInFlightTracker(30_000),
-        new ExponentialBackoffRetryPolicy(200, 60_000),
-        10,   // maxAttempts
-        2,    // workerCount
-        1000, // hotQueueCapacity
-        1000, // coldQueueCapacity
-        MetricsExporter.NOOP
-    );
+    return OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .listenerRegistry(listenerRegistry)
+        .inFlightTracker(new DefaultInFlightTracker(30_000))
+        .workerCount(2)
+        .interceptor(EventInterceptor.before(event ->
+            log.info("[Audit] Event dispatched: type={}, aggregateId={}",
+                event.eventType(), event.aggregateId())))
+        .build();
   }
 
   @Bean(destroyMethod = "close")

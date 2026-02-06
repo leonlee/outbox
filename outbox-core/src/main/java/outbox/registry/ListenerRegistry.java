@@ -2,14 +2,12 @@ package outbox.registry;
 
 import outbox.EventListener;
 
-import java.util.List;
-
 /**
- * Registry for looking up event listeners by event type.
+ * Registry for looking up event listeners by (aggregateType, eventType).
  *
- * <p>The dispatcher uses this registry to find all listeners that should
- * process a given event. Listeners are returned in a deterministic order
- * and executed sequentially.
+ * <p>Each (aggregateType, eventType) pair maps to at most one listener.
+ * The dispatcher uses this registry to find the listener that should
+ * process a given event. If no listener is found, the event is marked DEAD.
  *
  * @see EventListener
  * @see DefaultListenerRegistry
@@ -17,16 +15,12 @@ import java.util.List;
 public interface ListenerRegistry {
 
   /**
-   * Returns all listeners registered for the given event type.
+   * Returns the single listener for the given (aggregateType, eventType),
+   * or null if none registered.
    *
-   * <p>The returned list includes:
-   * <ol>
-   *   <li>Listeners registered for the exact event type</li>
-   *   <li>Listeners registered for all events (wildcard "*")</li>
-   * </ol>
-   *
-   * @param eventType the event type to look up
-   * @return immutable list of matching listeners, may be empty
+   * @param aggregateType the aggregate type
+   * @param eventType the event type
+   * @return the listener, or null if unregistered
    */
-  List<EventListener> listenersFor(String eventType);
+  EventListener listenerFor(String aggregateType, String eventType);
 }

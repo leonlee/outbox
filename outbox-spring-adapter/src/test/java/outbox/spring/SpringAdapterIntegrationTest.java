@@ -1,6 +1,5 @@
 package outbox.spring;
 
-import outbox.dispatch.DefaultInFlightTracker;
 import outbox.OutboxClient;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.dispatch.OutboxDispatcher;
@@ -67,7 +66,7 @@ class SpringAdapterIntegrationTest {
   void commitTriggersFastPathAndMarksDone() throws Exception {
     CountDownLatch latch = new CountDownLatch(1);
     DefaultListenerRegistry listeners = new DefaultListenerRegistry()
-        .registerAll(event -> latch.countDown());
+        .register("UserCreated", event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
     OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
@@ -92,7 +91,7 @@ class SpringAdapterIntegrationTest {
   void rollbackDoesNotPersistAndDoesNotEnqueue() throws Exception {
     CountDownLatch latch = new CountDownLatch(1);
     DefaultListenerRegistry listeners = new DefaultListenerRegistry()
-        .registerAll(event -> latch.countDown());
+        .register("UserCreated", event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
     OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
@@ -114,18 +113,15 @@ class SpringAdapterIntegrationTest {
   }
 
   private OutboxDispatcher dispatcher(int workers, int hotCapacity, int coldCapacity, DefaultListenerRegistry listeners) {
-    return new OutboxDispatcher(
-        connectionProvider,
-        eventStore,
-        listeners,
-        new DefaultInFlightTracker(),
-        new ExponentialBackoffRetryPolicy(10, 50),
-        10,
-        workers,
-        hotCapacity,
-        coldCapacity,
-        MetricsExporter.NOOP
-    );
+    return OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .listenerRegistry(listeners)
+        .retryPolicy(new ExponentialBackoffRetryPolicy(10, 50))
+        .workerCount(workers)
+        .hotQueueCapacity(hotCapacity)
+        .coldQueueCapacity(coldCapacity)
+        .build();
   }
 
   private void createSchema(Connection conn) throws SQLException {

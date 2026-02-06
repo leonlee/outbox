@@ -4,8 +4,8 @@ import outbox.EventEnvelope;
 import outbox.OutboxClient;
 import outbox.spi.MetricsExporter;
 import outbox.dispatch.DefaultInFlightTracker;
+import outbox.dispatch.EventInterceptor;
 import outbox.dispatch.OutboxDispatcher;
-import outbox.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
@@ -48,33 +48,34 @@ public final class OutboxDemo {
     AtomicInteger publishedCount = new AtomicInteger();
     CountDownLatch latch = new CountDownLatch(3);
 
-    // 3. Create dispatcher with listeners
-    OutboxDispatcher dispatcher = new OutboxDispatcher(
-        connectionProvider,
-        eventStore,
-        new DefaultListenerRegistry()
+    // 3. Create dispatcher with listeners and audit interceptor
+    OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .listenerRegistry(new DefaultListenerRegistry()
             .register("UserCreated", event -> {
               System.out.println("[Listener] UserCreated: " + event.payloadJson());
               publishedCount.incrementAndGet();
               latch.countDown();
             })
-            .register("OrderPlaced", event -> {
-              System.out.println("[Listener] OrderPlaced: " + event.payloadJson());
+            .register("User", "UserCreated", event -> {
+              System.out.println("[Listener] User/UserCreated: " + event.payloadJson());
               publishedCount.incrementAndGet();
               latch.countDown();
             })
-            .registerAll(event -> {
-              System.out.println("[Audit] Event dispatched: type=" + event.eventType() +
-                  ", id=" + event.eventId());
-            }),
-        new DefaultInFlightTracker(30_000),
-        new ExponentialBackoffRetryPolicy(200, 60_000),
-        10,   // maxAttempts
-        2,    // workerCount
-        100,  // hotQueueCapacity
-        100,  // coldQueueCapacity
-        MetricsExporter.NOOP
-    );
+            .register("Order", "OrderPlaced", event -> {
+              System.out.println("[Listener] Order/OrderPlaced: " + event.payloadJson());
+              publishedCount.incrementAndGet();
+              latch.countDown();
+            }))
+        .inFlightTracker(new DefaultInFlightTracker(30_000))
+        .workerCount(2)
+        .hotQueueCapacity(100)
+        .coldQueueCapacity(100)
+        .interceptor(EventInterceptor.before(event ->
+            System.out.println("[Audit] Event dispatched: type=" + event.eventType()
+                + ", id=" + event.eventId())))
+        .build();
 
     // 4. Create poller (fallback for missed events)
     OutboxPoller poller = new OutboxPoller(

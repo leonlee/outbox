@@ -1,9 +1,11 @@
 package outbox.registry;
 
+import outbox.AggregateType;
 import outbox.EventListener;
+import outbox.StringAggregateType;
+import outbox.StringEventType;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -11,12 +13,10 @@ import static org.junit.jupiter.api.Assertions.*;
 class DefaultListenerRegistryTest {
 
   @Test
-  void returnsEmptyListForUnregisteredEventType() {
+  void returnsNullForUnregistered() {
     DefaultListenerRegistry registry = new DefaultListenerRegistry();
 
-    List<EventListener> listeners = registry.listenersFor("Unknown");
-
-    assertTrue(listeners.isEmpty());
+    assertNull(registry.listenerFor(AggregateType.GLOBAL.name(), "Unknown"));
   }
 
   @Test
@@ -26,106 +26,104 @@ class DefaultListenerRegistryTest {
 
     registry.register("UserCreated", event -> called.incrementAndGet());
 
-    List<EventListener> listeners = registry.listenersFor("UserCreated");
-    assertEquals(1, listeners.size());
+    EventListener listener = registry.listenerFor(AggregateType.GLOBAL.name(), "UserCreated");
+    assertNotNull(listener);
 
-    listeners.get(0).onEvent(null);
+    listener.onEvent(null);
     assertEquals(1, called.get());
   }
 
   @Test
-  void supportsMultipleListenersForSameEventType() throws Exception {
+  void duplicateRegistrationThrows() {
     DefaultListenerRegistry registry = new DefaultListenerRegistry();
-    AtomicInteger counter = new AtomicInteger();
+    registry.register("UserCreated", event -> {});
 
-    registry.register("OrderPlaced", event -> counter.addAndGet(1));
-    registry.register("OrderPlaced", event -> counter.addAndGet(10));
-    registry.register("OrderPlaced", event -> counter.addAndGet(100));
-
-    List<EventListener> listeners = registry.listenersFor("OrderPlaced");
-    assertEquals(3, listeners.size());
-
-    for (EventListener l : listeners) {
-      l.onEvent(null);
-    }
-    assertEquals(111, counter.get());
+    assertThrows(IllegalStateException.class, () ->
+        registry.register("UserCreated", event -> {}));
   }
 
   @Test
-  void wildcardListenerAppliesToAllEventTypes() {
+  void aggregateTypeScopedRegistration() throws Exception {
+    DefaultListenerRegistry registry = new DefaultListenerRegistry();
+    AtomicInteger orderCalled = new AtomicInteger();
+    AtomicInteger userCalled = new AtomicInteger();
+
+    registry.register("Order", "Created", event -> orderCalled.incrementAndGet());
+    registry.register("User", "Created", event -> userCalled.incrementAndGet());
+
+    EventListener orderListener = registry.listenerFor("Order", "Created");
+    EventListener userListener = registry.listenerFor("User", "Created");
+
+    assertNotNull(orderListener);
+    assertNotNull(userListener);
+
+    orderListener.onEvent(null);
+    userListener.onEvent(null);
+
+    assertEquals(1, orderCalled.get());
+    assertEquals(1, userCalled.get());
+  }
+
+  @Test
+  void convenienceRegisterUsesGlobal() {
+    DefaultListenerRegistry registry = new DefaultListenerRegistry();
+    registry.register("UserCreated", event -> {});
+
+    assertNotNull(registry.listenerFor(AggregateType.GLOBAL.name(), "UserCreated"));
+  }
+
+  @Test
+  void registerWithTypeSafeTypes() throws Exception {
     DefaultListenerRegistry registry = new DefaultListenerRegistry();
     AtomicInteger called = new AtomicInteger();
 
-    registry.registerAll(event -> called.incrementAndGet());
+    AggregateType orderType = StringAggregateType.of("Order");
+    registry.register(orderType, StringEventType.of("OrderPlaced"), event -> called.incrementAndGet());
 
-    List<EventListener> forUser = registry.listenersFor("UserCreated");
-    List<EventListener> forOrder = registry.listenersFor("OrderPlaced");
-    List<EventListener> forAny = registry.listenersFor("AnyEvent");
+    EventListener listener = registry.listenerFor("Order", "OrderPlaced");
+    assertNotNull(listener);
 
-    assertEquals(1, forUser.size());
-    assertEquals(1, forOrder.size());
-    assertEquals(1, forAny.size());
+    listener.onEvent(null);
+    assertEquals(1, called.get());
   }
 
   @Test
-  void combinesSpecificAndWildcardListeners() throws Exception {
+  void registerWithAggregateTypeAndStringEventType() throws Exception {
     DefaultListenerRegistry registry = new DefaultListenerRegistry();
-    AtomicInteger specific = new AtomicInteger();
-    AtomicInteger wildcard = new AtomicInteger();
+    AtomicInteger called = new AtomicInteger();
 
-    registry.register("UserCreated", event -> specific.incrementAndGet());
-    registry.registerAll(event -> wildcard.incrementAndGet());
+    AggregateType userType = StringAggregateType.of("User");
+    registry.register(userType, "UserCreated", event -> called.incrementAndGet());
 
-    List<EventListener> listeners = registry.listenersFor("UserCreated");
-    assertEquals(2, listeners.size());
+    EventListener listener = registry.listenerFor("User", "UserCreated");
+    assertNotNull(listener);
 
-    for (EventListener l : listeners) {
-      l.onEvent(null);
-    }
-    assertEquals(1, specific.get());
-    assertEquals(1, wildcard.get());
+    listener.onEvent(null);
+    assertEquals(1, called.get());
   }
 
   @Test
-  void returnedListIsUnmodifiable() {
+  void registerWithEventTypeInterface() throws Exception {
     DefaultListenerRegistry registry = new DefaultListenerRegistry();
-    registry.register("Test", event -> {});
+    AtomicInteger called = new AtomicInteger();
 
-    List<EventListener> listeners = registry.listenersFor("Test");
+    registry.register(StringEventType.of("OrderPlaced"), event -> called.incrementAndGet());
 
-    assertThrows(UnsupportedOperationException.class, () ->
-        listeners.add(event -> {}));
+    EventListener listener = registry.listenerFor(AggregateType.GLOBAL.name(), "OrderPlaced");
+    assertNotNull(listener);
+
+    listener.onEvent(null);
+    assertEquals(1, called.get());
   }
 
   @Test
   void fluentApiSupportsChaining() {
-    AtomicInteger count = new AtomicInteger();
-
     DefaultListenerRegistry registry = new DefaultListenerRegistry()
-        .register("A", event -> count.incrementAndGet())
-        .register("B", event -> count.incrementAndGet())
-        .registerAll(event -> count.incrementAndGet());
+        .register("A", event -> {})
+        .register("B", event -> {});
 
-    assertEquals(2, registry.listenersFor("A").size());
-    assertEquals(2, registry.listenersFor("B").size());
-    assertEquals(1, registry.listenersFor("C").size());
-  }
-
-  @Test
-  void preservesRegistrationOrderAcrossWildcard() throws Exception {
-    DefaultListenerRegistry registry = new DefaultListenerRegistry();
-    StringBuilder order = new StringBuilder();
-
-    registry.registerAll(event -> order.append("A"));
-    registry.register("UserCreated", event -> order.append("B"));
-    registry.registerAll(event -> order.append("C"));
-    registry.register("UserCreated", event -> order.append("D"));
-
-    List<EventListener> listeners = registry.listenersFor("UserCreated");
-    for (EventListener listener : listeners) {
-      listener.onEvent(null);
-    }
-
-    assertEquals("ABCD", order.toString());
+    assertNotNull(registry.listenerFor(AggregateType.GLOBAL.name(), "A"));
+    assertNotNull(registry.listenerFor(AggregateType.GLOBAL.name(), "B"));
+    assertNull(registry.listenerFor(AggregateType.GLOBAL.name(), "C"));
   }
 }

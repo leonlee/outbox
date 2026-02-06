@@ -94,19 +94,18 @@ class EventTypeTest {
   }
 
   @Test
-  void mixedEnumAndStringTypesInRegistry() {
+  void enumAndStringTypesResolveToSameKey() {
     var registry = new outbox.registry.DefaultListenerRegistry();
-    java.util.concurrent.atomic.AtomicInteger enumCalled = new java.util.concurrent.atomic.AtomicInteger();
-    java.util.concurrent.atomic.AtomicInteger stringCalled = new java.util.concurrent.atomic.AtomicInteger();
 
     // Register with enum
-    registry.register(UserEvents.USER_CREATED, event -> enumCalled.incrementAndGet());
-    // Register with string (same underlying name)
-    registry.register("USER_CREATED", event -> stringCalled.incrementAndGet());
+    registry.register(UserEvents.USER_CREATED, event -> {});
 
-    // Both should be found for "USER_CREATED"
-    var listeners = registry.listenersFor("USER_CREATED");
-    assertEquals(2, listeners.size());
+    // Same underlying name via string should be a duplicate
+    assertThrows(IllegalStateException.class, () ->
+        registry.register("USER_CREATED", event -> {}));
+
+    // Lookup works via both
+    assertNotNull(registry.listenerFor(AggregateType.GLOBAL.name(), "USER_CREATED"));
   }
 
   // AggregateType tests

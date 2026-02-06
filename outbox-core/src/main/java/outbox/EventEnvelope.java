@@ -27,7 +27,8 @@ public final class EventEnvelope {
     this.eventId = builder.eventId == null ? newEventId() : builder.eventId;
     this.eventType = Objects.requireNonNull(builder.eventType, "eventType");
     this.occurredAt = builder.occurredAt == null ? Instant.now() : builder.occurredAt;
-    this.aggregateType = builder.aggregateType;
+    this.aggregateType = builder.aggregateType == null
+        ? AggregateType.GLOBAL.name() : builder.aggregateType;
     this.aggregateId = builder.aggregateId;
     this.tenantId = builder.tenantId;
 

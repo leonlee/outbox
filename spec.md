@@ -225,7 +225,7 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 | eventId | String | No | ULID (monotonic) |
 | eventType | String | Yes | - |
 | occurredAt | Instant | No | Instant.now() |
-| aggregateType | String | No | null |
+| aggregateType | String | No | AggregateType.GLOBAL.name() (`"__GLOBAL__"`) |
 | aggregateId | String | No | null |
 | tenantId | String | No | null |
 | headers | Map<String,String> | No | empty map |
@@ -327,9 +327,13 @@ EventEnvelope.builder(type)
 
 ```java
 public interface AggregateType {
+  AggregateType GLOBAL = ...; // name() returns "__GLOBAL__"
+
   String name();
 }
 ```
+
+`AggregateType.GLOBAL` is the default aggregate type used when none is explicitly set on an `EventEnvelope`.
 
 ### 7.5 Aggregate Type Usage
 
@@ -450,39 +454,45 @@ LIMIT ?
 
 ## 10. OutboxDispatcher
 
-### 10.1 Constructor
+### 10.1 Builder
 
 ```java
-public OutboxDispatcher(
-    ConnectionProvider connectionProvider,
-    EventStore eventStore,
-    ListenerRegistry listenerRegistry,
-    InFlightTracker inFlightTracker,
-    RetryPolicy retryPolicy,
-    int maxAttempts,
-    int workerCount,
-    int hotQueueCapacity,
-    int coldQueueCapacity,
-    MetricsExporter metrics
-)
+OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+    .connectionProvider(connectionProvider)  // required
+    .eventStore(eventStore)                  // required
+    .listenerRegistry(listenerRegistry)      // required
+    .inFlightTracker(tracker)                // default: DefaultInFlightTracker
+    .retryPolicy(policy)                     // default: ExponentialBackoffRetryPolicy(200, 60_000)
+    .maxAttempts(10)                         // default: 10
+    .workerCount(4)                          // default: 4
+    .hotQueueCapacity(1000)                  // default: 1000
+    .coldQueueCapacity(1000)                 // default: 1000
+    .metrics(metricsExporter)                // default: MetricsExporter.NOOP
+    .interceptor(interceptor)                // optional, repeatable
+    .drainTimeoutMs(5000)                    // default: 5000
+    .build();
 ```
 
 ### 10.2 Methods
 
 ```java
-boolean enqueueHot(QueuedEvent event)  // Returns false if queue full
-boolean enqueueCold(QueuedEvent event) // Returns false if queue full
+boolean enqueueHot(QueuedEvent event)  // Returns false if queue full or shutting down
+boolean enqueueCold(QueuedEvent event) // Returns false if queue full or shutting down
 boolean hasColdQueueCapacity()         // Check if cold queue has space
-void close()                           // Graceful shutdown
+void close()                           // Graceful shutdown with drain
 ```
 
 ### 10.3 Processing Flow
 
 For each queued event:
 1. **Dedupe**: If eventId already inflight, drop
-2. **Execute**: Run all matching listeners in registration order
-3. **Success**: Update DB to DONE; remove from inflight
-4. **Failure**: Update RETRY with backoff, or DEAD after maxAttempts; remove from inflight
+2. **Interceptors**: Run `beforeDispatch` in registration order
+3. **Route**: Find single listener via `listenerRegistry.listenerFor(aggregateType, eventType)`
+4. **Unroutable**: If no listener, throw `UnroutableEventException` → mark DEAD immediately (no retry)
+5. **Execute**: Run the listener
+6. **After**: Run `afterDispatch` in reverse order (null error on success, exception on failure)
+7. **Success**: Update DB to DONE; remove from inflight
+8. **Failure**: Update RETRY with backoff, or DEAD after maxAttempts; remove from inflight
 
 ### 10.4 Synchronous Execution Model
 
@@ -491,11 +501,38 @@ Workers execute listeners **synchronously** on the worker thread:
 ```
 Worker Thread:
   loop:
-    event = queue.poll()
-    for listener in listeners:
-      listener.onEvent(event)  // blocking
+    event = pollFairly()      // 2:1 hot:cold weighted round-robin
+    interceptors.beforeDispatch(event)
+    listener = registry.listenerFor(aggregateType, eventType)
+    listener.onEvent(event)   // blocking
+    interceptors.afterDispatch(event, null)
     markDone(event)
 ```
+
+### 10.5 EventInterceptor
+
+Cross-cutting hooks for audit, logging, and metrics:
+
+```java
+public interface EventInterceptor {
+  default void beforeDispatch(EventEnvelope event) throws Exception {}
+  default void afterDispatch(EventEnvelope event, Exception error) {}
+}
+```
+
+- `beforeDispatch` runs in registration order; exception short-circuits to RETRY/DEAD
+- `afterDispatch` runs in reverse order; exceptions are logged but swallowed
+- Factory methods: `EventInterceptor.before(hook)`, `EventInterceptor.after(hook)`
+
+### 10.6 Fair Queue Draining
+
+Workers use 2:1 weighted round-robin: hot queue gets 2/3 of poll attempts, cold queue 1/3.
+This prevents cold queue starvation under sustained hot load.
+
+### 10.7 Graceful Shutdown
+
+`close()` stops accepting new events, signals workers to drain remaining events,
+and waits up to `drainTimeoutMs` before forcing shutdown.
 
 This is intentional for **natural backpressure**:
 - `workerCount` = maximum concurrent events being processed
@@ -505,7 +542,7 @@ This is intentional for **natural backpressure**:
 
 **Tuning:** Adjust `workerCount` to control max parallelism. Higher values increase throughput but may overwhelm downstream services.
 
-### 10.5 Queue Element
+### 10.8 Queue Element
 
 ```java
 public class QueuedEvent {
@@ -515,7 +552,7 @@ public class QueuedEvent {
 }
 ```
 
-### 10.6 InFlightTracker
+### 10.9 InFlightTracker
 
 Prevents concurrent processing of the same event.
 
@@ -604,10 +641,8 @@ When `ownerId` is provided (9-arg constructor), the poller uses claim-based lock
 /**
  * Listener that reacts to outbox events.
  *
- * Implementations can perform any action: publish to message brokers,
- * update caches, call external services, or process locally. The framework
- * makes no distinction between different listener types - all are treated
- * equally and executed in registration order.
+ * Each (aggregateType, eventType) pair maps to exactly one listener.
+ * For cross-cutting concerns (audit, logging), use EventInterceptor.
  */
 public interface EventListener {
   void onEvent(EventEnvelope event) throws Exception;
@@ -618,33 +653,34 @@ public interface EventListener {
 
 ```java
 public interface ListenerRegistry {
-  List<EventListener> listenersFor(String eventType);
+  EventListener listenerFor(String aggregateType, String eventType);
 }
 ```
+
+Returns the single listener for the given `(aggregateType, eventType)`, or `null` if none registered.
 
 ### 12.3 DefaultListenerRegistry
 
 ```java
+// Register with GLOBAL aggregate type (convenience)
+registry.register("UserCreated", event -> { ... });
+
+// Register with specific aggregate type
+registry.register("Order", "OrderPlaced", event -> { ... });
+
 // Type-safe registration
-registry.register(UserEvents.USER_CREATED, event -> {
-  // Send to Kafka, update cache, call API, etc.
-});
-
-// String registration
-registry.register("UserUpdated", event -> { ... });
-
-// Wildcard (matches all events) - useful for audit/logging
-registry.registerAll(event -> {
-  log.info("Event dispatched: {}", event.eventId());
-});
+registry.register(Aggregates.USER, UserEvents.USER_CREATED, event -> { ... });
 ```
 
-### 12.4 Matching Rules
+- Duplicate registration for the same `(aggregateType, eventType)` throws `IllegalStateException`
+- Convenience `register(eventType, listener)` uses `AggregateType.GLOBAL`
 
-1. Find all listeners registered for the exact event type
-2. Append all wildcard ("*") registrations
-3. Return combined immutable list
-4. Listeners execute in registration order
+### 12.4 Routing Rules
+
+1. Lookup listener via `aggregateType + ":" + eventType` key
+2. If found, execute the single listener
+3. If not found, throw `UnroutableEventException` → event marked DEAD immediately (no retry)
+4. For cross-cutting behavior (audit/logging), use `EventInterceptor` on the dispatcher builder
 
 ---
 
@@ -743,35 +779,30 @@ Workers execute listeners synchronously (blocking). This provides natural rate l
 
 ## 15. Configuration
 
-### 15.1 OutboxConfig
+Configuration is embedded in `OutboxDispatcher.Builder` and `OutboxPoller` constructor parameters. There is no separate config object.
+
+### 15.1 Dispatcher Defaults
+
+| Parameter | Default |
+|-----------|---------|
+| workerCount | 4 |
+| hotQueueCapacity | 1000 |
+| coldQueueCapacity | 1000 |
+| maxAttempts | 10 |
+| retryPolicy | ExponentialBackoffRetryPolicy(200, 60_000) |
+| drainTimeoutMs | 5000 |
+| metrics | MetricsExporter.NOOP |
+
+### 15.2 Builder Example
 
 ```java
-public final class OutboxConfig {
-  // OutboxDispatcher
-  int dispatcherWorkers;      // default: 4
-  int hotQueueCapacity;       // default: 1000
-  int coldQueueCapacity;      // default: 1000
-
-  // OutboxPoller
-  boolean pollerEnabled;      // default: true
-  long pollerIntervalMs;      // default: 5000
-  int pollerBatchSize;        // default: 200
-  long pollerSkipRecentMs;    // default: 1000
-
-  // Retry
-  long retryBaseDelayMs;      // default: 200
-  long retryMaxDelayMs;       // default: 60000
-  int retryMaxAttempts;       // default: 10
-}
-```
-
-### 15.2 Fluent Builder
-
-```java
-OutboxConfig config = new OutboxConfig()
-    .setDispatcherWorkers(8)
-    .setHotQueueCapacity(2000)
-    .setPollerBatchSize(500);
+OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+    .connectionProvider(connectionProvider)
+    .eventStore(eventStore)
+    .listenerRegistry(registry)
+    .workerCount(8)
+    .hotQueueCapacity(2000)
+    .build();
 ```
 
 ---
@@ -817,7 +848,7 @@ public interface MetricsExporter {
 | Component | Strategy |
 |-----------|----------|
 | OutboxDispatcher | Worker pool (ExecutorService), bounded BlockingQueues |
-| Registries | ConcurrentHashMap + CopyOnWriteArrayList |
+| Registries | ConcurrentHashMap |
 | InFlightTracker | ConcurrentHashMap with CAS operations |
 | OutboxPoller | Single-thread ScheduledExecutorService |
 | ThreadLocalTxContext | ThreadLocal storage |
@@ -872,21 +903,16 @@ JdbcEventStore eventStore = new JdbcEventStore();
 DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
 ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 
-OutboxDispatcher dispatcher = new OutboxDispatcher(
-    connectionProvider,
-    eventStore,
-    new DefaultListenerRegistry()
+OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+    .connectionProvider(connectionProvider)
+    .eventStore(eventStore)
+    .listenerRegistry(new DefaultListenerRegistry()
         .register("UserCreated", event -> {
           // publish to MQ, update cache, call API, etc.
-        })
-        .registerAll(event -> {
-          // audit/logging for all events
-        }),
-    new DefaultInFlightTracker(),
-    new ExponentialBackoffRetryPolicy(200, 60_000),
-    10, 4, 1000, 1000,
-    MetricsExporter.NOOP
-);
+        }))
+    .interceptor(EventInterceptor.before(event ->
+        log.info("Dispatching: {}", event.eventType())))
+    .build();
 
 OutboxPoller poller = new OutboxPoller(
     connectionProvider, eventStore, dispatcher,

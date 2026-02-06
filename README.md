@@ -56,9 +56,8 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 import outbox.EventEnvelope;
 import outbox.OutboxClient;
 import outbox.spi.MetricsExporter;
-import outbox.dispatch.DefaultInFlightTracker;
+import outbox.dispatch.EventInterceptor;
 import outbox.dispatch.OutboxDispatcher;
-import outbox.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
@@ -75,21 +74,16 @@ JdbcEventStore eventStore = new JdbcEventStore();
 DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
 ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 
-OutboxDispatcher dispatcher = new OutboxDispatcher(
-    connectionProvider,
-    eventStore,
-    new DefaultListenerRegistry()
+OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+    .connectionProvider(connectionProvider)
+    .eventStore(eventStore)
+    .listenerRegistry(new DefaultListenerRegistry()
         .register("UserCreated", event -> {
           // publish to MQ; include event.eventId() for dedupe
-        }),
-    new DefaultInFlightTracker(),
-    new ExponentialBackoffRetryPolicy(200, 60_000),
-    10, // maxAttempts
-    4,  // workerCount
-    1000,
-    1000,
-    MetricsExporter.NOOP
-);
+        }))
+    .interceptor(EventInterceptor.before(event ->
+        System.out.println("Dispatching: " + event.eventType())))
+    .build();
 
 OutboxPoller poller = new OutboxPoller(
     connectionProvider,
@@ -118,9 +112,7 @@ try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
 import outbox.EventEnvelope;
 import outbox.OutboxClient;
 import outbox.spi.MetricsExporter;
-import outbox.dispatch.DefaultInFlightTracker;
 import outbox.dispatch.OutboxDispatcher;
-import outbox.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
@@ -168,20 +160,16 @@ public final class OutboxExample {
     ThreadLocalTxContext txContext = new ThreadLocalTxContext();
     JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
 
-    OutboxDispatcher dispatcher = new OutboxDispatcher(
-        connectionProvider,
-        eventStore,
-        new DefaultListenerRegistry()
+    OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .listenerRegistry(new DefaultListenerRegistry()
             .register("UserCreated", event ->
-                System.out.println("Published to MQ: " + event.eventId())),
-        new DefaultInFlightTracker(),
-        new ExponentialBackoffRetryPolicy(200, 60_000),
-        10,
-        2,
-        100,
-        100,
-        MetricsExporter.NOOP
-    );
+                System.out.println("Published to MQ: " + event.eventId())))
+        .workerCount(2)
+        .hotQueueCapacity(100)
+        .coldQueueCapacity(100)
+        .build();
 
     OutboxPoller poller = new OutboxPoller(
         connectionProvider,

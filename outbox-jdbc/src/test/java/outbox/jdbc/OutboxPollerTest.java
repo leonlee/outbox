@@ -1,7 +1,6 @@
 package outbox.jdbc;
 
 import outbox.EventEnvelope;
-import outbox.dispatch.DefaultInFlightTracker;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.model.EventStatus;
 import outbox.poller.OutboxPoller;
@@ -67,18 +66,15 @@ class OutboxPollerTest {
     DefaultListenerRegistry listeners = new DefaultListenerRegistry()
         .register("Recent", e -> latch.countDown());
 
-    OutboxDispatcher dispatcher = new OutboxDispatcher(
-        connectionProvider,
-        eventStore,
-        listeners,
-        new DefaultInFlightTracker(),
-        attempts -> 0L,
-        10,
-        1,
-        10,
-        10,
-        MetricsExporter.NOOP
-    );
+    OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .listenerRegistry(listeners)
+        .retryPolicy(attempts -> 0L)
+        .workerCount(1)
+        .hotQueueCapacity(10)
+        .coldQueueCapacity(10)
+        .build();
 
     RecordingMetrics metrics = new RecordingMetrics();
     try (OutboxPoller poller = new OutboxPoller(
@@ -107,18 +103,15 @@ class OutboxPollerTest {
     insertEvent(EventEnvelope.builder("Test").eventId("evt-2").occurredAt(createdAt).payloadJson("{}").build());
     insertEvent(EventEnvelope.builder("Test").eventId("evt-3").occurredAt(createdAt).payloadJson("{}").build());
 
-    OutboxDispatcher dispatcher = new OutboxDispatcher(
-        connectionProvider,
-        eventStore,
-        new DefaultListenerRegistry(),
-        new DefaultInFlightTracker(),
-        attempts -> 0L,
-        10,
-        0,
-        10,
-        1,
-        MetricsExporter.NOOP
-    );
+    OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .listenerRegistry(new DefaultListenerRegistry())
+        .retryPolicy(attempts -> 0L)
+        .workerCount(0)
+        .hotQueueCapacity(10)
+        .coldQueueCapacity(1)
+        .build();
 
     RecordingMetrics metrics = new RecordingMetrics();
     try (OutboxPoller poller = new OutboxPoller(
@@ -151,18 +144,15 @@ class OutboxPollerTest {
     DefaultListenerRegistry listeners = new DefaultListenerRegistry()
         .register("Test", e -> latch.countDown());
 
-    OutboxDispatcher dispatcher = new OutboxDispatcher(
-        connectionProvider,
-        eventStore,
-        listeners,
-        new DefaultInFlightTracker(),
-        attempts -> 0L,
-        10,
-        1,
-        10,
-        10,
-        MetricsExporter.NOOP
-    );
+    OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .listenerRegistry(listeners)
+        .retryPolicy(attempts -> 0L)
+        .workerCount(1)
+        .hotQueueCapacity(10)
+        .coldQueueCapacity(10)
+        .build();
 
     RecordingMetrics metrics = new RecordingMetrics();
     try (OutboxPoller poller = new OutboxPoller(

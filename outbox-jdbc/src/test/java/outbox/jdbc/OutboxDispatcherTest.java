@@ -59,28 +59,24 @@ class OutboxDispatcherTest {
   }
 
   @Test
-  void hotQueueIsPrioritizedWhenBothQueuesContainEvents() throws Exception {
+  void hotQueueIsPrioritizedOverColdQueue() throws Exception {
     List<String> order = new CopyOnWriteArrayList<>();
     CountDownLatch processed = new CountDownLatch(2);
 
     DefaultListenerRegistry listeners = new DefaultListenerRegistry()
-        .registerAll(event -> {
+        .register("Test", event -> {
           order.add(event.eventId());
           processed.countDown();
         });
 
-    OutboxDispatcher dispatcher = new OutboxDispatcher(
-        connectionProvider,
-        eventStore,
-        listeners,
-        new DefaultInFlightTracker(),
-        attempts -> 0L,
-        10,
-        0,
-        10,
-        10,
-        MetricsExporter.NOOP
-    );
+    OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .listenerRegistry(listeners)
+        .workerCount(0)
+        .hotQueueCapacity(10)
+        .coldQueueCapacity(10)
+        .build();
 
     EventEnvelope cold = EventEnvelope.builder("Test").eventId("cold").payloadJson("{}").build();
     EventEnvelope hot = EventEnvelope.builder("Test").eventId("hot").payloadJson("{}").build();
@@ -105,24 +101,20 @@ class OutboxDispatcherTest {
   }
 
   @Test
-  void failureStopsSubsequentListenersAndMarksRetry() throws Exception {
-    AtomicInteger secondCalled = new AtomicInteger();
+  void failureMarksRetry() throws Exception {
     DefaultListenerRegistry listeners = new DefaultListenerRegistry()
-        .register("Test", event -> { throw new RuntimeException("boom"); })
-        .register("Test", event -> secondCalled.incrementAndGet());
+        .register("Test", event -> { throw new RuntimeException("boom"); });
 
-    OutboxDispatcher dispatcher = new OutboxDispatcher(
-        connectionProvider,
-        eventStore,
-        listeners,
-        new DefaultInFlightTracker(),
-        attempts -> 0L,
-        3,
-        1,
-        10,
-        10,
-        MetricsExporter.NOOP
-    );
+    OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .listenerRegistry(listeners)
+        .retryPolicy(attempts -> 0L)
+        .maxAttempts(3)
+        .workerCount(1)
+        .hotQueueCapacity(10)
+        .coldQueueCapacity(10)
+        .build();
 
     EventEnvelope event = EventEnvelope.builder("Test").eventId("evt-retry").payloadJson("{}").build();
     insertEvent(event);
@@ -130,7 +122,6 @@ class OutboxDispatcherTest {
     dispatcher.enqueueHot(new QueuedEvent(event, QueuedEvent.Source.HOT, 0));
 
     awaitStatus(event.eventId(), EventStatus.RETRY, 2_000);
-    assertEquals(0, secondCalled.get());
 
     dispatcher.close();
   }
@@ -140,18 +131,16 @@ class OutboxDispatcherTest {
     DefaultListenerRegistry listeners = new DefaultListenerRegistry()
         .register("Test", event -> { throw new RuntimeException("boom"); });
 
-    OutboxDispatcher dispatcher = new OutboxDispatcher(
-        connectionProvider,
-        eventStore,
-        listeners,
-        new DefaultInFlightTracker(),
-        attempts -> 0L,
-        1,
-        1,
-        10,
-        10,
-        MetricsExporter.NOOP
-    );
+    OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .listenerRegistry(listeners)
+        .retryPolicy(attempts -> 0L)
+        .maxAttempts(1)
+        .workerCount(1)
+        .hotQueueCapacity(10)
+        .coldQueueCapacity(10)
+        .build();
 
     EventEnvelope event = EventEnvelope.builder("Test").eventId("evt-dead").payloadJson("{}").build();
     insertEvent(event);
@@ -171,7 +160,7 @@ class OutboxDispatcherTest {
     AtomicInteger calls = new AtomicInteger();
 
     DefaultListenerRegistry listeners = new DefaultListenerRegistry()
-        .registerAll(event -> {
+        .register("Test", event -> {
           int count = calls.incrementAndGet();
           if (count == 1) {
             firstStarted.countDown();
@@ -179,18 +168,16 @@ class OutboxDispatcherTest {
           }
         });
 
-    OutboxDispatcher dispatcher = new OutboxDispatcher(
-        connectionProvider,
-        eventStore,
-        listeners,
-        inFlightTracker,
-        attempts -> 0L,
-        10,
-        0,
-        10,
-        10,
-        MetricsExporter.NOOP
-    );
+    OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .listenerRegistry(listeners)
+        .inFlightTracker(inFlightTracker)
+        .retryPolicy(attempts -> 0L)
+        .workerCount(0)
+        .hotQueueCapacity(10)
+        .coldQueueCapacity(10)
+        .build();
 
     Method dispatchEvent = OutboxDispatcher.class.getDeclaredMethod("dispatchEvent", QueuedEvent.class);
     dispatchEvent.setAccessible(true);

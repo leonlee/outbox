@@ -4,9 +4,8 @@ package outbox;
  * Listener that reacts to outbox events.
  *
  * <p>Implementations can perform any action: publish to message brokers,
- * update caches, call external services, or process locally. The framework
- * makes no distinction between different listener types - all listeners
- * are treated equally and executed in registration order.
+ * update caches, call external services, or process locally. Each
+ * (aggregateType, eventType) pair maps to exactly one listener.
  *
  * <h2>Execution Model</h2>
  * <p>Listeners are executed <b>synchronously</b> on dispatcher worker threads.
@@ -18,8 +17,14 @@ package outbox;
  * <ul>
  *   <li>The event is marked for RETRY with exponential backoff</li>
  *   <li>After max attempts, the event is marked DEAD</li>
- *   <li>Subsequent listeners for the same event are NOT executed</li>
  * </ul>
+ *
+ * <p>If no listener is registered for an event's (aggregateType, eventType),
+ * the event is immediately marked DEAD (no retry).
+ *
+ * <h2>Cross-Cutting Concerns</h2>
+ * <p>For audit logging, metrics, and other cross-cutting behavior, use
+ * {@link outbox.dispatch.EventInterceptor} instead of a listener.
  *
  * <h2>Idempotency</h2>
  * <p>Listeners may be invoked multiple times for the same event (at-least-once
@@ -32,14 +37,9 @@ package outbox;
  *   kafkaTemplate.send("orders", event.eventId(), event.payloadJson());
  * });
  *
- * // Update read model
- * registry.register("UserUpdated", event -> {
+ * // Update read model with aggregate-scoped registration
+ * registry.register("User", "UserUpdated", event -> {
  *   userCache.invalidate(event.aggregateId());
- * });
- *
- * // Audit logging (wildcard)
- * registry.registerAll(event -> {
- *   auditLog.record(event.eventType(), event.eventId());
  * });
  * }</pre>
  *

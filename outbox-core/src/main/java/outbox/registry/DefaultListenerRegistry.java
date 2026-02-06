@@ -1,96 +1,90 @@
 package outbox.registry;
 
+import outbox.AggregateType;
 import outbox.EventListener;
 import outbox.EventType;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Thread-safe registry for event listeners.
+ * Thread-safe registry mapping (aggregateType, eventType) pairs to listeners.
  *
- * <p>Supports registration by specific event type or wildcard ("*") for all events.
- * Listeners are invoked in registration order.
+ * <p>Each (aggregateType, eventType) pair maps to exactly one listener.
+ * Duplicate registration throws {@link IllegalStateException}.
  *
  * <h2>Usage</h2>
  * <pre>{@code
  * ListenerRegistry registry = new DefaultListenerRegistry()
- *     // Type-specific listeners
- *     .register("OrderCreated", event -> kafka.send(event))
- *     .register("OrderCreated", event -> cache.invalidate(event))
- *     .register(UserEvents.USER_DELETED, event -> cleanup(event))
- *
- *     // Wildcard listener for audit/logging
- *     .registerAll(event -> audit.log(event));
+ *     .register("UserCreated", event -> kafka.send(event))
+ *     .register(Aggregates.ORDER, "OrderPlaced", event -> process(event));
  * }</pre>
  *
- * <h2>Thread Safety</h2>
- * <p>This implementation is thread-safe. Registrations can be made concurrently,
- * and lookups return consistent snapshots.
+ * <p>The convenience {@code register(eventType, listener)} overloads use
+ * {@link AggregateType#GLOBAL} as the aggregate type.
  *
  * @see EventListener
  * @see ListenerRegistry
  */
 public final class DefaultListenerRegistry implements ListenerRegistry {
-  public static final String ALL_EVENTS = "*";
 
-  private final CopyOnWriteArrayList<Registration> registrations = new CopyOnWriteArrayList<>();
+  private final ConcurrentHashMap<String, EventListener> listeners = new ConcurrentHashMap<>();
 
   /**
-   * Registers a listener for a type-safe event type.
+   * Registers a listener for a specific (aggregateType, eventType) pair.
    *
-   * @param eventType the event type (enum or other EventType implementation)
+   * @param aggregateType the aggregate type name
+   * @param eventType the event type name
    * @param listener the listener
    * @return this registry for chaining
+   * @throws IllegalStateException if a listener is already registered for this pair
    */
-  public DefaultListenerRegistry register(EventType eventType, EventListener listener) {
-    return register(eventType.name(), listener);
+  public DefaultListenerRegistry register(String aggregateType, String eventType, EventListener listener) {
+    String key = aggregateType + ":" + eventType;
+    EventListener prev = listeners.putIfAbsent(key, listener);
+    if (prev != null) {
+      throw new IllegalStateException("Duplicate: " + key);
+    }
+    return this;
   }
 
   /**
-   * Registers a listener for a string event type.
+   * Registers a listener for a type-safe (aggregateType, eventType) pair.
+   */
+  public DefaultListenerRegistry register(AggregateType aggregateType, EventType eventType, EventListener listener) {
+    return register(aggregateType.name(), eventType.name(), listener);
+  }
+
+  /**
+   * Registers a listener for a type-safe aggregateType and string eventType.
+   */
+  public DefaultListenerRegistry register(AggregateType aggregateType, String eventType, EventListener listener) {
+    return register(aggregateType.name(), eventType, listener);
+  }
+
+  /**
+   * Registers a listener using {@link AggregateType#GLOBAL} as the aggregate type.
    *
    * @param eventType the event type name
    * @param listener the listener
    * @return this registry for chaining
    */
   public DefaultListenerRegistry register(String eventType, EventListener listener) {
-    registrations.add(new Registration(eventType, listener));
-    return this;
+    return register(AggregateType.GLOBAL.name(), eventType, listener);
   }
 
   /**
-   * Registers a listener for all event types (wildcard).
+   * Registers a listener using {@link AggregateType#GLOBAL} as the aggregate type.
    *
+   * @param eventType the event type
    * @param listener the listener
    * @return this registry for chaining
    */
-  public DefaultListenerRegistry registerAll(EventListener listener) {
-    return register(ALL_EVENTS, listener);
+  public DefaultListenerRegistry register(EventType eventType, EventListener listener) {
+    return register(AggregateType.GLOBAL.name(), eventType.name(), listener);
   }
 
   @Override
-  public List<EventListener> listenersFor(String eventType) {
-    List<EventListener> result = new ArrayList<>();
-    for (Registration registration : registrations) {
-      if (ALL_EVENTS.equals(registration.eventType)
-          || Objects.equals(registration.eventType, eventType)) {
-        result.add(registration.listener);
-      }
-    }
-    return Collections.unmodifiableList(result);
-  }
-
-  private static final class Registration {
-    private final String eventType;
-    private final EventListener listener;
-
-    private Registration(String eventType, EventListener listener) {
-      this.eventType = eventType;
-      this.listener = listener;
-    }
+  public EventListener listenerFor(String aggregateType, String eventType) {
+    return listeners.get(aggregateType + ":" + eventType);
   }
 }

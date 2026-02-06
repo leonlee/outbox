@@ -10,6 +10,8 @@ import outbox.spi.MetricsExporter;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -27,12 +29,13 @@ public final class OutboxDispatcher implements AutoCloseable {
   private static final Logger logger = Logger.getLogger(OutboxDispatcher.class.getName());
 
   private static final long QUEUE_POLL_TIMEOUT_MS = 50;
-  private static final long SHUTDOWN_TIMEOUT_SECONDS = 5;
 
   private final BlockingQueue<QueuedEvent> hotQueue;
   private final BlockingQueue<QueuedEvent> coldQueue;
   private final ExecutorService workers;
   private final AtomicBoolean running = new AtomicBoolean(true);
+  private final AtomicBoolean accepting = new AtomicBoolean(true);
+  private final AtomicInteger pollCounter = new AtomicInteger(0);
 
   private final ConnectionProvider connectionProvider;
   private final EventStore eventStore;
@@ -41,19 +44,26 @@ public final class OutboxDispatcher implements AutoCloseable {
   private final RetryPolicy retryPolicy;
   private final int maxAttempts;
   private final MetricsExporter metrics;
+  private final List<EventInterceptor> interceptors;
+  private final long drainTimeoutMs;
 
-  public OutboxDispatcher(
-      ConnectionProvider connectionProvider,
-      EventStore eventStore,
-      ListenerRegistry listenerRegistry,
-      InFlightTracker inFlightTracker,
-      RetryPolicy retryPolicy,
-      int maxAttempts,
-      int workerCount,
-      int hotQueueCapacity,
-      int coldQueueCapacity,
-      MetricsExporter metrics
-  ) {
+  private OutboxDispatcher(Builder builder) {
+    this.connectionProvider = Objects.requireNonNull(builder.connectionProvider, "connectionProvider");
+    this.eventStore = Objects.requireNonNull(builder.eventStore, "eventStore");
+    this.listenerRegistry = Objects.requireNonNull(builder.listenerRegistry, "listenerRegistry");
+    this.inFlightTracker = builder.inFlightTracker != null
+        ? builder.inFlightTracker : new DefaultInFlightTracker();
+    this.retryPolicy = builder.retryPolicy != null
+        ? builder.retryPolicy : new ExponentialBackoffRetryPolicy(200, 60_000);
+    this.metrics = builder.metrics != null ? builder.metrics : MetricsExporter.NOOP;
+    this.interceptors = Collections.unmodifiableList(new ArrayList<>(builder.interceptors));
+    this.drainTimeoutMs = builder.drainTimeoutMs;
+
+    int maxAttempts = builder.maxAttempts;
+    int workerCount = builder.workerCount;
+    int hotQueueCapacity = builder.hotQueueCapacity;
+    int coldQueueCapacity = builder.coldQueueCapacity;
+
     if (maxAttempts < 1) {
       throw new IllegalArgumentException("maxAttempts must be >= 1");
     }
@@ -63,13 +73,7 @@ public final class OutboxDispatcher implements AutoCloseable {
     if (hotQueueCapacity <= 0 || coldQueueCapacity <= 0) {
       throw new IllegalArgumentException("Queue capacities must be > 0");
     }
-    this.connectionProvider = Objects.requireNonNull(connectionProvider, "connectionProvider");
-    this.eventStore = Objects.requireNonNull(eventStore, "eventStore");
-    this.listenerRegistry = Objects.requireNonNull(listenerRegistry, "listenerRegistry");
-    this.inFlightTracker = Objects.requireNonNull(inFlightTracker, "inFlightTracker");
-    this.retryPolicy = Objects.requireNonNull(retryPolicy, "retryPolicy");
     this.maxAttempts = maxAttempts;
-    this.metrics = metrics == null ? MetricsExporter.NOOP : metrics;
 
     this.hotQueue = new ArrayBlockingQueue<>(hotQueueCapacity);
     this.coldQueue = new ArrayBlockingQueue<>(coldQueueCapacity);
@@ -85,13 +89,19 @@ public final class OutboxDispatcher implements AutoCloseable {
     }
   }
 
+  public static Builder builder() {
+    return new Builder();
+  }
+
   public boolean enqueueHot(QueuedEvent event) {
+    if (!accepting.get()) return false;
     boolean enqueued = hotQueue.offer(event);
     metrics.recordQueueDepths(hotQueue.size(), coldQueue.size());
     return enqueued;
   }
 
   public boolean enqueueCold(QueuedEvent event) {
+    if (!accepting.get()) return false;
     boolean enqueued = coldQueue.offer(event);
     metrics.recordQueueDepths(hotQueue.size(), coldQueue.size());
     return enqueued;
@@ -101,14 +111,33 @@ public final class OutboxDispatcher implements AutoCloseable {
     return coldQueue.remainingCapacity() > 0;
   }
 
+  private QueuedEvent pollFairly() throws InterruptedException {
+    int cycle = pollCounter.getAndIncrement();
+    BlockingQueue<QueuedEvent> primary;
+    BlockingQueue<QueuedEvent> secondary;
+    if ((cycle & 0x7FFFFFFF) % 3 == 2) {
+      primary = coldQueue;
+      secondary = hotQueue;
+    } else {
+      primary = hotQueue;
+      secondary = coldQueue;
+    }
+    QueuedEvent event = primary.poll(QUEUE_POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    if (event == null) {
+      event = secondary.poll(QUEUE_POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+    return event;
+  }
+
   private void workerLoop() {
-    while (running.get() && !Thread.currentThread().isInterrupted()) {
+    while (!Thread.currentThread().isInterrupted()) {
       try {
-        QueuedEvent event = hotQueue.poll(QUEUE_POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-        if (event == null) {
-          event = coldQueue.poll(QUEUE_POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        if (!running.get() && hotQueue.isEmpty() && coldQueue.isEmpty()) {
+          break;
         }
+        QueuedEvent event = pollFairly();
         if (event == null) {
+          if (!running.get()) break;
           continue;
         }
         dispatchEvent(event);
@@ -137,13 +166,46 @@ public final class OutboxDispatcher implements AutoCloseable {
   }
 
   private void deliverEvent(EventEnvelope envelope) throws Exception {
-    List<EventListener> listeners = listenerRegistry.listenersFor(envelope.eventType());
-    for (EventListener listener : listeners) {
+    int completedBefore = 0;
+    try {
+      for (int i = 0; i < interceptors.size(); i++) {
+        interceptors.get(i).beforeDispatch(envelope);
+        completedBefore = i + 1;
+      }
+
+      EventListener listener = listenerRegistry.listenerFor(
+          envelope.aggregateType(), envelope.eventType());
+      if (listener == null) {
+        throw new UnroutableEventException("No listener for aggregateType="
+            + envelope.aggregateType() + ", eventType=" + envelope.eventType());
+      }
       listener.onEvent(envelope);
+
+      runAfterDispatch(envelope, null, completedBefore);
+    } catch (Exception e) {
+      runAfterDispatch(envelope, e, completedBefore);
+      throw e;
+    }
+  }
+
+  private void runAfterDispatch(EventEnvelope envelope, Exception error, int count) {
+    for (int i = count - 1; i >= 0; i--) {
+      try {
+        interceptors.get(i).afterDispatch(envelope, error);
+      } catch (Exception ex) {
+        logger.log(Level.WARNING, "Interceptor afterDispatch failed", ex);
+      }
     }
   }
 
   private void handleFailure(QueuedEvent event, Exception failure) {
+    if (failure instanceof UnroutableEventException) {
+      markDead(event.envelope().eventId(), failure);
+      metrics.incrementDispatchDead();
+      logger.log(Level.SEVERE, "Unroutable event marked DEAD: " + event.envelope().eventId(), failure);
+      return;
+    }
+
     int nextAttempt = event.attempts() + 1;
     if (nextAttempt >= maxAttempts) {
       markDead(event.envelope().eventId(), failure);
@@ -186,12 +248,105 @@ public final class OutboxDispatcher implements AutoCloseable {
 
   @Override
   public void close() {
+    accepting.set(false);
     running.set(false);
-    workers.shutdownNow();
+    workers.shutdown();
     try {
-      workers.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+      if (!workers.awaitTermination(drainTimeoutMs, TimeUnit.MILLISECONDS)) {
+        logger.log(Level.WARNING, "Drain timeout exceeded; forcing shutdown. "
+            + "Hot remaining: " + hotQueue.size() + ", Cold remaining: " + coldQueue.size());
+        workers.shutdownNow();
+        workers.awaitTermination(5, TimeUnit.SECONDS);
+      }
     } catch (InterruptedException e) {
+      workers.shutdownNow();
       Thread.currentThread().interrupt();
+    }
+  }
+
+  public static final class Builder {
+    private ConnectionProvider connectionProvider;
+    private EventStore eventStore;
+    private ListenerRegistry listenerRegistry;
+    private InFlightTracker inFlightTracker;
+    private RetryPolicy retryPolicy;
+    private int maxAttempts = 10;
+    private int workerCount = 4;
+    private int hotQueueCapacity = 1000;
+    private int coldQueueCapacity = 1000;
+    private MetricsExporter metrics;
+    private final List<EventInterceptor> interceptors = new ArrayList<>();
+    private long drainTimeoutMs = 5000;
+
+    private Builder() {}
+
+    public Builder connectionProvider(ConnectionProvider connectionProvider) {
+      this.connectionProvider = connectionProvider;
+      return this;
+    }
+
+    public Builder eventStore(EventStore eventStore) {
+      this.eventStore = eventStore;
+      return this;
+    }
+
+    public Builder listenerRegistry(ListenerRegistry listenerRegistry) {
+      this.listenerRegistry = listenerRegistry;
+      return this;
+    }
+
+    public Builder inFlightTracker(InFlightTracker inFlightTracker) {
+      this.inFlightTracker = inFlightTracker;
+      return this;
+    }
+
+    public Builder retryPolicy(RetryPolicy retryPolicy) {
+      this.retryPolicy = retryPolicy;
+      return this;
+    }
+
+    public Builder maxAttempts(int maxAttempts) {
+      this.maxAttempts = maxAttempts;
+      return this;
+    }
+
+    public Builder workerCount(int workerCount) {
+      this.workerCount = workerCount;
+      return this;
+    }
+
+    public Builder hotQueueCapacity(int hotQueueCapacity) {
+      this.hotQueueCapacity = hotQueueCapacity;
+      return this;
+    }
+
+    public Builder coldQueueCapacity(int coldQueueCapacity) {
+      this.coldQueueCapacity = coldQueueCapacity;
+      return this;
+    }
+
+    public Builder metrics(MetricsExporter metrics) {
+      this.metrics = metrics;
+      return this;
+    }
+
+    public Builder interceptor(EventInterceptor interceptor) {
+      this.interceptors.add(interceptor);
+      return this;
+    }
+
+    public Builder interceptors(List<EventInterceptor> interceptors) {
+      this.interceptors.addAll(interceptors);
+      return this;
+    }
+
+    public Builder drainTimeoutMs(long drainTimeoutMs) {
+      this.drainTimeoutMs = drainTimeoutMs;
+      return this;
+    }
+
+    public OutboxDispatcher build() {
+      return new OutboxDispatcher(this);
     }
   }
 

@@ -39,7 +39,6 @@ outbox-core/src/main/java/
     ├── AggregateType.java (interface)
     ├── StringEventType.java
     ├── StringAggregateType.java
-    ├── OutboxConfig.java
     ├── EventListener.java (interface)
     │
     │  # SPI - Extension Point Interfaces
@@ -61,7 +60,9 @@ outbox-core/src/main/java/
     │   ├── ExponentialBackoffRetryPolicy.java
     │   ├── InFlightTracker.java (interface)
     │   ├── DefaultInFlightTracker.java
-    │   └── QueuedEvent.java
+    │   ├── QueuedEvent.java
+    │   ├── EventInterceptor.java (interface)
+    │   └── UnroutableEventException.java
     │
     ├── poller/
     │   └── OutboxPoller.java
@@ -78,18 +79,20 @@ outbox-core/src/main/java/
 
 - **TxContext**: Abstracts transaction lifecycle (`isTransactionActive()`, `currentConnection()`, `afterCommit()`, `afterRollback()`). Implementations: `ThreadLocalTxContext` (JDBC), `SpringTxContext` (Spring).
 - **EventStore**: Persistence contract (`insertNew`, `markDone`, `markRetry`, `markDead`, `pollPending`, `claimPending`). Implemented by `JdbcEventStore`.
-- **OutboxDispatcher**: Dual-queue event processor with hot queue (afterCommit callbacks) and cold queue (poller fallback). Uses `InFlightTracker` for deduplication and `RetryPolicy` for exponential backoff.
+- **OutboxDispatcher**: Dual-queue event processor with hot queue (afterCommit callbacks) and cold queue (poller fallback). Created via `OutboxDispatcher.builder()`. Uses `InFlightTracker` for deduplication, `RetryPolicy` for exponential backoff, `EventInterceptor` for cross-cutting hooks, fair 2:1 hot/cold queue draining, and graceful shutdown with configurable drain timeout.
 - **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails. Supports claim-based locking via `ownerId`/`lockTimeout` for multi-instance deployments.
 - **JdbcTemplate**: Lightweight JDBC helper (`update`, `query`, `updateReturning`) used by Dialect implementations.
 - **Dialect**: SPI for database-specific SQL including `claimPending()` strategy. PostgreSQL uses `FOR UPDATE SKIP LOCKED` + `RETURNING`; MySQL uses `UPDATE...ORDER BY...LIMIT`; H2 uses subquery-based two-phase claim.
-- **ListenerRegistry**: Maps event types to `EventListener` instances. Supports wildcard "*" registration for audit/logging listeners.
+- **ListenerRegistry**: Maps `(aggregateType, eventType)` pairs to a single `EventListener`. Uses `AggregateType.GLOBAL` as default. Unroutable events (no listener) are immediately marked DEAD.
+- **EventInterceptor**: Cross-cutting before/after hooks for audit, logging, metrics. `beforeDispatch` runs in registration order; `afterDispatch` in reverse. Replaces the old wildcard `registerAll()` pattern.
 
 ### Event Flow
 
 1. `OutboxClient.publish()` inserts event to DB within caller's transaction
 2. `afterCommit` callback enqueues to OutboxDispatcher's hot queue
 3. If hot queue full, event is dropped (logged) and poller picks it up later
-4. OutboxDispatcher workers process events, update status to DONE/RETRY/DEAD
+4. OutboxDispatcher workers process events: run interceptors → find listener via `(aggregateType, eventType)` → execute → update status to DONE/RETRY/DEAD
+5. Unroutable events (no listener found) are immediately marked DEAD (no retry)
 
 ## Coding Style
 

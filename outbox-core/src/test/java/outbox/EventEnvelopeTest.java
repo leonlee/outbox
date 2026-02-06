@@ -20,7 +20,7 @@ class EventEnvelopeTest {
     assertEquals(26, envelope.eventId().length()); // ULID format
     assertEquals("UserCreated", envelope.eventType());
     assertNotNull(envelope.occurredAt());
-    assertNull(envelope.aggregateType());
+    assertEquals(AggregateType.GLOBAL.name(), envelope.aggregateType());
     assertNull(envelope.aggregateId());
     assertNull(envelope.tenantId());
     assertTrue(envelope.headers().isEmpty());

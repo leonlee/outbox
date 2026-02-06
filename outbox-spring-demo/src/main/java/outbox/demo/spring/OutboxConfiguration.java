@@ -11,6 +11,7 @@ import outbox.registry.DefaultListenerRegistry;
 import outbox.registry.ListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
 import outbox.jdbc.JdbcOutboxRepository;
+import outbox.jdbc.dialect.Dialects;
 import outbox.spring.SpringTxContext;
 
 import org.slf4j.Logger;
@@ -27,8 +28,8 @@ public class OutboxConfiguration {
   private static final Logger log = LoggerFactory.getLogger(OutboxConfiguration.class);
 
   @Bean
-  public JdbcOutboxRepository outboxRepository() {
-    return new JdbcOutboxRepository();
+  public JdbcOutboxRepository outboxRepository(DataSource dataSource) {
+    return new JdbcOutboxRepository(Dialects.detect(dataSource));
   }
 
   @Bean

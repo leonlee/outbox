@@ -5,6 +5,7 @@ import outbox.model.EventStatus;
 import outbox.model.OutboxEvent;
 import outbox.spi.EventStore;
 import outbox.util.JsonCodec;
+import outbox.jdbc.spi.Dialect;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -15,9 +16,23 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 public final class JdbcOutboxRepository implements EventStore {
   private static final int MAX_ERROR_LENGTH = 4000;
+  private static final String DEFAULT_TABLE = "outbox_event";
+
+  private final Dialect dialect;
+  private final String tableName;
+
+  public JdbcOutboxRepository(Dialect dialect) {
+    this(dialect, DEFAULT_TABLE);
+  }
+
+  public JdbcOutboxRepository(Dialect dialect, String tableName) {
+    this.dialect = Objects.requireNonNull(dialect, "dialect");
+    this.tableName = Objects.requireNonNull(tableName, "tableName");
+  }
 
   private static String truncateError(String error) {
     if (error == null || error.length() <= MAX_ERROR_LENGTH) {
@@ -25,12 +40,10 @@ public final class JdbcOutboxRepository implements EventStore {
     }
     return error.substring(0, MAX_ERROR_LENGTH - 3) + "...";
   }
+
   @Override
   public void insertNew(Connection conn, EventEnvelope event) {
-    String sql = "INSERT INTO outbox_event (" +
-        "event_id, event_type, aggregate_type, aggregate_id, tenant_id, " +
-        "payload, headers, status, attempts, available_at, created_at, done_at, last_error" +
-        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,NULL)";
+    String sql = dialect.insertSql(tableName);
 
     try (PreparedStatement ps = conn.prepareStatement(sql)) {
       ps.setString(1, event.eventId());
@@ -53,7 +66,7 @@ public final class JdbcOutboxRepository implements EventStore {
 
   @Override
   public int markDone(Connection conn, String eventId) {
-    String sql = "UPDATE outbox_event SET status=1, done_at=? WHERE event_id=? AND status<>1";
+    String sql = dialect.markDoneSql(tableName);
     try (PreparedStatement ps = conn.prepareStatement(sql)) {
       ps.setTimestamp(1, Timestamp.from(Instant.now()));
       ps.setString(2, eventId);
@@ -65,8 +78,7 @@ public final class JdbcOutboxRepository implements EventStore {
 
   @Override
   public int markRetry(Connection conn, String eventId, Instant nextAt, String error) {
-    String sql = "UPDATE outbox_event SET status=2, attempts=attempts+1, available_at=?, last_error=? " +
-        "WHERE event_id=? AND status<>1";
+    String sql = dialect.markRetrySql(tableName);
     try (PreparedStatement ps = conn.prepareStatement(sql)) {
       ps.setTimestamp(1, Timestamp.from(nextAt));
       ps.setString(2, truncateError(error));
@@ -79,7 +91,7 @@ public final class JdbcOutboxRepository implements EventStore {
 
   @Override
   public int markDead(Connection conn, String eventId, String error) {
-    String sql = "UPDATE outbox_event SET status=3, last_error=? WHERE event_id=? AND status<>1";
+    String sql = dialect.markDeadSql(tableName);
     try (PreparedStatement ps = conn.prepareStatement(sql)) {
       ps.setString(1, truncateError(error));
       ps.setString(2, eventId);
@@ -91,9 +103,7 @@ public final class JdbcOutboxRepository implements EventStore {
 
   @Override
   public List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit) {
-    String sql = "SELECT event_id, event_type, aggregate_type, aggregate_id, tenant_id, payload, headers, attempts, created_at " +
-        "FROM outbox_event WHERE status IN (0,2) AND available_at <= ? AND created_at <= ? " +
-        "ORDER BY created_at LIMIT ?";
+    String sql = dialect.pollPendingSql(tableName);
     Instant recentCutoff = skipRecent == null ? now : now.minus(skipRecent);
     List<OutboxEvent> results = new ArrayList<>();
 

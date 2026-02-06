@@ -1,0 +1,3 @@
+outbox.jdbc.dialect.MySqlDialect
+outbox.jdbc.dialect.PostgresDialect
+outbox.jdbc.dialect.H2Dialect

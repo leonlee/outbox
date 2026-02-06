@@ -12,6 +12,7 @@ import outbox.jdbc.DataSourceConnectionProvider;
 import outbox.jdbc.JdbcOutboxRepository;
 import outbox.jdbc.JdbcTransactionManager;
 import outbox.jdbc.ThreadLocalTxContext;
+import outbox.jdbc.dialect.Dialects;
 
 import org.h2.jdbcx.JdbcDataSource;
 
@@ -39,7 +40,7 @@ public final class OutboxDemo {
     createSchema(dataSource);
 
     // 2. Create core components
-    JdbcOutboxRepository repository = new JdbcOutboxRepository();
+    JdbcOutboxRepository repository = new JdbcOutboxRepository(Dialects.detect(dataSource));
     DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
     ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 

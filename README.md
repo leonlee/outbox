@@ -236,7 +236,18 @@ EventEnvelope envelope = EventEnvelope.builder(UserEvents.USER_CREATED)
     .build();
 ```
 
-## Outbox Table (MySQL 8)
+## Outbox Table
+
+Canonical schema files ship in the `outbox-jdbc` JAR under `schema/`:
+
+| Database   | File                                                             | Key types                                            |
+|------------|------------------------------------------------------------------|------------------------------------------------------|
+| H2         | [`h2.sql`](outbox-jdbc/src/main/resources/schema/h2.sql)               | `CLOB`, `TIMESTAMP`, `TINYINT`                |
+| MySQL 8    | [`mysql.sql`](outbox-jdbc/src/main/resources/schema/mysql.sql)         | `JSON`, `DATETIME(6)`, `TINYINT`              |
+| PostgreSQL | [`postgresql.sql`](outbox-jdbc/src/main/resources/schema/postgresql.sql) | `JSONB`, `TIMESTAMPTZ`, `SMALLINT`          |
+
+<details>
+<summary>MySQL 8 example</summary>
 
 ```sql
 CREATE TABLE outbox_event (
@@ -259,6 +270,35 @@ CREATE TABLE outbox_event (
 
 CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_at);
 ```
+
+</details>
+
+<details>
+<summary>PostgreSQL example</summary>
+
+```sql
+CREATE TABLE outbox_event (
+  event_id VARCHAR(36) PRIMARY KEY,
+  event_type VARCHAR(128) NOT NULL,
+  aggregate_type VARCHAR(64),
+  aggregate_id VARCHAR(128),
+  tenant_id VARCHAR(64),
+  payload JSONB NOT NULL,
+  headers JSONB,
+  status SMALLINT NOT NULL,
+  attempts INT NOT NULL DEFAULT 0,
+  available_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  done_at TIMESTAMPTZ,
+  last_error TEXT,
+  locked_by VARCHAR(128),
+  locked_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_at);
+```
+
+</details>
 
 ## Requirements
 

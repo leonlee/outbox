@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class JdbcEventStoreTest {
 
   private JdbcDataSource dataSource;
-  private JdbcEventStore repository;
+  private JdbcEventStore eventStore;
 
   @BeforeEach
   void setUp() throws SQLException {
@@ -54,7 +54,7 @@ class JdbcEventStoreTest {
       );
     }
 
-    repository = new JdbcEventStore(Dialects.get("h2"));
+    eventStore = new JdbcEventStore(Dialects.get("h2"));
   }
 
   @Test
@@ -66,7 +66,7 @@ class JdbcEventStoreTest {
         .build();
 
     try (Connection conn = dataSource.getConnection()) {
-      repository.insertNew(conn, event);
+      eventStore.insertNew(conn, event);
 
       try (PreparedStatement ps = conn.prepareStatement(
           "SELECT status, attempts FROM outbox_event WHERE event_id = ?")) {
@@ -91,7 +91,7 @@ class JdbcEventStoreTest {
         .build();
 
     try (Connection conn = dataSource.getConnection()) {
-      repository.insertNew(conn, event);
+      eventStore.insertNew(conn, event);
 
       try (PreparedStatement ps = conn.prepareStatement(
           "SELECT * FROM outbox_event WHERE event_id = ?")) {
@@ -113,7 +113,7 @@ class JdbcEventStoreTest {
     String eventId = insertTestEvent();
 
     try (Connection conn = dataSource.getConnection()) {
-      int updated = repository.markDone(conn, eventId);
+      int updated = eventStore.markDone(conn, eventId);
 
       assertEquals(1, updated);
 
@@ -133,8 +133,8 @@ class JdbcEventStoreTest {
     String eventId = insertTestEvent();
 
     try (Connection conn = dataSource.getConnection()) {
-      int first = repository.markDone(conn, eventId);
-      int second = repository.markDone(conn, eventId);
+      int first = eventStore.markDone(conn, eventId);
+      int second = eventStore.markDone(conn, eventId);
 
       assertEquals(1, first);
       assertEquals(0, second); // Already DONE, no update
@@ -147,7 +147,7 @@ class JdbcEventStoreTest {
     Instant nextAt = Instant.now().plusSeconds(60);
 
     try (Connection conn = dataSource.getConnection()) {
-      int updated = repository.markRetry(conn, eventId, nextAt, "Connection failed");
+      int updated = eventStore.markRetry(conn, eventId, nextAt, "Connection failed");
 
       assertEquals(1, updated);
 
@@ -172,7 +172,7 @@ class JdbcEventStoreTest {
     }
 
     try (Connection conn = dataSource.getConnection()) {
-      repository.markRetry(conn, eventId, Instant.now(), longError.toString());
+      eventStore.markRetry(conn, eventId, Instant.now(), longError.toString());
 
       try (PreparedStatement ps = conn.prepareStatement(
           "SELECT last_error FROM outbox_event WHERE event_id = ?")) {
@@ -191,7 +191,7 @@ class JdbcEventStoreTest {
     String eventId = insertTestEvent();
 
     try (Connection conn = dataSource.getConnection()) {
-      int updated = repository.markDead(conn, eventId, "Max retries exceeded");
+      int updated = eventStore.markDead(conn, eventId, "Max retries exceeded");
 
       assertEquals(1, updated);
 
@@ -211,7 +211,7 @@ class JdbcEventStoreTest {
     String eventId = insertTestEvent();
 
     try (Connection conn = dataSource.getConnection()) {
-      List<OutboxEvent> rows = repository.pollPending(conn, Instant.now().plusSeconds(1),
+      List<OutboxEvent> rows = eventStore.pollPending(conn, Instant.now().plusSeconds(1),
           Duration.ZERO, 10);
 
       assertEquals(1, rows.size());
@@ -224,9 +224,9 @@ class JdbcEventStoreTest {
     String eventId = insertTestEvent();
 
     try (Connection conn = dataSource.getConnection()) {
-      repository.markRetry(conn, eventId, Instant.now().minusSeconds(10), "error");
+      eventStore.markRetry(conn, eventId, Instant.now().minusSeconds(10), "error");
 
-      List<OutboxEvent> rows = repository.pollPending(conn, Instant.now(),
+      List<OutboxEvent> rows = eventStore.pollPending(conn, Instant.now(),
           Duration.ZERO, 10);
 
       assertEquals(1, rows.size());
@@ -239,9 +239,9 @@ class JdbcEventStoreTest {
     String eventId = insertTestEvent();
 
     try (Connection conn = dataSource.getConnection()) {
-      repository.markDone(conn, eventId);
+      eventStore.markDone(conn, eventId);
 
-      List<OutboxEvent> rows = repository.pollPending(conn, Instant.now().plusSeconds(1),
+      List<OutboxEvent> rows = eventStore.pollPending(conn, Instant.now().plusSeconds(1),
           Duration.ZERO, 10);
 
       assertTrue(rows.isEmpty());
@@ -253,9 +253,9 @@ class JdbcEventStoreTest {
     String eventId = insertTestEvent();
 
     try (Connection conn = dataSource.getConnection()) {
-      repository.markDead(conn, eventId, "dead");
+      eventStore.markDead(conn, eventId, "dead");
 
-      List<OutboxEvent> rows = repository.pollPending(conn, Instant.now().plusSeconds(1),
+      List<OutboxEvent> rows = eventStore.pollPending(conn, Instant.now().plusSeconds(1),
           Duration.ZERO, 10);
 
       assertTrue(rows.isEmpty());
@@ -268,7 +268,7 @@ class JdbcEventStoreTest {
 
     try (Connection conn = dataSource.getConnection()) {
       // Skip events created in the last hour
-      List<OutboxEvent> rows = repository.pollPending(conn, Instant.now(),
+      List<OutboxEvent> rows = eventStore.pollPending(conn, Instant.now(),
           Duration.ofHours(1), 10);
 
       assertTrue(rows.isEmpty());
@@ -282,7 +282,7 @@ class JdbcEventStoreTest {
     }
 
     try (Connection conn = dataSource.getConnection()) {
-      List<OutboxEvent> rows = repository.pollPending(conn, Instant.now().plusSeconds(1),
+      List<OutboxEvent> rows = eventStore.pollPending(conn, Instant.now().plusSeconds(1),
           Duration.ZERO, 3);
 
       assertEquals(3, rows.size());
@@ -295,9 +295,9 @@ class JdbcEventStoreTest {
 
     try (Connection conn = dataSource.getConnection()) {
       // Set available_at to future
-      repository.markRetry(conn, eventId, Instant.now().plus(Duration.ofHours(1)), "delayed");
+      eventStore.markRetry(conn, eventId, Instant.now().plus(Duration.ofHours(1)), "delayed");
 
-      List<OutboxEvent> rows = repository.pollPending(conn, Instant.now(),
+      List<OutboxEvent> rows = eventStore.pollPending(conn, Instant.now(),
           Duration.ZERO, 10);
 
       assertTrue(rows.isEmpty());
@@ -314,7 +314,7 @@ class JdbcEventStoreTest {
     Instant lockExpiry = now.minus(Duration.ofMinutes(5));
 
     try (Connection conn = dataSource.getConnection()) {
-      List<OutboxEvent> claimed = repository.claimPending(
+      List<OutboxEvent> claimed = eventStore.claimPending(
           conn, "owner-A", now, lockExpiry, Duration.ZERO, 2);
 
       assertEquals(2, claimed.size());
@@ -343,12 +343,12 @@ class JdbcEventStoreTest {
     Instant lockExpiry = now.minus(Duration.ofMinutes(5));
 
     try (Connection conn = dataSource.getConnection()) {
-      List<OutboxEvent> claimedA = repository.claimPending(
+      List<OutboxEvent> claimedA = eventStore.claimPending(
           conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
       assertEquals(2, claimedA.size());
 
       // owner-B should get 0 because all are locked by owner-A with non-expired locks
-      List<OutboxEvent> claimedB = repository.claimPending(
+      List<OutboxEvent> claimedB = eventStore.claimPending(
           conn, "owner-B", now, lockExpiry, Duration.ZERO, 10);
       assertEquals(0, claimedB.size());
     }
@@ -363,7 +363,7 @@ class JdbcEventStoreTest {
 
     try (Connection conn = dataSource.getConnection()) {
       // owner-A claims the event
-      List<OutboxEvent> claimedA = repository.claimPending(
+      List<OutboxEvent> claimedA = eventStore.claimPending(
           conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
       assertEquals(1, claimedA.size());
 
@@ -372,7 +372,7 @@ class JdbcEventStoreTest {
           "UPDATE outbox_event SET locked_at = TIMESTAMP '2020-01-01 00:00:00'");
 
       // owner-B should reclaim the expired lock
-      List<OutboxEvent> claimedB = repository.claimPending(
+      List<OutboxEvent> claimedB = eventStore.claimPending(
           conn, "owner-B", now, lockExpiry, Duration.ZERO, 10);
       assertEquals(1, claimedB.size());
 
@@ -394,9 +394,9 @@ class JdbcEventStoreTest {
     try (Connection conn = dataSource.getConnection()) {
       Instant now = Instant.now().plusSeconds(1);
       Instant lockExpiry = now.minus(Duration.ofMinutes(5));
-      repository.claimPending(conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
+      eventStore.claimPending(conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
 
-      repository.markDone(conn, eventId);
+      eventStore.markDone(conn, eventId);
 
       try (PreparedStatement ps = conn.prepareStatement(
           "SELECT locked_by, locked_at FROM outbox_event WHERE event_id = ?")) {
@@ -416,9 +416,9 @@ class JdbcEventStoreTest {
     try (Connection conn = dataSource.getConnection()) {
       Instant now = Instant.now().plusSeconds(1);
       Instant lockExpiry = now.minus(Duration.ofMinutes(5));
-      repository.claimPending(conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
+      eventStore.claimPending(conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
 
-      repository.markRetry(conn, eventId, Instant.now().plusSeconds(60), "retry error");
+      eventStore.markRetry(conn, eventId, Instant.now().plusSeconds(60), "retry error");
 
       try (PreparedStatement ps = conn.prepareStatement(
           "SELECT locked_by, locked_at FROM outbox_event WHERE event_id = ?")) {
@@ -438,9 +438,9 @@ class JdbcEventStoreTest {
     try (Connection conn = dataSource.getConnection()) {
       Instant now = Instant.now().plusSeconds(1);
       Instant lockExpiry = now.minus(Duration.ofMinutes(5));
-      repository.claimPending(conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
+      eventStore.claimPending(conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
 
-      repository.markDead(conn, eventId, "dead");
+      eventStore.markDead(conn, eventId, "dead");
 
       try (PreparedStatement ps = conn.prepareStatement(
           "SELECT locked_by, locked_at FROM outbox_event WHERE event_id = ?")) {
@@ -459,7 +459,7 @@ class JdbcEventStoreTest {
         .build();
 
     try (Connection conn = dataSource.getConnection()) {
-      repository.insertNew(conn, event);
+      eventStore.insertNew(conn, event);
     }
 
     return event.eventId();

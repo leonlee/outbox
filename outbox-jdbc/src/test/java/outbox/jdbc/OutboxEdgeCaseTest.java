@@ -30,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class OutboxEdgeCaseTest {
   private DataSource dataSource;
-  private JdbcEventStore repository;
+  private JdbcEventStore eventStore;
   private DataSourceConnectionProvider connectionProvider;
 
   @BeforeEach
@@ -38,7 +38,7 @@ class OutboxEdgeCaseTest {
     JdbcDataSource ds = new JdbcDataSource();
     ds.setURL("jdbc:h2:mem:outbox_edge_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
     this.dataSource = ds;
-    this.repository = new JdbcEventStore(Dialects.get("h2"));
+    this.eventStore = new JdbcEventStore(Dialects.get("h2"));
     this.connectionProvider = new DataSourceConnectionProvider(ds);
 
     try (Connection conn = ds.getConnection()) {
@@ -68,7 +68,7 @@ class OutboxEdgeCaseTest {
 
     OutboxDispatcher dispatcher = new OutboxDispatcher(
         connectionProvider,
-        repository,
+        eventStore,
         new DefaultListenerRegistry(),
         new DefaultInFlightTracker(),
         new ExponentialBackoffRetryPolicy(10, 50),
@@ -81,7 +81,7 @@ class OutboxEdgeCaseTest {
 
     try (OutboxPoller poller = new OutboxPoller(
         connectionProvider,
-        repository,
+        eventStore,
         dispatcher,
         Duration.ofMillis(0),
         10,
@@ -101,7 +101,7 @@ class OutboxEdgeCaseTest {
   void dispatcherRejectsInvalidArgs() {
     assertThrows(IllegalArgumentException.class, () -> new OutboxDispatcher(
         connectionProvider,
-        repository,
+        eventStore,
         new DefaultListenerRegistry(),
         new DefaultInFlightTracker(),
         new ExponentialBackoffRetryPolicy(10, 50),
@@ -114,7 +114,7 @@ class OutboxEdgeCaseTest {
 
     assertThrows(IllegalArgumentException.class, () -> new OutboxDispatcher(
         connectionProvider,
-        repository,
+        eventStore,
         new DefaultListenerRegistry(),
         new DefaultInFlightTracker(),
         new ExponentialBackoffRetryPolicy(10, 50),
@@ -127,7 +127,7 @@ class OutboxEdgeCaseTest {
 
     assertThrows(IllegalArgumentException.class, () -> new OutboxDispatcher(
         connectionProvider,
-        repository,
+        eventStore,
         new DefaultListenerRegistry(),
         new DefaultInFlightTracker(),
         new ExponentialBackoffRetryPolicy(10, 50),
@@ -143,7 +143,7 @@ class OutboxEdgeCaseTest {
   void pollerRejectsInvalidArgs() {
     OutboxDispatcher dispatcher = new OutboxDispatcher(
         connectionProvider,
-        repository,
+        eventStore,
         new DefaultListenerRegistry(),
         new DefaultInFlightTracker(),
         new ExponentialBackoffRetryPolicy(10, 50),
@@ -156,7 +156,7 @@ class OutboxEdgeCaseTest {
 
     assertThrows(IllegalArgumentException.class, () -> new OutboxPoller(
         connectionProvider,
-        repository,
+        eventStore,
         dispatcher,
         Duration.ofMillis(0),
         0,
@@ -166,7 +166,7 @@ class OutboxEdgeCaseTest {
 
     assertThrows(IllegalArgumentException.class, () -> new OutboxPoller(
         connectionProvider,
-        repository,
+        eventStore,
         dispatcher,
         Duration.ofMillis(0),
         10,
@@ -176,7 +176,7 @@ class OutboxEdgeCaseTest {
 
     assertThrows(IllegalArgumentException.class, () -> new OutboxPoller(
         connectionProvider,
-        repository,
+        eventStore,
         dispatcher,
         Duration.ofMillis(-1),
         10,

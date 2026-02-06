@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class OutboxPollerTest {
   private DataSource dataSource;
-  private JdbcEventStore repository;
+  private JdbcEventStore eventStore;
   private DataSourceConnectionProvider connectionProvider;
 
   @BeforeEach
@@ -40,7 +40,7 @@ class OutboxPollerTest {
     JdbcDataSource ds = new JdbcDataSource();
     ds.setURL("jdbc:h2:mem:outbox_poller_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
     this.dataSource = ds;
-    this.repository = new JdbcEventStore(Dialects.get("h2"));
+    this.eventStore = new JdbcEventStore(Dialects.get("h2"));
     this.connectionProvider = new DataSourceConnectionProvider(ds);
 
     try (Connection conn = ds.getConnection()) {
@@ -69,7 +69,7 @@ class OutboxPollerTest {
 
     OutboxDispatcher dispatcher = new OutboxDispatcher(
         connectionProvider,
-        repository,
+        eventStore,
         listeners,
         new DefaultInFlightTracker(),
         attempts -> 0L,
@@ -83,7 +83,7 @@ class OutboxPollerTest {
     RecordingMetrics metrics = new RecordingMetrics();
     try (OutboxPoller poller = new OutboxPoller(
         connectionProvider,
-        repository,
+        eventStore,
         dispatcher,
         Duration.ofHours(1),
         10,
@@ -109,7 +109,7 @@ class OutboxPollerTest {
 
     OutboxDispatcher dispatcher = new OutboxDispatcher(
         connectionProvider,
-        repository,
+        eventStore,
         new DefaultListenerRegistry(),
         new DefaultInFlightTracker(),
         attempts -> 0L,
@@ -123,7 +123,7 @@ class OutboxPollerTest {
     RecordingMetrics metrics = new RecordingMetrics();
     try (OutboxPoller poller = new OutboxPoller(
         connectionProvider,
-        repository,
+        eventStore,
         dispatcher,
         Duration.ZERO,
         10,
@@ -153,7 +153,7 @@ class OutboxPollerTest {
 
     OutboxDispatcher dispatcher = new OutboxDispatcher(
         connectionProvider,
-        repository,
+        eventStore,
         listeners,
         new DefaultInFlightTracker(),
         attempts -> 0L,
@@ -167,7 +167,7 @@ class OutboxPollerTest {
     RecordingMetrics metrics = new RecordingMetrics();
     try (OutboxPoller poller = new OutboxPoller(
         connectionProvider,
-        repository,
+        eventStore,
         dispatcher,
         Duration.ZERO,
         10,
@@ -194,7 +194,7 @@ class OutboxPollerTest {
 
   private void insertEvent(EventEnvelope event) throws SQLException {
     try (Connection conn = dataSource.getConnection()) {
-      repository.insertNew(conn, event);
+      eventStore.insertNew(conn, event);
     }
   }
 

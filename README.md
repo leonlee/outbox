@@ -5,7 +5,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 ## Modules
 
 - `outbox-core`: core APIs, dispatcher, poller, and registries.
-- `outbox-jdbc`: JDBC repository and transaction helpers.
+- `outbox-jdbc`: JDBC event store and transaction helpers.
 - `outbox-spring-adapter`: optional `TxContext` implementation for Spring.
 - `outbox-demo`: minimal, non-Spring demo (H2).
 - `outbox-spring-demo`: Spring demo app.
@@ -71,13 +71,13 @@ import java.time.Duration;
 
 DataSource dataSource = /* your DataSource */;
 
-JdbcEventStore repository = new JdbcEventStore();
+JdbcEventStore eventStore = new JdbcEventStore();
 DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
 ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 
 OutboxDispatcher dispatcher = new OutboxDispatcher(
     connectionProvider,
-    repository,
+    eventStore,
     new DefaultListenerRegistry()
         .register("UserCreated", event -> {
           // publish to MQ; include event.eventId() for dedupe
@@ -93,7 +93,7 @@ OutboxDispatcher dispatcher = new OutboxDispatcher(
 
 OutboxPoller poller = new OutboxPoller(
     connectionProvider,
-    repository,
+    eventStore,
     dispatcher,
     Duration.ofMillis(1000),
     200,
@@ -106,7 +106,7 @@ poller.start();
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
 
 try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-  OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
+  OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
   client.publish(EventEnvelope.ofJson("UserCreated", "{\"id\":123}"));
   tx.commit();
 }
@@ -163,14 +163,14 @@ public final class OutboxExample {
       );
     }
 
-    JdbcEventStore repository = new JdbcEventStore();
+    JdbcEventStore eventStore = new JdbcEventStore();
     DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
     ThreadLocalTxContext txContext = new ThreadLocalTxContext();
     JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
 
     OutboxDispatcher dispatcher = new OutboxDispatcher(
         connectionProvider,
-        repository,
+        eventStore,
         new DefaultListenerRegistry()
             .register("UserCreated", event ->
                 System.out.println("Published to MQ: " + event.eventId())),
@@ -185,7 +185,7 @@ public final class OutboxExample {
 
     OutboxPoller poller = new OutboxPoller(
         connectionProvider,
-        repository,
+        eventStore,
         dispatcher,
         Duration.ofMillis(500),
         50,
@@ -195,7 +195,7 @@ public final class OutboxExample {
     poller.start();
 
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-      OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
+      OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
       client.publish(EventEnvelope.ofJson("UserCreated", "{\"id\":123}"));
       tx.commit();
     }
@@ -283,7 +283,7 @@ For multi-instance deployments, enable claim-based locking so pollers don't comp
 ```java
 OutboxPoller poller = new OutboxPoller(
     connectionProvider,
-    repository,
+    eventStore,
     dispatcher,
     Duration.ofMillis(1000),  // skipRecent
     200,                       // batchSize

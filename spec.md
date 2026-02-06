@@ -12,7 +12,7 @@ Minimal, Spring-free transactional outbox framework with JDBC persistence, hot-p
 6. [Event Envelope](#6-event-envelope)
 7. [Type-Safe Event and Aggregate Types](#7-type-safe-event-and-aggregate-types)
 8. [Public API](#8-public-api)
-9. [JDBC Repository](#9-jdbc-repository)
+9. [JDBC Event Store](#9-jdbc-event-store)
 10. [OutboxDispatcher](#10-dispatcher)
 11. [OutboxPoller](#11-poller)
 12. [Registries](#12-registries)
@@ -117,7 +117,7 @@ Packages:
 
 ### 3.2 outbox-jdbc
 
-JDBC repository implementation and manual transaction helpers.
+JDBC event store implementation and manual transaction helpers.
 
 Classes:
 - `JdbcEventStore` - Implements EventStore with PreparedStatement
@@ -378,7 +378,7 @@ Semantics:
 
 ---
 
-## 9. JDBC Repository
+## 9. JDBC Event Store
 
 ### 9.1 Interface
 
@@ -868,13 +868,13 @@ public interface MetricsExporter {
 ```java
 DataSource dataSource = /* your DataSource */;
 
-JdbcEventStore repository = new JdbcEventStore();
+JdbcEventStore eventStore = new JdbcEventStore();
 DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
 ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 
 OutboxDispatcher dispatcher = new OutboxDispatcher(
     connectionProvider,
-    repository,
+    eventStore,
     new DefaultListenerRegistry()
         .register("UserCreated", event -> {
           // publish to MQ, update cache, call API, etc.
@@ -889,7 +889,7 @@ OutboxDispatcher dispatcher = new OutboxDispatcher(
 );
 
 OutboxPoller poller = new OutboxPoller(
-    connectionProvider, repository, dispatcher,
+    connectionProvider, eventStore, dispatcher,
     Duration.ofMillis(1000), 200, 5000,
     MetricsExporter.NOOP
 );
@@ -898,7 +898,7 @@ poller.start();
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
 
 try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-  OutboxClient client = new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);
+  OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher, MetricsExporter.NOOP);
   client.publish(EventEnvelope.ofJson("UserCreated", "{\"id\":123}"));
   tx.commit();
 }

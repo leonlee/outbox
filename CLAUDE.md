@@ -22,7 +22,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 ### Modules
 
 - **outbox-core**: Core interfaces, dispatcher, poller, registries. Zero external dependencies.
-- **outbox-jdbc**: JDBC repository implementation, `JdbcTemplate` utility, manual transaction helpers (`JdbcTransactionManager`, `ThreadLocalTxContext`), and multi-database dialect support.
+- **outbox-jdbc**: JDBC event store implementation, `JdbcTemplate` utility, manual transaction helpers (`JdbcTransactionManager`, `ThreadLocalTxContext`), and multi-database dialect support.
 - **outbox-spring-adapter**: Optional `SpringTxContext` for Spring transaction integration.
 - **outbox-demo**: Simple runnable demo with H2 (no Spring).
 - **outbox-spring-demo**: Spring Boot demo with REST API (standalone).

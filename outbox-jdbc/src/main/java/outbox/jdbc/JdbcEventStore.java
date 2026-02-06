@@ -60,7 +60,7 @@ public final class JdbcEventStore implements EventStore {
       ps.setTimestamp(11, now);
       ps.executeUpdate();
     } catch (SQLException e) {
-      throw new OutboxRepositoryException("Failed to insert outbox row", e);
+      throw new EventStoreException("Failed to insert outbox row", e);
     }
   }
 
@@ -72,7 +72,7 @@ public final class JdbcEventStore implements EventStore {
       ps.setString(2, eventId);
       return ps.executeUpdate();
     } catch (SQLException e) {
-      throw new OutboxRepositoryException("Failed to mark DONE", e);
+      throw new EventStoreException("Failed to mark DONE", e);
     }
   }
 
@@ -85,7 +85,7 @@ public final class JdbcEventStore implements EventStore {
       ps.setString(3, eventId);
       return ps.executeUpdate();
     } catch (SQLException e) {
-      throw new OutboxRepositoryException("Failed to mark RETRY", e);
+      throw new EventStoreException("Failed to mark RETRY", e);
     }
   }
 
@@ -97,7 +97,7 @@ public final class JdbcEventStore implements EventStore {
       ps.setString(2, eventId);
       return ps.executeUpdate();
     } catch (SQLException e) {
-      throw new OutboxRepositoryException("Failed to mark DEAD", e);
+      throw new EventStoreException("Failed to mark DEAD", e);
     }
   }
 
@@ -134,7 +134,7 @@ public final class JdbcEventStore implements EventStore {
         }
       }
     } catch (SQLException e) {
-      throw new OutboxRepositoryException("Failed to poll pending outbox rows", e);
+      throw new EventStoreException("Failed to poll pending outbox rows", e);
     }
 
     return results;

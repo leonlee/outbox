@@ -6,6 +6,9 @@ on:
     paths:
       - 'outbox-jdbc/src/main/resources/schema/**'
 
+permissions:
+  pull-requests: write
+
 jobs:
   schema-diff:
     runs-on: ubuntu-latest

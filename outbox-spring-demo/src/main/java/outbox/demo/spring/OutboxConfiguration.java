@@ -10,7 +10,7 @@ import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.registry.ListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcOutboxRepository;
+import outbox.jdbc.JdbcEventStore;
 import outbox.jdbc.dialect.Dialects;
 import outbox.spring.SpringTxContext;
 
@@ -28,8 +28,8 @@ public class OutboxConfiguration {
   private static final Logger log = LoggerFactory.getLogger(OutboxConfiguration.class);
 
   @Bean
-  public JdbcOutboxRepository outboxRepository(DataSource dataSource) {
-    return new JdbcOutboxRepository(Dialects.detect(dataSource));
+  public JdbcEventStore outboxRepository(DataSource dataSource) {
+    return new JdbcEventStore(Dialects.detect(dataSource));
   }
 
   @Bean
@@ -62,7 +62,7 @@ public class OutboxConfiguration {
   @Bean(destroyMethod = "close")
   public OutboxDispatcher dispatcher(
       DataSourceConnectionProvider connectionProvider,
-      JdbcOutboxRepository repository,
+      JdbcEventStore repository,
       ListenerRegistry listenerRegistry
   ) {
     return new OutboxDispatcher(
@@ -82,7 +82,7 @@ public class OutboxConfiguration {
   @Bean(destroyMethod = "close")
   public OutboxPoller outboxPoller(
       DataSourceConnectionProvider connectionProvider,
-      JdbcOutboxRepository repository,
+      JdbcEventStore repository,
       OutboxDispatcher dispatcher
   ) {
     OutboxPoller poller = new OutboxPoller(
@@ -102,7 +102,7 @@ public class OutboxConfiguration {
   @Bean
   public OutboxClient outboxClient(
       TxContext txContext,
-      JdbcOutboxRepository repository,
+      JdbcEventStore repository,
       OutboxDispatcher dispatcher
   ) {
     return new OutboxClient(txContext, repository, dispatcher, MetricsExporter.NOOP);

@@ -22,10 +22,10 @@ import outbox.jdbc.dialect.Dialects;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-class JdbcOutboxRepositoryTest {
+class JdbcEventStoreTest {
 
   private JdbcDataSource dataSource;
-  private JdbcOutboxRepository repository;
+  private JdbcEventStore repository;
 
   @BeforeEach
   void setUp() throws SQLException {
@@ -54,7 +54,7 @@ class JdbcOutboxRepositoryTest {
       );
     }
 
-    repository = new JdbcOutboxRepository(Dialects.get("h2"));
+    repository = new JdbcEventStore(Dialects.get("h2"));
   }
 
   @Test

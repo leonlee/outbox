@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class OutboxPollerTest {
   private DataSource dataSource;
-  private JdbcOutboxRepository repository;
+  private JdbcEventStore repository;
   private DataSourceConnectionProvider connectionProvider;
 
   @BeforeEach
@@ -40,7 +40,7 @@ class OutboxPollerTest {
     JdbcDataSource ds = new JdbcDataSource();
     ds.setURL("jdbc:h2:mem:outbox_poller_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
     this.dataSource = ds;
-    this.repository = new JdbcOutboxRepository(Dialects.get("h2"));
+    this.repository = new JdbcEventStore(Dialects.get("h2"));
     this.connectionProvider = new DataSourceConnectionProvider(ds);
 
     try (Connection conn = ds.getConnection()) {

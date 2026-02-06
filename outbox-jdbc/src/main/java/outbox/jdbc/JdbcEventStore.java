@@ -18,18 +18,18 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-public final class JdbcOutboxRepository implements EventStore {
+public final class JdbcEventStore implements EventStore {
   private static final int MAX_ERROR_LENGTH = 4000;
   private static final String DEFAULT_TABLE = "outbox_event";
 
   private final Dialect dialect;
   private final String tableName;
 
-  public JdbcOutboxRepository(Dialect dialect) {
+  public JdbcEventStore(Dialect dialect) {
     this(dialect, DEFAULT_TABLE);
   }
 
-  public JdbcOutboxRepository(Dialect dialect, String tableName) {
+  public JdbcEventStore(Dialect dialect, String tableName) {
     this.dialect = Objects.requireNonNull(dialect, "dialect");
     this.tableName = Objects.requireNonNull(tableName, "tableName");
   }

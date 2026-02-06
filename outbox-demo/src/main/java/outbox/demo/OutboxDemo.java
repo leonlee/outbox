@@ -9,7 +9,7 @@ import outbox.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcOutboxRepository;
+import outbox.jdbc.JdbcEventStore;
 import outbox.jdbc.JdbcTransactionManager;
 import outbox.jdbc.ThreadLocalTxContext;
 import outbox.jdbc.dialect.Dialects;
@@ -40,7 +40,7 @@ public final class OutboxDemo {
     createSchema(dataSource);
 
     // 2. Create core components
-    JdbcOutboxRepository repository = new JdbcOutboxRepository(Dialects.detect(dataSource));
+    JdbcEventStore repository = new JdbcEventStore(Dialects.detect(dataSource));
     DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
     ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 

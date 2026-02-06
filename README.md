@@ -62,7 +62,7 @@ import outbox.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcOutboxRepository;
+import outbox.jdbc.JdbcEventStore;
 import outbox.jdbc.JdbcTransactionManager;
 import outbox.jdbc.ThreadLocalTxContext;
 
@@ -71,7 +71,7 @@ import java.time.Duration;
 
 DataSource dataSource = /* your DataSource */;
 
-JdbcOutboxRepository repository = new JdbcOutboxRepository();
+JdbcEventStore repository = new JdbcEventStore();
 DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
 ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 
@@ -124,7 +124,7 @@ import outbox.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcOutboxRepository;
+import outbox.jdbc.JdbcEventStore;
 import outbox.jdbc.JdbcTransactionManager;
 import outbox.jdbc.ThreadLocalTxContext;
 
@@ -163,7 +163,7 @@ public final class OutboxExample {
       );
     }
 
-    JdbcOutboxRepository repository = new JdbcOutboxRepository();
+    JdbcEventStore repository = new JdbcEventStore();
     DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
     ThreadLocalTxContext txContext = new ThreadLocalTxContext();
     JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);

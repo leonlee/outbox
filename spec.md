@@ -120,7 +120,7 @@ Packages:
 JDBC repository implementation and manual transaction helpers.
 
 Classes:
-- `JdbcOutboxRepository` - Implements EventStore with PreparedStatement
+- `JdbcEventStore` - Implements EventStore with PreparedStatement
 - `ThreadLocalTxContext` - ThreadLocal-based TxContext for manual transactions
 - `JdbcTransactionManager` - Helper for manual JDBC transactions
 - `DataSourceConnectionProvider` - ConnectionProvider from DataSource
@@ -868,7 +868,7 @@ public interface MetricsExporter {
 ```java
 DataSource dataSource = /* your DataSource */;
 
-JdbcOutboxRepository repository = new JdbcOutboxRepository();
+JdbcEventStore repository = new JdbcEventStore();
 DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
 ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 

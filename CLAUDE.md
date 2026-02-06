@@ -11,6 +11,7 @@ mvn -pl outbox-core -am package    # Build core module and dependencies
 mvn -DskipTests package            # Build all jars without tests
 mvn install -DskipTests && mvn -pl outbox-demo exec:java  # Run demo
 mvn install -DskipTests && mvn -f outbox-spring-demo/pom.xml spring-boot:run  # Run Spring Boot demo
+mvn install -DskipTests && mvn -pl outbox-multi-ds-demo exec:java  # Run multi-datasource demo
 ```
 
 Java 17 is the baseline.
@@ -26,6 +27,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 - **outbox-spring-adapter**: Optional `SpringTxContext` for Spring transaction integration.
 - **outbox-demo**: Simple runnable demo with H2 (no Spring).
 - **outbox-spring-demo**: Spring Boot demo with REST API (standalone).
+- **outbox-multi-ds-demo**: Multi-datasource demo with two H2 databases (Orders + Inventory).
 
 ### Package Structure (JDBI-inspired)
 

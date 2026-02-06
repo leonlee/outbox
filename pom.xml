@@ -14,6 +14,7 @@
     <module>outbox-spring-adapter</module>
     <module>outbox-demo</module>
     <module>outbox-spring-demo</module>
+    <module>outbox-multi-ds-demo</module>
   </modules>
 
   <properties>

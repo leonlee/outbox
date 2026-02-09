@@ -1,6 +1,7 @@
 package outbox.jdbc;
 
 import outbox.registry.DefaultListenerRegistry;
+import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.spi.MetricsExporter;
@@ -74,7 +75,7 @@ class OutboxEdgeCaseTest {
     try (OutboxPoller poller = new OutboxPoller(
         connectionProvider,
         eventStore,
-        dispatcher,
+        new DispatcherPollerHandler(dispatcher),
         Duration.ofMillis(0),
         10,
         10,
@@ -129,7 +130,7 @@ class OutboxEdgeCaseTest {
     assertThrows(IllegalArgumentException.class, () -> new OutboxPoller(
         connectionProvider,
         eventStore,
-        dispatcher,
+        new DispatcherPollerHandler(dispatcher),
         Duration.ofMillis(0),
         0,
         10,
@@ -139,7 +140,7 @@ class OutboxEdgeCaseTest {
     assertThrows(IllegalArgumentException.class, () -> new OutboxPoller(
         connectionProvider,
         eventStore,
-        dispatcher,
+        new DispatcherPollerHandler(dispatcher),
         Duration.ofMillis(0),
         10,
         0,
@@ -149,7 +150,7 @@ class OutboxEdgeCaseTest {
     assertThrows(IllegalArgumentException.class, () -> new OutboxPoller(
         connectionProvider,
         eventStore,
-        dispatcher,
+        new DispatcherPollerHandler(dispatcher),
         Duration.ofMillis(-1),
         10,
         10,

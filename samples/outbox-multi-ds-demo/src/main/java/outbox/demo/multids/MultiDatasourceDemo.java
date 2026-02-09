@@ -3,6 +3,8 @@ package outbox.demo.multids;
 import outbox.EventEnvelope;
 import outbox.OutboxWriter;
 import outbox.spi.MetricsExporter;
+import outbox.dispatch.DispatcherCommitHook;
+import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
@@ -61,12 +63,13 @@ public final class MultiDatasourceDemo {
         .build();
 
     OutboxPoller ordersPoller = new OutboxPoller(
-        ordersConn, ordersEventStore, ordersDispatcher,
+        ordersConn, ordersEventStore, new DispatcherPollerHandler(ordersDispatcher),
         Duration.ofMillis(500), 50, 1000, MetricsExporter.NOOP);
     ordersPoller.start();
 
     JdbcTransactionManager ordersTxMgr = new JdbcTransactionManager(ordersConn, ordersTx);
-    OutboxWriter ordersWriter = new OutboxWriter(ordersTx, ordersEventStore, ordersDispatcher);
+    OutboxWriter ordersWriter = new OutboxWriter(
+        ordersTx, ordersEventStore, new DispatcherCommitHook(ordersDispatcher));
 
     // ── Inventory stack ──────────────────────────────────────────
     var invEventStore = JdbcEventStores.detect(inventoryDs);
@@ -82,12 +85,13 @@ public final class MultiDatasourceDemo {
         .build();
 
     OutboxPoller invPoller = new OutboxPoller(
-        invConn, invEventStore, invDispatcher,
+        invConn, invEventStore, new DispatcherPollerHandler(invDispatcher),
         Duration.ofMillis(500), 50, 1000, MetricsExporter.NOOP);
     invPoller.start();
 
     JdbcTransactionManager invTxMgr = new JdbcTransactionManager(invConn, invTx);
-    OutboxWriter invWriter = new OutboxWriter(invTx, invEventStore, invDispatcher);
+    OutboxWriter invWriter = new OutboxWriter(
+        invTx, invEventStore, new DispatcherCommitHook(invDispatcher));
 
     // ── Publish events ───────────────────────────────────────────
     System.out.println("=== Multi-Datasource Demo ===\n");

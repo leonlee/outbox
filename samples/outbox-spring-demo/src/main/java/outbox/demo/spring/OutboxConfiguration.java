@@ -5,6 +5,8 @@ import outbox.spi.MetricsExporter;
 import outbox.spi.TxContext;
 import outbox.dispatch.DefaultInFlightTracker;
 import outbox.dispatch.EventInterceptor;
+import outbox.dispatch.DispatcherCommitHook;
+import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
@@ -82,7 +84,7 @@ public class OutboxConfiguration {
     OutboxPoller poller = new OutboxPoller(
         connectionProvider,
         eventStore,
-        dispatcher,
+        new DispatcherPollerHandler(dispatcher),
         Duration.ofMillis(500),
         100,
         5000,
@@ -99,6 +101,6 @@ public class OutboxConfiguration {
       AbstractJdbcEventStore eventStore,
       OutboxDispatcher dispatcher
   ) {
-    return new OutboxWriter(txContext, eventStore, dispatcher);
+    return new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
   }
 }

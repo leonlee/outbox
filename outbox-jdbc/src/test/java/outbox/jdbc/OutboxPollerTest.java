@@ -1,6 +1,7 @@
 package outbox.jdbc;
 
 import outbox.EventEnvelope;
+import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.model.EventStatus;
 import outbox.poller.OutboxPoller;
@@ -78,7 +79,7 @@ class OutboxPollerTest {
     try (OutboxPoller poller = new OutboxPoller(
         connectionProvider,
         eventStore,
-        dispatcher,
+        new DispatcherPollerHandler(dispatcher),
         Duration.ofHours(1),
         10,
         10,
@@ -115,7 +116,7 @@ class OutboxPollerTest {
     try (OutboxPoller poller = new OutboxPoller(
         connectionProvider,
         eventStore,
-        dispatcher,
+        new DispatcherPollerHandler(dispatcher),
         Duration.ZERO,
         10,
         10,
@@ -156,7 +157,7 @@ class OutboxPollerTest {
     try (OutboxPoller poller = new OutboxPoller(
         connectionProvider,
         eventStore,
-        dispatcher,
+        new DispatcherPollerHandler(dispatcher),
         Duration.ZERO,
         10,
         10,

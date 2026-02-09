@@ -1,6 +1,6 @@
 # Outbox Framework Specification
 
-Minimal, Spring-free transactional outbox framework with JDBC persistence, hot-path enqueue, and poller fallback.
+Minimal, Spring-free transactional outbox framework with JDBC persistence, optional hot-path enqueue, and poller/CDC fallback.
 
 ## Table of Contents
 
@@ -30,10 +30,10 @@ Minimal, Spring-free transactional outbox framework with JDBC persistence, hot-p
 Build a framework that:
 
 1. Persists a unified event record into an outbox table within the current business DB transaction.
-2. After successful transaction commit, enqueues the event (payload in memory) into an in-process OutboxDispatcher (fast path).
+2. After successful transaction commit, optionally invokes an AfterCommitHook (fast path).
 3. OutboxDispatcher executes registered EventListeners (send to MQ, update caches, call APIs, etc.).
 4. On success, OutboxDispatcher updates outbox status to DONE; on failure updates to RETRY/DEAD.
-5. A low-frequency OutboxPoller scans DB as fallback only (node crash, enqueue downgrade, missed enqueue) and enqueues unfinished events.
+5. A low-frequency OutboxPoller (optional) scans DB as fallback only (node crash, enqueue downgrade, missed enqueue) and forwards unfinished events to a handler; CDC can also serve as the fallback path.
 6. Delivery semantics: **at-least-once**; duplicates are allowed and must be handled downstream by `eventId`.
 
 ### Constraints
@@ -60,43 +60,36 @@ Build a framework that:
 | **EventStore** | Insert/update/query via `java.sql.Connection` |
 | **OutboxDispatcher** | Hot/cold queues + worker pool; executes listeners; updates status |
 | **ListenerRegistry** | Maps event types to event listeners |
-| **OutboxPoller** | Low-frequency fallback DB scan; enqueues cold events |
+| **OutboxPoller** | Low-frequency fallback DB scan; forwards events to handler |
 | **InFlightTracker** | In-memory deduplication |
 
 ### 2.2 Event Flow
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                              HOT PATH (Fast)                                  │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  Business TX    OutboxWriter     afterCommit    OutboxDispatcher    DB       │
-│      │               │               │               │              │        │
-│      │──write()───>│               │               │              │        │
-│      │               │──insertNew()─────────────────────────────────>│       │
-│      │               │──register()──>│               │              │        │
-│      │──commit()─────────────────────│               │              │        │
-│      │               │               │──enqueueHot()>│              │        │
-│      │               │               │               │──markDone───>│        │
-└──────────────────────────────────────────────────────────────────────────────┘
+HOT PATH (Fast)
+Business TX -> OutboxWriter.write()
+  -> EventStore.insertNew()  (inside TX)
+  -> TxContext.afterCommit(...) registers hook
+Commit
+  -> AfterCommitHook.onCommit(event)
+  -> OutboxDispatcher.enqueueHot(...)
+  -> OutboxDispatcher.process()
+  -> EventStore.markDone/Retry/Dead()
 
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                           COLD PATH (Fallback)                                │
-├──────────────────────────────────────────────────────────────────────────────┤
-│   OutboxPoller          DB           OutboxDispatcher                         │
-│       │                 │                 │                                   │
-│       │──pollPending───>│                 │                                   │
-│       │<──rows──────────│                 │                                   │
-│       │──enqueueCold─────────────────────>│                                   │
-│       │                 │                 │──process()                        │
-│       │                 │<──markDone──────│                                   │
-└──────────────────────────────────────────────────────────────────────────────┘
+COLD PATH (Fallback)
+OutboxPoller.poll()
+  -> EventStore.pollPending()/claimPending()
+  -> OutboxPollerHandler.handle(event, attempts)
+  -> OutboxDispatcher.enqueueCold(...)
+  -> OutboxDispatcher.process()
+  -> EventStore.markDone/Retry/Dead()
 ```
 
 ### 2.3 Queue Priority
 
 OutboxDispatcher MUST prioritize:
 - **Hot Queue**: afterCommit enqueue from business thread (priority)
-- **Cold Queue**: poller enqueue fallback
+- **Cold Queue**: poller/handler fallback
 
 ---
 
@@ -104,11 +97,11 @@ OutboxDispatcher MUST prioritize:
 
 ### 3.1 outbox-core
 
-Core interfaces, dispatcher, poller, and registries. **Zero external dependencies.**
+Core interfaces, hooks, dispatcher, poller, and registries. **Zero external dependencies.**
 
 Packages:
 - `outbox` - Main API: OutboxWriter, EventEnvelope, EventType, AggregateType, EventListener
-- `outbox.spi` - Extension point interfaces: TxContext, ConnectionProvider, EventStore, MetricsExporter
+- `outbox.spi` - Extension point interfaces: TxContext, ConnectionProvider, EventStore, MetricsExporter, AfterCommitHook, OutboxPollerHandler
 - `outbox.model` - Domain objects: OutboxEvent, EventStatus
 - `outbox.dispatch` - OutboxDispatcher, retry policy, inflight tracking
 - `outbox.poller` - OutboxPoller
@@ -371,8 +364,8 @@ EventEnvelope.builder(eventType)
 
 ```java
 public final class OutboxWriter {
-  public OutboxWriter(TxContext txContext, EventStore eventStore, OutboxDispatcher dispatcher);
-  public OutboxWriter(TxContext txContext, EventStore eventStore, OutboxDispatcher dispatcher, MetricsExporter metrics);
+  public OutboxWriter(TxContext txContext, EventStore eventStore);
+  public OutboxWriter(TxContext txContext, EventStore eventStore, AfterCommitHook afterCommitHook);
 
   public String write(EventEnvelope event);
   public String write(String eventType, String payloadJson);
@@ -384,8 +377,23 @@ public final class OutboxWriter {
 Semantics:
 - MUST require an active transaction via TxContext
 - MUST insert outbox row (NEW) using `TxContext.currentConnection()` within the current transaction
-- MUST register `TxContext.afterCommit(() -> dispatcher.enqueueHot(event))`
-- If enqueueHot fails due to backpressure, MUST NOT throw; rely on OutboxPoller fallback
+- MUST register `TxContext.afterCommit(() -> afterCommitHook.onCommit(event))` when a hook is provided
+- If the hook throws, it MUST NOT propagate to the caller (log and continue)
+- If no hook is provided, no post-commit action is executed (poller/CDC is responsible)
+
+### 8.2 AfterCommitHook
+
+```java
+@FunctionalInterface
+public interface AfterCommitHook {
+  void onCommit(EventEnvelope event);
+
+  AfterCommitHook NOOP = event -> {};
+}
+```
+
+- Hook invoked after transaction commit (optional)
+- Used to connect hot-path dispatchers or external notifiers
 
 ---
 
@@ -590,7 +598,7 @@ new DefaultInFlightTracker(long ttlMs) // With TTL for stale entry recovery
 public OutboxPoller(
     ConnectionProvider connectionProvider,
     EventStore eventStore,
-    OutboxDispatcher dispatcher,
+    OutboxPollerHandler handler,
     Duration skipRecent,
     int batchSize,
     long intervalMs,
@@ -601,7 +609,7 @@ public OutboxPoller(
 public OutboxPoller(
     ConnectionProvider connectionProvider,
     EventStore eventStore,
-    OutboxDispatcher dispatcher,
+    OutboxPollerHandler handler,
     Duration skipRecent,
     int batchSize,
     long intervalMs,
@@ -622,11 +630,11 @@ void close()    // Stop polling
 ### 11.3 Behavior
 
 - Runs on scheduled interval (default 5000ms)
-- Checks cold queue capacity before polling; skips cycle if full
+- Checks handler capacity before polling; skips cycle if full
 - Skips events created within `skipRecent` duration (default 1000ms)
 - Queries status IN (0, 2) with available_at <= now
 - Converts OutboxEvent to EventEnvelope
-- Enqueues to cold queue (subject to backpressure)
+- Delegates to handler for processing (subject to backpressure)
 - On decode failure: marks event DEAD
 
 ### 11.4 Event Locking
@@ -637,6 +645,32 @@ When `ownerId` is provided (9-arg constructor), the poller uses claim-based lock
 - **Expiry**: Locks older than `lockTimeout` are considered expired and can be reclaimed
 - **Release**: `markDone`/`markRetry`/`markDead` clear `locked_by` and `locked_at`
 - **Database-specific**: PostgreSQL uses `FOR UPDATE SKIP LOCKED` + `RETURNING`; MySQL uses `UPDATE...ORDER BY...LIMIT`; H2 uses subquery-based two-phase claim
+
+### 11.5 OutboxPollerHandler
+
+```java
+@FunctionalInterface
+public interface OutboxPollerHandler {
+  boolean handle(EventEnvelope event, int attempts);
+
+  default boolean hasCapacity() {
+    return true;
+  }
+}
+```
+
+- Handler invoked for each decoded event
+- Returning false stops the current poll cycle (backpressure)
+
+### 11.6 CDC Alternative (Optional)
+
+For high-QPS workloads, CDC can replace the in-process poller and hot-path hook:
+
+- Construct `OutboxWriter` without a hook (or with `AfterCommitHook.NOOP`)
+- Do not start `OutboxPoller`
+- CDC consumer publishes downstream; status updates are optional in CDC-only mode
+- If you do not mark DONE, treat the table as append-only and apply retention (e.g., partitioning + TTL)
+- Dedupe by `event_id`
 
 ---
 
@@ -746,7 +780,7 @@ The framework implements backpressure at multiple levels to prevent overwhelming
 │  [enqueueHot() returns false]                                             │
 │          │                                                                │
 │          ▼                                                                │
-│  [Event stays in DB] ──► OutboxPoller picks up when capacity frees        │
+│  [Event stays in DB] ──► OutboxPoller/CDC picks up when capacity frees    │
 │                                                                           │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -769,12 +803,12 @@ Workers execute listeners synchronously (blocking). This provides natural rate l
 
 **Key insight:** The database acts as a durable buffer when in-memory queues are full.
 
-### 14.4 Hot Queue Full Behavior
+### 14.4 Hot Queue Full Behavior (DispatcherCommitHook)
 
 - `write()` MUST NOT throw
-- MUST log WARNING and increment metric
+- `DispatcherCommitHook` logs WARNING and increments metric when the hot queue drops
 - Event remains in DB with status NEW
-- OutboxPoller picks up when workers have capacity
+- OutboxPoller or CDC picks up when workers have capacity
 
 ### 14.5 Cold Queue Full Behavior
 
@@ -837,10 +871,12 @@ public interface MetricsExporter {
 
 | Level | Event |
 |-------|-------|
-| WARNING | Hot queue drop (downgrade to poller) |
+| WARNING | Hot queue drop (DispatcherCommitHook) |
 | ERROR | DEAD transition |
 | ERROR | OutboxDispatcher/poller loop errors |
 | SEVERE | Decode failures (malformed headers) |
+
+Hot queue drop warnings are emitted by `DispatcherCommitHook`. If no hook is installed (CDC-only), no warning or metric is produced.
 
 ### 16.3 Idempotency Requirements
 
@@ -878,7 +914,7 @@ public interface MetricsExporter {
 
 - Hot queue capacity small, force drop
 - **Expect**: write returns OK, outbox row NEW
-- Start poller
+- Start poller (or run CDC handler)
 - **Expect**: row processed to DONE
 
 ### 18.4 Retry/Dead
@@ -922,7 +958,7 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
     .build();
 
 OutboxPoller poller = new OutboxPoller(
-    connectionProvider, eventStore, dispatcher,
+    connectionProvider, eventStore, new DispatcherPollerHandler(dispatcher),
     Duration.ofMillis(1000), 200, 5000,
     MetricsExporter.NOOP
 );
@@ -930,7 +966,7 @@ poller.start();
 
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
 
-OutboxWriter writer = new OutboxWriter(txContext, eventStore, dispatcher);
+OutboxWriter writer = new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
 
 try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
   writer.write("UserCreated", "{\"id\":123}");

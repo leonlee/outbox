@@ -1,10 +1,10 @@
 # outbox-java
 
-Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, and poller fallback.
+Minimal, Spring-free outbox framework with JDBC persistence, optional hot-path enqueue, and poller/CDC fallback.
 
 ## Modules
 
-- `outbox-core`: core APIs, dispatcher, poller, and registries.
+- `outbox-core`: core APIs, hooks, dispatcher, poller, and registries.
 - `outbox-jdbc`: JDBC event store and transaction helpers.
 - `outbox-spring-adapter`: optional `TxContext` implementation for Spring.
 - `samples/outbox-demo`: minimal, non-Spring demo (H2).
@@ -28,7 +28,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
                                             |   Outbox Table     |
                                             +--------------------+
 
-   enqueue hot                                      poll pending
+   afterCommit hook                                 poll pending
       |                                                  ^
       v                                                  |
   +-----------+                                       +--------------+
@@ -51,12 +51,16 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
   OutboxDispatcher ---> mark DONE/RETRY/DEAD ---> EventStore
 ```
 
+Hot path is optional: supply an `AfterCommitHook` (for example, `DispatcherCommitHook`) or omit it for CDC-only consumption.
+
 ## Quick Start (Manual JDBC)
 
 ```java
 import outbox.EventEnvelope;
 import outbox.OutboxWriter;
 import outbox.spi.MetricsExporter;
+import outbox.dispatch.DispatcherCommitHook;
+import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.EventInterceptor;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
@@ -89,7 +93,7 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
 OutboxPoller poller = new OutboxPoller(
     connectionProvider,
     eventStore,
-    dispatcher,
+    new DispatcherPollerHandler(dispatcher),
     Duration.ofMillis(1000),
     200,
     5000,
@@ -99,7 +103,7 @@ OutboxPoller poller = new OutboxPoller(
 poller.start();
 
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
-OutboxWriter writer = new OutboxWriter(txContext, eventStore, dispatcher);
+OutboxWriter writer = new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
 
 try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
   writer.write("UserCreated", "{\"id\":123}");
@@ -113,6 +117,8 @@ try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
 import outbox.EventEnvelope;
 import outbox.OutboxWriter;
 import outbox.spi.MetricsExporter;
+import outbox.dispatch.DispatcherCommitHook;
+import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
@@ -175,7 +181,7 @@ public final class OutboxExample {
     OutboxPoller poller = new OutboxPoller(
         connectionProvider,
         eventStore,
-        dispatcher,
+        new DispatcherPollerHandler(dispatcher),
         Duration.ofMillis(500),
         50,
         1000,
@@ -183,7 +189,7 @@ public final class OutboxExample {
     );
     poller.start();
 
-    OutboxWriter writer = new OutboxWriter(txContext, eventStore, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
 
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
       writer.write("UserCreated", "{\"id\":123}");
@@ -308,13 +314,13 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 
 ## Poller Event Locking
 
-For multi-instance deployments, enable claim-based locking so pollers don't compete for the same events:
+For multi-instance deployments, enable claim-based locking so pollers don't compete for the same events. OutboxPoller requires a handler; use `DispatcherPollerHandler` with the built-in dispatcher.
 
 ```java
 OutboxPoller poller = new OutboxPoller(
     connectionProvider,
     eventStore,
-    dispatcher,
+    new DispatcherPollerHandler(dispatcher),
     Duration.ofMillis(1000),  // skipRecent
     200,                       // batchSize
     5000,                      // intervalMs
@@ -329,6 +335,25 @@ OutboxPoller poller = new OutboxPoller(
 - Locks are cleared when events reach DONE, RETRY, or DEAD status
 - Use the 7-arg constructor (without `ownerId`/`lockTimeout`) for single-instance mode (no locking)
 
+## CDC Consumption (High QPS)
+
+For high-throughput workloads, you can disable the in-process poller and use CDC to consume the outbox table.
+
+1. Do not start `OutboxPoller`.
+2. Create `OutboxWriter` without a hook (or with `AfterCommitHook.NOOP`) to skip hot-path enqueue.
+3. Use CDC to read `outbox_event` inserts and publish downstream; dedupe by `event_id`.
+4. Status updates are optional in CDC-only mode. If you do not mark DONE, treat the table as append-only and enforce retention (e.g., partitioning + TTL).
+
+```java
+import outbox.OutboxWriter;
+import outbox.spi.AfterCommitHook;
+
+OutboxWriter writer = new OutboxWriter(txContext, eventStore);
+// or: new OutboxWriter(txContext, eventStore, AfterCommitHook.NOOP)
+```
+
+If you enable both `DispatcherCommitHook` and CDC, you must dedupe downstream or choose one primary delivery path.
+
 ## Multi-Datasource
 
 The outbox pattern requires the `outbox_event` table to live in the **same database** as the business data so that publishes are transactionally atomic. When your system spans multiple databases, each datasource needs its own full stack: `ConnectionProvider`, `EventStore`, `TxContext`, `JdbcTransactionManager`, `ListenerRegistry`, `OutboxDispatcher`, `OutboxPoller`, and `OutboxWriter`. Stateless `EventListener` and `EventInterceptor` instances can be shared across stacks, but each stack gets its own `ListenerRegistry` (the per-stack routing table).
@@ -342,4 +367,4 @@ mvn install -DskipTests && mvn -pl samples/outbox-multi-ds-demo exec:java
 ## Notes
 
 - Delivery is **at-least-once**. Use `eventId` for downstream dedupe.
-- Hot queue drops do not throw; the poller will pick up the event.
+- Hot queue drops (DispatcherCommitHook) do not throw; the poller (if enabled) or CDC should pick up the event.

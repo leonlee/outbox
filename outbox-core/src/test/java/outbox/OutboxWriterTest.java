@@ -1,24 +1,16 @@
 package outbox;
 
-import outbox.dispatch.DefaultInFlightTracker;
-import outbox.dispatch.OutboxDispatcher;
-import outbox.registry.DefaultListenerRegistry;
-import outbox.spi.ConnectionProvider;
+import outbox.spi.AfterCommitHook;
 import outbox.spi.EventStore;
-import outbox.spi.MetricsExporter;
 import outbox.spi.TxContext;
 
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Proxy;
 import java.sql.Connection;
-import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -32,89 +24,73 @@ class OutboxWriterTest {
   void writeThrowsWhenNoActiveTransaction() {
     StubTxContext txContext = new StubTxContext(false);
     RecordingEventStore store = new RecordingEventStore();
-    OutboxDispatcher dispatcher = newDispatcher();
 
-    OutboxWriter writer = new OutboxWriter(txContext, store, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, store);
 
     assertThrows(IllegalStateException.class, () ->
         writer.write(EventEnvelope.ofJson("Test", "{}")));
-
-    dispatcher.close();
   }
 
   @Test
-  void afterCommitSwallowsEnqueueExceptions() throws Exception {
+  void afterCommitHookRuns() {
     StubTxContext txContext = new StubTxContext(true);
     RecordingEventStore store = new RecordingEventStore();
-    RecordingMetrics metrics = new RecordingMetrics();
-    OutboxDispatcher dispatcher = newDispatcher();
+    RecordingHook hook = new RecordingHook();
 
-    replaceHotQueueWithThrowingQueue(dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, store, hook);
 
-    OutboxWriter writer = new OutboxWriter(txContext, store, dispatcher, metrics);
+    writer.write(EventEnvelope.ofJson("Test", "{}"));
+
+    assertDoesNotThrow(txContext::runAfterCommit);
+    assertEquals(1, hook.callCount.get());
+    assertEquals(1, store.insertCount.get());
+  }
+
+  @Test
+  void afterCommitHookSwallowsExceptions() {
+    StubTxContext txContext = new StubTxContext(true);
+    RecordingEventStore store = new RecordingEventStore();
+    AfterCommitHook hook = event -> { throw new RuntimeException("boom"); };
+
+    OutboxWriter writer = new OutboxWriter(txContext, store, hook);
 
     writer.write(EventEnvelope.ofJson("Test", "{}"));
 
     assertDoesNotThrow(txContext::runAfterCommit);
     assertEquals(1, store.insertCount.get());
-    assertEquals(1, metrics.hotDropped.get());
-
-    dispatcher.close();
-  }
-
-  @Test
-  void threeArgConstructorDefaultsMetricsToNoop() {
-    StubTxContext txContext = new StubTxContext(true);
-    RecordingEventStore store = new RecordingEventStore();
-    OutboxDispatcher dispatcher = newDispatcher();
-
-    OutboxWriter writer = new OutboxWriter(txContext, store, dispatcher);
-
-    String eventId = writer.write(EventEnvelope.ofJson("Test", "{}"));
-    assertNotNull(eventId);
-    assertEquals(1, store.insertCount.get());
-
-    dispatcher.close();
   }
 
   @Test
   void writeWithStringEventTypeAndPayload() {
     StubTxContext txContext = new StubTxContext(true);
     RecordingEventStore store = new RecordingEventStore();
-    OutboxDispatcher dispatcher = newDispatcher();
 
-    OutboxWriter writer = new OutboxWriter(txContext, store, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, store);
 
     String eventId = writer.write("UserCreated", "{\"id\":1}");
     assertNotNull(eventId);
     assertEquals(1, store.insertCount.get());
-
-    dispatcher.close();
   }
 
   @Test
   void writeWithTypedEventTypeAndPayload() {
     StubTxContext txContext = new StubTxContext(true);
     RecordingEventStore store = new RecordingEventStore();
-    OutboxDispatcher dispatcher = newDispatcher();
 
-    OutboxWriter writer = new OutboxWriter(txContext, store, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, store);
 
     EventType eventType = StringEventType.of("OrderPlaced");
     String eventId = writer.write(eventType, "{\"orderId\":1}");
     assertNotNull(eventId);
     assertEquals(1, store.insertCount.get());
-
-    dispatcher.close();
   }
 
   @Test
   void writeAllInsertsMultipleEvents() {
     StubTxContext txContext = new StubTxContext(true);
     RecordingEventStore store = new RecordingEventStore();
-    OutboxDispatcher dispatcher = newDispatcher();
 
-    OutboxWriter writer = new OutboxWriter(txContext, store, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, store);
 
     List<EventEnvelope> events = List.of(
         EventEnvelope.ofJson("EventA", "{}"),
@@ -124,91 +100,17 @@ class OutboxWriterTest {
     List<String> ids = writer.writeAll(events);
     assertEquals(3, ids.size());
     assertEquals(3, store.insertCount.get());
-
-    dispatcher.close();
   }
 
   @Test
   void writeAllThrowsWhenNoActiveTransaction() {
     StubTxContext txContext = new StubTxContext(false);
     RecordingEventStore store = new RecordingEventStore();
-    OutboxDispatcher dispatcher = newDispatcher();
 
-    OutboxWriter writer = new OutboxWriter(txContext, store, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, store);
 
     assertThrows(IllegalStateException.class, () ->
         writer.writeAll(List.of(EventEnvelope.ofJson("Test", "{}"))));
-
-    dispatcher.close();
-  }
-
-  private OutboxDispatcher newDispatcher() {
-    ConnectionProvider connectionProvider = () -> { throw new SQLException("not used"); };
-    EventStore store = new EventStore() {
-      @Override
-      public void insertNew(Connection conn, EventEnvelope event) {
-      }
-
-      @Override
-      public int markDone(Connection conn, String eventId) {
-        return 0;
-      }
-
-      @Override
-      public int markRetry(Connection conn, String eventId, Instant nextAt, String error) {
-        return 0;
-      }
-
-      @Override
-      public int markDead(Connection conn, String eventId, String error) {
-        return 0;
-      }
-
-      @Override
-      public List<outbox.model.OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit) {
-        return List.of();
-      }
-    };
-
-    return OutboxDispatcher.builder()
-        .connectionProvider(connectionProvider)
-        .eventStore(store)
-        .listenerRegistry(new DefaultListenerRegistry())
-        .inFlightTracker(new DefaultInFlightTracker())
-        .retryPolicy(attempts -> 0L)
-        .maxAttempts(1)
-        .workerCount(0)
-        .hotQueueCapacity(1)
-        .coldQueueCapacity(1)
-        .metrics(MetricsExporter.NOOP)
-        .build();
-  }
-
-  private void replaceHotQueueWithThrowingQueue(OutboxDispatcher dispatcher) throws Exception {
-    BlockingQueue<?> throwingQueue = (BlockingQueue<?>) Proxy.newProxyInstance(
-        BlockingQueue.class.getClassLoader(),
-        new Class<?>[]{BlockingQueue.class},
-        (proxy, method, args) -> {
-          if ("offer".equals(method.getName())) {
-            throw new RuntimeException("boom");
-          }
-          Class<?> returnType = method.getReturnType();
-          if (returnType == boolean.class) {
-            return false;
-          }
-          if (returnType == int.class) {
-            return 0;
-          }
-          if (returnType == long.class) {
-            return 0L;
-          }
-          return null;
-        }
-    );
-
-    Field hotQueueField = OutboxDispatcher.class.getDeclaredField("hotQueue");
-    hotQueueField.setAccessible(true);
-    hotQueueField.set(dispatcher, throwingQueue);
   }
 
   private static final class StubTxContext implements TxContext {
@@ -276,40 +178,12 @@ class OutboxWriterTest {
     }
   }
 
-  private static final class RecordingMetrics implements MetricsExporter {
-    private final AtomicInteger hotDropped = new AtomicInteger();
+  private static final class RecordingHook implements AfterCommitHook {
+    private final AtomicInteger callCount = new AtomicInteger();
 
     @Override
-    public void incrementHotEnqueued() {
-    }
-
-    @Override
-    public void incrementHotDropped() {
-      hotDropped.incrementAndGet();
-    }
-
-    @Override
-    public void incrementColdEnqueued() {
-    }
-
-    @Override
-    public void incrementDispatchSuccess() {
-    }
-
-    @Override
-    public void incrementDispatchFailure() {
-    }
-
-    @Override
-    public void incrementDispatchDead() {
-    }
-
-    @Override
-    public void recordQueueDepths(int hotDepth, int coldDepth) {
-    }
-
-    @Override
-    public void recordOldestLagMs(long lagMs) {
+    public void onCommit(EventEnvelope event) {
+      callCount.incrementAndGet();
     }
   }
 }

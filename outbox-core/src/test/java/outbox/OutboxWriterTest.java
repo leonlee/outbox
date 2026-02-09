@@ -34,10 +34,10 @@ class OutboxWriterTest {
     RecordingEventStore store = new RecordingEventStore();
     OutboxDispatcher dispatcher = newDispatcher();
 
-    OutboxWriter client = new OutboxWriter(txContext, store, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, store, dispatcher);
 
     assertThrows(IllegalStateException.class, () ->
-        client.write(EventEnvelope.ofJson("Test", "{}")));
+        writer.write(EventEnvelope.ofJson("Test", "{}")));
 
     dispatcher.close();
   }
@@ -51,9 +51,9 @@ class OutboxWriterTest {
 
     replaceHotQueueWithThrowingQueue(dispatcher);
 
-    OutboxWriter client = new OutboxWriter(txContext, store, dispatcher, metrics);
+    OutboxWriter writer = new OutboxWriter(txContext, store, dispatcher, metrics);
 
-    client.write(EventEnvelope.ofJson("Test", "{}"));
+    writer.write(EventEnvelope.ofJson("Test", "{}"));
 
     assertDoesNotThrow(txContext::runAfterCommit);
     assertEquals(1, store.insertCount.get());
@@ -68,9 +68,9 @@ class OutboxWriterTest {
     RecordingEventStore store = new RecordingEventStore();
     OutboxDispatcher dispatcher = newDispatcher();
 
-    OutboxWriter client = new OutboxWriter(txContext, store, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, store, dispatcher);
 
-    String eventId = client.write(EventEnvelope.ofJson("Test", "{}"));
+    String eventId = writer.write(EventEnvelope.ofJson("Test", "{}"));
     assertNotNull(eventId);
     assertEquals(1, store.insertCount.get());
 
@@ -83,9 +83,9 @@ class OutboxWriterTest {
     RecordingEventStore store = new RecordingEventStore();
     OutboxDispatcher dispatcher = newDispatcher();
 
-    OutboxWriter client = new OutboxWriter(txContext, store, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, store, dispatcher);
 
-    String eventId = client.write("UserCreated", "{\"id\":1}");
+    String eventId = writer.write("UserCreated", "{\"id\":1}");
     assertNotNull(eventId);
     assertEquals(1, store.insertCount.get());
 
@@ -98,10 +98,10 @@ class OutboxWriterTest {
     RecordingEventStore store = new RecordingEventStore();
     OutboxDispatcher dispatcher = newDispatcher();
 
-    OutboxWriter client = new OutboxWriter(txContext, store, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, store, dispatcher);
 
     EventType eventType = StringEventType.of("OrderPlaced");
-    String eventId = client.write(eventType, "{\"orderId\":1}");
+    String eventId = writer.write(eventType, "{\"orderId\":1}");
     assertNotNull(eventId);
     assertEquals(1, store.insertCount.get());
 
@@ -114,14 +114,14 @@ class OutboxWriterTest {
     RecordingEventStore store = new RecordingEventStore();
     OutboxDispatcher dispatcher = newDispatcher();
 
-    OutboxWriter client = new OutboxWriter(txContext, store, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, store, dispatcher);
 
     List<EventEnvelope> events = List.of(
         EventEnvelope.ofJson("EventA", "{}"),
         EventEnvelope.ofJson("EventB", "{}"),
         EventEnvelope.ofJson("EventC", "{}")
     );
-    List<String> ids = client.writeAll(events);
+    List<String> ids = writer.writeAll(events);
     assertEquals(3, ids.size());
     assertEquals(3, store.insertCount.get());
 
@@ -134,10 +134,10 @@ class OutboxWriterTest {
     RecordingEventStore store = new RecordingEventStore();
     OutboxDispatcher dispatcher = newDispatcher();
 
-    OutboxWriter client = new OutboxWriter(txContext, store, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, store, dispatcher);
 
     assertThrows(IllegalStateException.class, () ->
-        client.writeAll(List.of(EventEnvelope.ofJson("Test", "{}"))));
+        writer.writeAll(List.of(EventEnvelope.ofJson("Test", "{}"))));
 
     dispatcher.close();
   }

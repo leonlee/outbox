@@ -66,7 +66,7 @@ public final class MultiDatasourceDemo {
     ordersPoller.start();
 
     JdbcTransactionManager ordersTxMgr = new JdbcTransactionManager(ordersConn, ordersTx);
-    OutboxWriter ordersClient = new OutboxWriter(ordersTx, ordersEventStore, ordersDispatcher);
+    OutboxWriter ordersWriter = new OutboxWriter(ordersTx, ordersEventStore, ordersDispatcher);
 
     // ── Inventory stack ──────────────────────────────────────────
     var invEventStore = JdbcEventStores.detect(inventoryDs);
@@ -87,17 +87,17 @@ public final class MultiDatasourceDemo {
     invPoller.start();
 
     JdbcTransactionManager invTxMgr = new JdbcTransactionManager(invConn, invTx);
-    OutboxWriter invClient = new OutboxWriter(invTx, invEventStore, invDispatcher);
+    OutboxWriter invWriter = new OutboxWriter(invTx, invEventStore, invDispatcher);
 
     // ── Publish events ───────────────────────────────────────────
     System.out.println("=== Multi-Datasource Demo ===\n");
 
     try (var tx = ordersTxMgr.begin()) {
-      ordersClient.write(EventEnvelope.builder("OrderPlaced")
+      ordersWriter.write(EventEnvelope.builder("OrderPlaced")
           .aggregateType("Order").aggregateId("order-42")
           .payloadJson("{\"item\":\"widget\",\"qty\":1}")
           .build());
-      ordersClient.write(EventEnvelope.builder("OrderShipped")
+      ordersWriter.write(EventEnvelope.builder("OrderShipped")
           .aggregateType("Order").aggregateId("order-42")
           .payloadJson("{\"carrier\":\"FedEx\"}")
           .build());
@@ -106,11 +106,11 @@ public final class MultiDatasourceDemo {
     }
 
     try (var tx = invTxMgr.begin()) {
-      invClient.write(EventEnvelope.builder("StockReserved")
+      invWriter.write(EventEnvelope.builder("StockReserved")
           .aggregateType("Inventory").aggregateId("sku-99")
           .payloadJson("{\"qty\":5}")
           .build());
-      invClient.write(EventEnvelope.builder("StockDepleted")
+      invWriter.write(EventEnvelope.builder("StockDepleted")
           .aggregateType("Inventory").aggregateId("sku-99")
           .payloadJson("{\"qty\":0}")
           .build());

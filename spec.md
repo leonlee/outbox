@@ -930,10 +930,10 @@ poller.start();
 
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
 
-OutboxWriter client = new OutboxWriter(txContext, eventStore, dispatcher);
+OutboxWriter writer = new OutboxWriter(txContext, eventStore, dispatcher);
 
 try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-  client.write("UserCreated", "{\"id\":123}");
+  writer.write("UserCreated", "{\"id\":123}");
   tx.commit();
 }
 ```

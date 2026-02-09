@@ -61,10 +61,10 @@ class OutboxAcceptanceTest {
   @Test
   void atomicityRollbackDoesNotPersist() throws Exception {
     OutboxDispatcher dispatcher = dispatcher(0, 10, 10);
-    OutboxWriter client = new OutboxWriter(txContext, eventStore, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, eventStore, dispatcher);
 
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-      client.write(EventEnvelope.ofJson("TestEvent", "{}"));
+      writer.write(EventEnvelope.ofJson("TestEvent", "{}"));
       tx.rollback();
     }
 
@@ -79,11 +79,11 @@ class OutboxAcceptanceTest {
         .register("UserCreated", event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers);
-    OutboxWriter client = new OutboxWriter(txContext, eventStore, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, eventStore, dispatcher);
 
     String eventId;
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-      eventId = client.write(EventEnvelope.ofJson("UserCreated", "{\"id\":1}"));
+      eventId = writer.write(EventEnvelope.ofJson("UserCreated", "{\"id\":1}"));
       tx.commit();
     }
 
@@ -98,11 +98,11 @@ class OutboxAcceptanceTest {
     OutboxDispatcher noWorkers = dispatcher(0, 1, 1);
     noWorkers.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("Preload", "{}"), QueuedEvent.Source.HOT, 0));
 
-    OutboxWriter client = new OutboxWriter(txContext, eventStore, noWorkers);
+    OutboxWriter writer = new OutboxWriter(txContext, eventStore, noWorkers);
 
     String eventId;
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-      eventId = client.write(EventEnvelope.ofJson("Overflow", "{}"));
+      eventId = writer.write(EventEnvelope.ofJson("Overflow", "{}"));
       tx.commit();
     }
 
@@ -141,11 +141,11 @@ class OutboxAcceptanceTest {
         .register("Failing", event -> { throw new RuntimeException("boom"); });
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers, 3);
-    OutboxWriter client = new OutboxWriter(txContext, eventStore, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, eventStore, dispatcher);
 
     String eventId;
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-      eventId = client.write(EventEnvelope.ofJson("Failing", "{}"));
+      eventId = writer.write(EventEnvelope.ofJson("Failing", "{}"));
       tx.commit();
     }
 

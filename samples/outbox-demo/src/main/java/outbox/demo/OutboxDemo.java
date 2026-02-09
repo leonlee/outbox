@@ -88,21 +88,21 @@ public final class OutboxDemo {
     );
     poller.start();
 
-    // 5. Create transaction manager and client
+    // 5. Create transaction manager and writer
     JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
-    OutboxWriter client = new OutboxWriter(txContext, eventStore, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, eventStore, dispatcher);
 
     System.out.println("=== Outbox Demo ===\n");
 
     // 6. Publish events within transactions
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
       // Simple event
-      String eventId1 = client.write(EventEnvelope.ofJson("UserCreated",
+      String eventId1 = writer.write(EventEnvelope.ofJson("UserCreated",
           "{\"userId\": 1, \"name\": \"Alice\"}"));
       System.out.println("Published UserCreated event: " + eventId1);
 
       // Event with metadata
-      String eventId2 = client.write(EventEnvelope.builder("OrderPlaced")
+      String eventId2 = writer.write(EventEnvelope.builder("OrderPlaced")
           .aggregateType("Order")
           .aggregateId("order-123")
           .tenantId("tenant-A")
@@ -117,7 +117,7 @@ public final class OutboxDemo {
 
     // 7. Publish another event in separate transaction
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-      String eventId = client.write(EventEnvelope.builder("UserCreated")
+      String eventId = writer.write(EventEnvelope.builder("UserCreated")
           .aggregateType("User")
           .aggregateId("user-2")
           .payloadJson("{\"userId\": 2, \"name\": \"Bob\"}")

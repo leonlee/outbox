@@ -1,14 +1,16 @@
 package outbox.jdbc;
 
 import outbox.OutboxWriter;
-import outbox.registry.DefaultListenerRegistry;
-import outbox.dispatch.OutboxDispatcher;
 import outbox.EventEnvelope;
+import outbox.dispatch.DispatcherCommitHook;
+import outbox.dispatch.DispatcherPollerHandler;
+import outbox.dispatch.OutboxDispatcher;
 import outbox.dispatch.ExponentialBackoffRetryPolicy;
-import outbox.spi.MetricsExporter;
 import outbox.poller.OutboxPoller;
 import outbox.model.EventStatus;
 import outbox.dispatch.QueuedEvent;
+import outbox.registry.DefaultListenerRegistry;
+import outbox.spi.MetricsExporter;
 
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.AfterEach;
@@ -61,7 +63,7 @@ class OutboxAcceptanceTest {
   @Test
   void atomicityRollbackDoesNotPersist() throws Exception {
     OutboxDispatcher dispatcher = dispatcher(0, 10, 10);
-    OutboxWriter writer = new OutboxWriter(txContext, eventStore, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
 
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
       writer.write(EventEnvelope.ofJson("TestEvent", "{}"));
@@ -79,7 +81,7 @@ class OutboxAcceptanceTest {
         .register("UserCreated", event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers);
-    OutboxWriter writer = new OutboxWriter(txContext, eventStore, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
 
     String eventId;
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
@@ -98,7 +100,7 @@ class OutboxAcceptanceTest {
     OutboxDispatcher noWorkers = dispatcher(0, 1, 1);
     noWorkers.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("Preload", "{}"), QueuedEvent.Source.HOT, 0));
 
-    OutboxWriter writer = new OutboxWriter(txContext, eventStore, noWorkers);
+    OutboxWriter writer = new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(noWorkers));
 
     String eventId;
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
@@ -116,7 +118,7 @@ class OutboxAcceptanceTest {
     try (OutboxPoller poller = new OutboxPoller(
         connectionProvider,
         eventStore,
-        dispatcher,
+        new DispatcherPollerHandler(dispatcher),
         Duration.ofMillis(0),
         10,
         10,
@@ -141,7 +143,7 @@ class OutboxAcceptanceTest {
         .register("Failing", event -> { throw new RuntimeException("boom"); });
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers, 3);
-    OutboxWriter writer = new OutboxWriter(txContext, eventStore, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
 
     String eventId;
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
@@ -152,7 +154,7 @@ class OutboxAcceptanceTest {
     try (OutboxPoller poller = new OutboxPoller(
         connectionProvider,
         eventStore,
-        dispatcher,
+        new DispatcherPollerHandler(dispatcher),
         Duration.ofMillis(0),
         10,
         10,

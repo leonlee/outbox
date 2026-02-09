@@ -1,9 +1,7 @@
 package outbox;
 
-import outbox.dispatch.OutboxDispatcher;
-import outbox.dispatch.QueuedEvent;
 import outbox.spi.EventStore;
-import outbox.spi.MetricsExporter;
+import outbox.spi.AfterCommitHook;
 import outbox.spi.TxContext;
 
 import java.sql.Connection;
@@ -18,23 +16,20 @@ public final class OutboxWriter {
 
   private final TxContext txContext;
   private final EventStore eventStore;
-  private final OutboxDispatcher dispatcher;
-  private final MetricsExporter metrics;
+  private final AfterCommitHook afterCommitHook;
 
-  public OutboxWriter(TxContext txContext, EventStore eventStore, OutboxDispatcher dispatcher) {
-    this(txContext, eventStore, dispatcher, null);
+  public OutboxWriter(TxContext txContext, EventStore eventStore) {
+    this(txContext, eventStore, null);
   }
 
   public OutboxWriter(
       TxContext txContext,
       EventStore eventStore,
-      OutboxDispatcher dispatcher,
-      MetricsExporter metrics
+      AfterCommitHook afterCommitHook
   ) {
     this.txContext = Objects.requireNonNull(txContext, "txContext");
     this.eventStore = Objects.requireNonNull(eventStore, "eventStore");
-    this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
-    this.metrics = metrics == null ? MetricsExporter.NOOP : metrics;
+    this.afterCommitHook = afterCommitHook;
   }
 
   public String write(EventEnvelope event) {
@@ -46,20 +41,9 @@ public final class OutboxWriter {
     Connection conn = txContext.currentConnection();
     eventStore.insertNew(conn, event);
 
-    txContext.afterCommit(() -> {
-      try {
-        boolean enqueued = dispatcher.enqueueHot(new QueuedEvent(event, QueuedEvent.Source.HOT, 0));
-        if (enqueued) {
-          metrics.incrementHotEnqueued();
-        } else {
-          metrics.incrementHotDropped();
-          logger.log(Level.WARNING, "Hot queue full, falling back to poller for eventId={0}", event.eventId());
-        }
-      } catch (RuntimeException ex) {
-        metrics.incrementHotDropped();
-        logger.log(Level.WARNING, "Failed to enqueue hot event, falling back to poller for eventId=" + event.eventId(), ex);
-      }
-    });
+    if (afterCommitHook != null && afterCommitHook != AfterCommitHook.NOOP) {
+      txContext.afterCommit(() -> runAfterCommitHook(event));
+    }
 
     return event.eventId();
   }
@@ -82,5 +66,13 @@ public final class OutboxWriter {
       ids.add(write(event));
     }
     return ids;
+  }
+
+  private void runAfterCommitHook(EventEnvelope event) {
+    try {
+      afterCommitHook.onCommit(event);
+    } catch (RuntimeException ex) {
+      logger.log(Level.WARNING, "After-commit hook failed for eventId=" + event.eventId(), ex);
+    }
   }
 }

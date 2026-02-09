@@ -4,6 +4,8 @@ import outbox.EventEnvelope;
 import outbox.OutboxWriter;
 import outbox.spi.MetricsExporter;
 import outbox.dispatch.DefaultInFlightTracker;
+import outbox.dispatch.DispatcherCommitHook;
+import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.EventInterceptor;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
@@ -80,7 +82,7 @@ public final class OutboxDemo {
     OutboxPoller poller = new OutboxPoller(
         connectionProvider,
         eventStore,
-        dispatcher,
+        new DispatcherPollerHandler(dispatcher),
         Duration.ofMillis(500),  // skipRecent
         50,                       // batchSize
         1000,                     // intervalMs
@@ -90,7 +92,7 @@ public final class OutboxDemo {
 
     // 5. Create transaction manager and writer
     JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
-    OutboxWriter writer = new OutboxWriter(txContext, eventStore, dispatcher);
+    OutboxWriter writer = new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
 
     System.out.println("=== Outbox Demo ===\n");
 

@@ -1,12 +1,11 @@
 package outbox.poller;
 
 import outbox.EventEnvelope;
-import outbox.dispatch.OutboxDispatcher;
-import outbox.dispatch.QueuedEvent;
 import outbox.model.OutboxEvent;
 import outbox.spi.ConnectionProvider;
 import outbox.spi.EventStore;
 import outbox.spi.MetricsExporter;
+import outbox.spi.OutboxPollerHandler;
 import outbox.util.JsonCodec;
 
 import java.sql.Connection;
@@ -32,7 +31,7 @@ public final class OutboxPoller implements AutoCloseable {
 
   private final ConnectionProvider connectionProvider;
   private final EventStore eventStore;
-  private final OutboxDispatcher dispatcher;
+  private final OutboxPollerHandler handler;
   private final Duration skipRecent;
   private final int batchSize;
   private final long intervalMs;
@@ -46,20 +45,20 @@ public final class OutboxPoller implements AutoCloseable {
   public OutboxPoller(
       ConnectionProvider connectionProvider,
       EventStore eventStore,
-      OutboxDispatcher dispatcher,
+      OutboxPollerHandler handler,
       Duration skipRecent,
       int batchSize,
       long intervalMs,
       MetricsExporter metrics
   ) {
-    this(connectionProvider, eventStore, dispatcher, skipRecent,
+    this(connectionProvider, eventStore, handler, skipRecent,
         batchSize, intervalMs, metrics, null, null);
   }
 
   public OutboxPoller(
       ConnectionProvider connectionProvider,
       EventStore eventStore,
-      OutboxDispatcher dispatcher,
+      OutboxPollerHandler handler,
       Duration skipRecent,
       int batchSize,
       long intervalMs,
@@ -78,7 +77,7 @@ public final class OutboxPoller implements AutoCloseable {
     }
     this.connectionProvider = Objects.requireNonNull(connectionProvider, "connectionProvider");
     this.eventStore = Objects.requireNonNull(eventStore, "eventStore");
-    this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
+    this.handler = Objects.requireNonNull(handler, "handler");
     this.skipRecent = skipRecent == null ? Duration.ZERO : skipRecent;
     this.batchSize = batchSize;
     this.intervalMs = intervalMs;
@@ -99,7 +98,7 @@ public final class OutboxPoller implements AutoCloseable {
 
   public void poll() {
     try {
-      if (!dispatcher.hasColdQueueCapacity()) {
+      if (!handler.hasCapacity()) {
         return;
       }
 
@@ -156,12 +155,11 @@ public final class OutboxPoller implements AutoCloseable {
       return true; // continue processing other rows
     }
 
-    QueuedEvent event = new QueuedEvent(envelope, QueuedEvent.Source.COLD, row.attempts());
-    boolean enqueued = dispatcher.enqueueCold(event);
-    if (enqueued) {
+    boolean accepted = handler.handle(envelope, row.attempts());
+    if (accepted) {
       metrics.incrementColdEnqueued();
     }
-    return enqueued;
+    return accepted;
   }
 
   private EventEnvelope convertToEnvelope(OutboxEvent row) {

@@ -13,19 +13,19 @@ import java.util.Objects;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-public final class OutboxClient {
-  private static final Logger logger = Logger.getLogger(OutboxClient.class.getName());
+public final class OutboxWriter {
+  private static final Logger logger = Logger.getLogger(OutboxWriter.class.getName());
 
   private final TxContext txContext;
   private final EventStore eventStore;
   private final OutboxDispatcher dispatcher;
   private final MetricsExporter metrics;
 
-  public OutboxClient(TxContext txContext, EventStore eventStore, OutboxDispatcher dispatcher) {
+  public OutboxWriter(TxContext txContext, EventStore eventStore, OutboxDispatcher dispatcher) {
     this(txContext, eventStore, dispatcher, null);
   }
 
-  public OutboxClient(
+  public OutboxWriter(
       TxContext txContext,
       EventStore eventStore,
       OutboxDispatcher dispatcher,
@@ -37,7 +37,7 @@ public final class OutboxClient {
     this.metrics = metrics == null ? MetricsExporter.NOOP : metrics;
   }
 
-  public String publish(EventEnvelope event) {
+  public String write(EventEnvelope event) {
     if (!txContext.isTransactionActive()) {
       throw new IllegalStateException("No active transaction");
     }
@@ -64,22 +64,22 @@ public final class OutboxClient {
     return event.eventId();
   }
 
-  public String publish(String eventType, String payloadJson) {
-    return publish(EventEnvelope.ofJson(eventType, payloadJson));
+  public String write(String eventType, String payloadJson) {
+    return write(EventEnvelope.ofJson(eventType, payloadJson));
   }
 
-  public String publish(EventType eventType, String payloadJson) {
-    return publish(EventEnvelope.ofJson(eventType, payloadJson));
+  public String write(EventType eventType, String payloadJson) {
+    return write(EventEnvelope.ofJson(eventType, payloadJson));
   }
 
-  public List<String> publishAll(List<EventEnvelope> events) {
+  public List<String> writeAll(List<EventEnvelope> events) {
     if (!txContext.isTransactionActive()) {
       throw new IllegalStateException("No active transaction");
     }
     Objects.requireNonNull(events, "events");
     List<String> ids = new ArrayList<>(events.size());
     for (EventEnvelope event : events) {
-      ids.add(publish(event));
+      ids.add(write(event));
     }
     return ids;
   }

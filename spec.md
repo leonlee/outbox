@@ -55,7 +55,7 @@ Build a framework that:
 
 | Component | Responsibility |
 |-----------|----------------|
-| **OutboxClient** | API used by business code inside a transaction context |
+| **OutboxWriter** | API used by business code inside a transaction context |
 | **TxContext** | Abstraction for transaction lifecycle hooks (afterCommit/afterRollback) |
 | **EventStore** | Insert/update/query via `java.sql.Connection` |
 | **OutboxDispatcher** | Hot/cold queues + worker pool; executes listeners; updates status |
@@ -69,9 +69,9 @@ Build a framework that:
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                              HOT PATH (Fast)                                  │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│  Business TX    OutboxClient     afterCommit    OutboxDispatcher    DB       │
+│  Business TX    OutboxWriter     afterCommit    OutboxDispatcher    DB       │
 │      │               │               │               │              │        │
-│      │──publish()───>│               │               │              │        │
+│      │──write()───>│               │               │              │        │
 │      │               │──insertNew()─────────────────────────────────>│       │
 │      │               │──register()──>│               │              │        │
 │      │──commit()─────────────────────│               │              │        │
@@ -107,7 +107,7 @@ OutboxDispatcher MUST prioritize:
 Core interfaces, dispatcher, poller, and registries. **Zero external dependencies.**
 
 Packages:
-- `outbox` - Main API: OutboxClient, EventEnvelope, EventType, AggregateType, EventListener
+- `outbox` - Main API: OutboxWriter, EventEnvelope, EventType, AggregateType, EventListener
 - `outbox.spi` - Extension point interfaces: TxContext, ConnectionProvider, EventStore, MetricsExporter
 - `outbox.model` - Domain objects: OutboxEvent, EventStatus
 - `outbox.dispatch` - OutboxDispatcher, retry policy, inflight tracking
@@ -166,7 +166,7 @@ public interface TxContext {
 Rules:
 - `currentConnection()` MUST return the same connection used by business operations.
 - `afterCommit()` callback MUST run only if the transaction commits successfully.
-- Core MUST fail-fast if `publish()` called when `isTransactionActive() == false`.
+- Core MUST fail-fast if `write()` called when `isTransactionActive() == false`.
 
 ### 4.2 ConnectionProvider
 
@@ -367,17 +367,17 @@ EventEnvelope.builder(eventType)
 
 ## 8. Public API
 
-### 8.1 OutboxClient
+### 8.1 OutboxWriter
 
 ```java
-public final class OutboxClient {
-  public OutboxClient(TxContext txContext, EventStore eventStore, OutboxDispatcher dispatcher);
-  public OutboxClient(TxContext txContext, EventStore eventStore, OutboxDispatcher dispatcher, MetricsExporter metrics);
+public final class OutboxWriter {
+  public OutboxWriter(TxContext txContext, EventStore eventStore, OutboxDispatcher dispatcher);
+  public OutboxWriter(TxContext txContext, EventStore eventStore, OutboxDispatcher dispatcher, MetricsExporter metrics);
 
-  public String publish(EventEnvelope event);
-  public String publish(String eventType, String payloadJson);
-  public String publish(EventType eventType, String payloadJson);
-  public List<String> publishAll(List<EventEnvelope> events);
+  public String write(EventEnvelope event);
+  public String write(String eventType, String payloadJson);
+  public String write(EventType eventType, String payloadJson);
+  public List<String> writeAll(List<EventEnvelope> events);
 }
 ```
 
@@ -771,7 +771,7 @@ Workers execute listeners synchronously (blocking). This provides natural rate l
 
 ### 14.4 Hot Queue Full Behavior
 
-- `publish()` MUST NOT throw
+- `write()` MUST NOT throw
 - MUST log WARNING and increment metric
 - Event remains in DB with status NEW
 - OutboxPoller picks up when workers have capacity
@@ -866,18 +866,18 @@ public interface MetricsExporter {
 
 ### 18.1 Atomicity
 
-- Begin tx manually, publish event, rollback
+- Begin tx manually, write event, rollback
 - **Expect**: outbox row not present
 
 ### 18.2 Commit + Fast Path
 
-- Begin tx, publish event, commit
+- Begin tx, write event, commit
 - **Expect**: dispatcher receives HOT event; listener invoked; outbox status DONE
 
 ### 18.3 Queue Overflow Downgrade
 
 - Hot queue capacity small, force drop
-- **Expect**: publish returns OK, outbox row NEW
+- **Expect**: write returns OK, outbox row NEW
 - Start poller
 - **Expect**: row processed to DONE
 
@@ -930,10 +930,10 @@ poller.start();
 
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
 
-OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher);
+OutboxWriter client = new OutboxWriter(txContext, eventStore, dispatcher);
 
 try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-  client.publish("UserCreated", "{\"id\":123}");
+  client.write("UserCreated", "{\"id\":123}");
   tx.commit();
 }
 ```
@@ -942,5 +942,5 @@ try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
 
 ```java
 SpringTxContext txContext = new SpringTxContext(dataSource);
-// Use OutboxClient with SpringTxContext inside @Transactional methods
+// Use OutboxWriter with SpringTxContext inside @Transactional methods
 ```

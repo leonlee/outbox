@@ -35,7 +35,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 outbox-core/src/main/java/
 └── outbox/
     │  # Main API (root package)
-    ├── OutboxClient.java
+    ├── OutboxWriter.java
     ├── EventEnvelope.java
     ├── EventType.java (interface)
     ├── AggregateType.java (interface)
@@ -104,7 +104,7 @@ outbox-jdbc/src/main/java/
 
 ### Event Flow
 
-1. `OutboxClient.publish()` inserts event to DB within caller's transaction
+1. `OutboxWriter.write()` inserts event to DB within caller's transaction
 2. `afterCommit` callback enqueues to OutboxDispatcher's hot queue
 3. If hot queue full, event is dropped (logged) and poller picks it up later
 4. OutboxDispatcher workers process events: run interceptors → find listener via `(aggregateType, eventType)` → execute → update status to DONE/RETRY/DEAD

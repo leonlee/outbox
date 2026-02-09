@@ -1,6 +1,6 @@
 package outbox.demo.spring;
 
-import outbox.OutboxClient;
+import outbox.OutboxWriter;
 import outbox.spi.MetricsExporter;
 import outbox.spi.TxContext;
 import outbox.dispatch.DefaultInFlightTracker;
@@ -94,11 +94,11 @@ public class OutboxConfiguration {
   }
 
   @Bean
-  public OutboxClient outboxClient(
+  public OutboxWriter outboxWriter(
       TxContext txContext,
       AbstractJdbcEventStore eventStore,
       OutboxDispatcher dispatcher
   ) {
-    return new OutboxClient(txContext, eventStore, dispatcher);
+    return new OutboxWriter(txContext, eventStore, dispatcher);
   }
 }

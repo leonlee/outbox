@@ -1,6 +1,6 @@
 package outbox.spring;
 
-import outbox.OutboxClient;
+import outbox.OutboxWriter;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.EventEnvelope;
@@ -66,12 +66,12 @@ class SpringAdapterIntegrationTest {
         .register("UserCreated", event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
-    OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher);
+    OutboxWriter client = new OutboxWriter(txContext, eventStore, dispatcher);
 
     TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
     String eventId;
     try {
-      eventId = client.publish(EventEnvelope.ofJson("UserCreated", "{\"id\":42}"));
+      eventId = client.write(EventEnvelope.ofJson("UserCreated", "{\"id\":42}"));
       txManager.commit(status);
     } catch (RuntimeException ex) {
       txManager.rollback(status);
@@ -91,12 +91,12 @@ class SpringAdapterIntegrationTest {
         .register("UserCreated", event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
-    OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher);
+    OutboxWriter client = new OutboxWriter(txContext, eventStore, dispatcher);
 
     TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
     String eventId;
     try {
-      eventId = client.publish(EventEnvelope.ofJson("UserCreated", "{\"id\":99}"));
+      eventId = client.write(EventEnvelope.ofJson("UserCreated", "{\"id\":99}"));
       txManager.rollback(status);
     } catch (RuntimeException ex) {
       txManager.rollback(status);

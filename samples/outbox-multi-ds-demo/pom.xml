@@ -7,13 +7,13 @@
 
   <parent>
     <groupId>outbox</groupId>
-    <artifactId>outbox-parent</artifactId>
+    <artifactId>outbox-samples</artifactId>
     <version>0.1.0-SNAPSHOT</version>
   </parent>
 
-  <artifactId>outbox-demo</artifactId>
-  <name>outbox-demo</name>
-  <description>Simple demo of outbox framework without Spring</description>
+  <artifactId>outbox-multi-ds-demo</artifactId>
+  <name>outbox-multi-ds-demo</name>
+  <description>Multi-datasource demo: two H2 databases with independent outbox stacks</description>
 
   <dependencies>
     <dependency>
@@ -39,7 +39,7 @@
         <artifactId>exec-maven-plugin</artifactId>
         <version>3.1.0</version>
         <configuration>
-          <mainClass>outbox.demo.OutboxDemo</mainClass>
+          <mainClass>outbox.demo.multids.MultiDatasourceDemo</mainClass>
         </configuration>
       </plugin>
     </plugins>

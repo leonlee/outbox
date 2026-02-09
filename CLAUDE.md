@@ -9,9 +9,9 @@ mvn test                           # Run all module tests
 mvn -pl outbox-jdbc test           # Run JDBC module tests only
 mvn -pl outbox-core -am package    # Build core module and dependencies
 mvn -DskipTests package            # Build all jars without tests
-mvn install -DskipTests && mvn -pl outbox-demo exec:java  # Run demo
-mvn install -DskipTests && mvn -f outbox-spring-demo/pom.xml spring-boot:run  # Run Spring Boot demo
-mvn install -DskipTests && mvn -pl outbox-multi-ds-demo exec:java  # Run multi-datasource demo
+mvn install -DskipTests && mvn -pl samples/outbox-demo exec:java  # Run demo
+mvn install -DskipTests && mvn -f samples/outbox-spring-demo/pom.xml spring-boot:run  # Run Spring Boot demo
+mvn install -DskipTests && mvn -pl samples/outbox-multi-ds-demo exec:java  # Run multi-datasource demo
 ```
 
 Java 17 is the baseline.
@@ -25,9 +25,9 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 - **outbox-core**: Core interfaces, dispatcher, poller, registries. Zero external dependencies.
 - **outbox-jdbc**: JDBC event store hierarchy (`AbstractJdbcEventStore` with H2/MySQL/PostgreSQL subclasses), `JdbcTemplate` utility, manual transaction helpers (`JdbcTransactionManager`, `ThreadLocalTxContext`).
 - **outbox-spring-adapter**: Optional `SpringTxContext` for Spring transaction integration.
-- **outbox-demo**: Simple runnable demo with H2 (no Spring).
-- **outbox-spring-demo**: Spring Boot demo with REST API (standalone).
-- **outbox-multi-ds-demo**: Multi-datasource demo with two H2 databases (Orders + Inventory).
+- **samples/outbox-demo**: Simple runnable demo with H2 (no Spring).
+- **samples/outbox-spring-demo**: Spring Boot demo with REST API (standalone).
+- **samples/outbox-multi-ds-demo**: Multi-datasource demo with two H2 databases (Orders + Inventory).
 
 ### Package Structure (JDBI-inspired)
 

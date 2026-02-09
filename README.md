@@ -14,8 +14,8 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 ## Architecture
 
 ```text
-  +-----------------------+        publish()        +---------------+
-  | Application / Domain | ----------------------> | OutboxClient  |
+  +-----------------------+        write()        +---------------+
+  | Application / Domain | ----------------------> | OutboxWriter  |
   +-----------------------+                         +-------+-------+
                                                     | insert
                                                     v
@@ -55,7 +55,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 
 ```java
 import outbox.EventEnvelope;
-import outbox.OutboxClient;
+import outbox.OutboxWriter;
 import outbox.spi.MetricsExporter;
 import outbox.dispatch.EventInterceptor;
 import outbox.dispatch.OutboxDispatcher;
@@ -99,10 +99,10 @@ OutboxPoller poller = new OutboxPoller(
 poller.start();
 
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
-OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher);
+OutboxWriter client = new OutboxWriter(txContext, eventStore, dispatcher);
 
 try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-  client.publish("UserCreated", "{\"id\":123}");
+  client.write("UserCreated", "{\"id\":123}");
   tx.commit();
 }
 ```
@@ -111,7 +111,7 @@ try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
 
 ```java
 import outbox.EventEnvelope;
-import outbox.OutboxClient;
+import outbox.OutboxWriter;
 import outbox.spi.MetricsExporter;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
@@ -183,10 +183,10 @@ public final class OutboxExample {
     );
     poller.start();
 
-    OutboxClient client = new OutboxClient(txContext, eventStore, dispatcher);
+    OutboxWriter client = new OutboxWriter(txContext, eventStore, dispatcher);
 
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-      client.publish("UserCreated", "{\"id\":123}");
+      client.write("UserCreated", "{\"id\":123}");
       tx.commit();
     }
 
@@ -203,7 +203,7 @@ public final class OutboxExample {
 import outbox.spring.SpringTxContext;
 
 SpringTxContext txContext = new SpringTxContext(dataSource);
-// Use OutboxClient with this TxContext
+// Use OutboxWriter with this TxContext
 ```
 
 ## Type-safe Event + Aggregate Types (Optional)
@@ -331,7 +331,7 @@ OutboxPoller poller = new OutboxPoller(
 
 ## Multi-Datasource
 
-The outbox pattern requires the `outbox_event` table to live in the **same database** as the business data so that publishes are transactionally atomic. When your system spans multiple databases, each datasource needs its own full stack: `ConnectionProvider`, `EventStore`, `TxContext`, `JdbcTransactionManager`, `ListenerRegistry`, `OutboxDispatcher`, `OutboxPoller`, and `OutboxClient`. Stateless `EventListener` and `EventInterceptor` instances can be shared across stacks, but each stack gets its own `ListenerRegistry` (the per-stack routing table).
+The outbox pattern requires the `outbox_event` table to live in the **same database** as the business data so that publishes are transactionally atomic. When your system spans multiple databases, each datasource needs its own full stack: `ConnectionProvider`, `EventStore`, `TxContext`, `JdbcTransactionManager`, `ListenerRegistry`, `OutboxDispatcher`, `OutboxPoller`, and `OutboxWriter`. Stateless `EventListener` and `EventInterceptor` instances can be shared across stacks, but each stack gets its own `ListenerRegistry` (the per-stack routing table).
 
 See [`samples/outbox-multi-ds-demo`](samples/outbox-multi-ds-demo) for a complete runnable example with two H2 databases (Orders + Inventory), each with its own outbox stack sharing a stateless listener.
 

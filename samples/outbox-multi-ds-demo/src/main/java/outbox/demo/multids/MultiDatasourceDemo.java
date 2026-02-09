@@ -1,7 +1,7 @@
 package outbox.demo.multids;
 
 import outbox.EventEnvelope;
-import outbox.OutboxClient;
+import outbox.OutboxWriter;
 import outbox.spi.MetricsExporter;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
@@ -66,7 +66,7 @@ public final class MultiDatasourceDemo {
     ordersPoller.start();
 
     JdbcTransactionManager ordersTxMgr = new JdbcTransactionManager(ordersConn, ordersTx);
-    OutboxClient ordersClient = new OutboxClient(ordersTx, ordersEventStore, ordersDispatcher);
+    OutboxWriter ordersClient = new OutboxWriter(ordersTx, ordersEventStore, ordersDispatcher);
 
     // ── Inventory stack ──────────────────────────────────────────
     var invEventStore = JdbcEventStores.detect(inventoryDs);
@@ -87,17 +87,17 @@ public final class MultiDatasourceDemo {
     invPoller.start();
 
     JdbcTransactionManager invTxMgr = new JdbcTransactionManager(invConn, invTx);
-    OutboxClient invClient = new OutboxClient(invTx, invEventStore, invDispatcher);
+    OutboxWriter invClient = new OutboxWriter(invTx, invEventStore, invDispatcher);
 
     // ── Publish events ───────────────────────────────────────────
     System.out.println("=== Multi-Datasource Demo ===\n");
 
     try (var tx = ordersTxMgr.begin()) {
-      ordersClient.publish(EventEnvelope.builder("OrderPlaced")
+      ordersClient.write(EventEnvelope.builder("OrderPlaced")
           .aggregateType("Order").aggregateId("order-42")
           .payloadJson("{\"item\":\"widget\",\"qty\":1}")
           .build());
-      ordersClient.publish(EventEnvelope.builder("OrderShipped")
+      ordersClient.write(EventEnvelope.builder("OrderShipped")
           .aggregateType("Order").aggregateId("order-42")
           .payloadJson("{\"carrier\":\"FedEx\"}")
           .build());
@@ -106,11 +106,11 @@ public final class MultiDatasourceDemo {
     }
 
     try (var tx = invTxMgr.begin()) {
-      invClient.publish(EventEnvelope.builder("StockReserved")
+      invClient.write(EventEnvelope.builder("StockReserved")
           .aggregateType("Inventory").aggregateId("sku-99")
           .payloadJson("{\"qty\":5}")
           .build());
-      invClient.publish(EventEnvelope.builder("StockDepleted")
+      invClient.write(EventEnvelope.builder("StockDepleted")
           .aggregateType("Inventory").aggregateId("sku-99")
           .payloadJson("{\"qty\":0}")
           .build());

@@ -1,7 +1,7 @@
 package outbox.demo.spring;
 
 import outbox.EventEnvelope;
-import outbox.OutboxClient;
+import outbox.OutboxWriter;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,11 +19,11 @@ import java.util.UUID;
 @RequestMapping("/events")
 public class EventController {
 
-  private final OutboxClient outboxClient;
+  private final OutboxWriter outboxWriter;
   private final JdbcTemplate jdbcTemplate;
 
-  public EventController(OutboxClient outboxClient, JdbcTemplate jdbcTemplate) {
-    this.outboxClient = outboxClient;
+  public EventController(OutboxWriter outboxWriter, JdbcTemplate jdbcTemplate) {
+    this.outboxWriter = outboxWriter;
     this.jdbcTemplate = jdbcTemplate;
   }
 
@@ -36,7 +36,7 @@ public class EventController {
     // userRepository.save(new User(userId, name));
 
     // Publish event within the same transaction
-    String eventId = outboxClient.publish(EventEnvelope.builder("UserCreated")
+    String eventId = outboxWriter.write(EventEnvelope.builder("UserCreated")
         .aggregateType("User")
         .aggregateId(userId)
         .headers(Map.of("source", "api", "version", "1"))
@@ -60,7 +60,7 @@ public class EventController {
     // orderRepository.save(new Order(orderId, amount));
 
     // Publish event within the same transaction
-    String eventId = outboxClient.publish(EventEnvelope.builder("OrderPlaced")
+    String eventId = outboxWriter.write(EventEnvelope.builder("OrderPlaced")
         .aggregateType("Order")
         .aggregateId(orderId)
         .tenantId("default")

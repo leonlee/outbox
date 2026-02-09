@@ -136,13 +136,17 @@ Optional Spring integration.
 Classes:
 - `SpringTxContext` - Implements TxContext using Spring's TransactionSynchronizationManager
 
-### 3.4 outbox-demo
+### 3.4 samples/outbox-demo
 
 Standalone H2 demonstration (no Spring).
 
-### 3.5 outbox-spring-demo
+### 3.5 samples/outbox-spring-demo
 
 Spring Boot REST API demonstration.
+
+### 3.6 samples/outbox-multi-ds-demo
+
+Multi-datasource demo (two H2 databases).
 
 ---
 

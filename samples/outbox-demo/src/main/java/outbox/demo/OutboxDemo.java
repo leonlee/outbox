@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * Simple demo showing outbox framework usage without Spring.
  *
- * Run with: mvn -pl outbox-demo exec:java
+ * Run with: mvn -pl samples/outbox-demo exec:java
  */
 public final class OutboxDemo {
 

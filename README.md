@@ -7,9 +7,9 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 - `outbox-core`: core APIs, dispatcher, poller, and registries.
 - `outbox-jdbc`: JDBC event store and transaction helpers.
 - `outbox-spring-adapter`: optional `TxContext` implementation for Spring.
-- `outbox-demo`: minimal, non-Spring demo (H2).
-- `outbox-spring-demo`: Spring demo app.
-- `outbox-multi-ds-demo`: multi-datasource demo (two H2 databases).
+- `samples/outbox-demo`: minimal, non-Spring demo (H2).
+- `samples/outbox-spring-demo`: Spring demo app.
+- `samples/outbox-multi-ds-demo`: multi-datasource demo (two H2 databases).
 
 ## Architecture
 
@@ -333,10 +333,10 @@ OutboxPoller poller = new OutboxPoller(
 
 The outbox pattern requires the `outbox_event` table to live in the **same database** as the business data so that publishes are transactionally atomic. When your system spans multiple databases, each datasource needs its own full stack: `ConnectionProvider`, `EventStore`, `TxContext`, `JdbcTransactionManager`, `ListenerRegistry`, `OutboxDispatcher`, `OutboxPoller`, and `OutboxClient`. Stateless `EventListener` and `EventInterceptor` instances can be shared across stacks, but each stack gets its own `ListenerRegistry` (the per-stack routing table).
 
-See [`outbox-multi-ds-demo`](outbox-multi-ds-demo) for a complete runnable example with two H2 databases (Orders + Inventory), each with its own outbox stack sharing a stateless listener.
+See [`samples/outbox-multi-ds-demo`](samples/outbox-multi-ds-demo) for a complete runnable example with two H2 databases (Orders + Inventory), each with its own outbox stack sharing a stateless listener.
 
 ```bash
-mvn install -DskipTests && mvn -pl outbox-multi-ds-demo exec:java
+mvn install -DskipTests && mvn -pl samples/outbox-multi-ds-demo exec:java
 ```
 
 ## Notes

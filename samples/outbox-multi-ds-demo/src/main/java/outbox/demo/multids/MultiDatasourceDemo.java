@@ -25,7 +25,7 @@ import java.util.concurrent.TimeUnit;
  * ("Orders" and "Inventory"), each with its own full outbox stack, sharing a
  * stateless {@code EventListener}.
  *
- * <p>Run with: {@code mvn install -DskipTests && mvn -pl outbox-multi-ds-demo exec:java}
+ * <p>Run with: {@code mvn install -DskipTests && mvn -pl samples/outbox-multi-ds-demo exec:java}
  */
 public final class MultiDatasourceDemo {
 

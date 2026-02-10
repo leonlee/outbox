@@ -49,6 +49,7 @@ outbox-core/src/main/java/
     │   ├── TxContext.java
     │   ├── ConnectionProvider.java
     │   ├── EventStore.java
+    │   ├── EventPurger.java
     │   └── MetricsExporter.java (contains Noop inner class)
     │
     │  # Model - Domain objects
@@ -71,6 +72,9 @@ outbox-core/src/main/java/
     │   ├── OutboxPoller.java
     │   └── OutboxPollerHandler.java (interface)
     │
+    ├── purge/
+    │   └── OutboxPurgeScheduler.java
+    │
     ├── registry/
     │   ├── ListenerRegistry.java (interface)
     │   └── DefaultListenerRegistry.java
@@ -86,6 +90,10 @@ outbox-jdbc/src/main/java/
     ├── MySqlEventStore.java          (UPDATE...ORDER BY...LIMIT claim)
     ├── PostgresEventStore.java       (FOR UPDATE SKIP LOCKED + RETURNING claim)
     ├── JdbcEventStores.java          (ServiceLoader registry + detect())
+    ├── AbstractJdbcEventPurger.java   (base: subquery-based DELETE purge)
+    ├── H2EventPurger.java             (inherits default purge)
+    ├── MySqlEventPurger.java          (DELETE...ORDER BY...LIMIT purge)
+    ├── PostgresEventPurger.java       (inherits default purge)
     ├── JdbcTemplate.java
     ├── EventStoreException.java
     ├── DataSourceConnectionProvider.java
@@ -105,6 +113,8 @@ outbox-jdbc/src/main/java/
 - **JdbcTemplate**: Lightweight JDBC helper (`update`, `query`, `updateReturning`) used by `AbstractJdbcEventStore` subclasses.
 - **ListenerRegistry**: Maps `(aggregateType, eventType)` pairs to a single `EventListener`. Uses `AggregateType.GLOBAL` as default. Unroutable events (no listener) are immediately marked DEAD.
 - **EventInterceptor**: Cross-cutting before/after hooks for audit, logging, metrics. `beforeDispatch` runs in registration order; `afterDispatch` in reverse. Replaces the old wildcard `registerAll()` pattern.
+- **EventPurger**: SPI for deleting terminal events (DONE + DEAD) older than a cutoff. Implementations in `outbox-jdbc`: `AbstractJdbcEventPurger` (base with subquery-based `DELETE`), `MySqlEventPurger` (`DELETE...ORDER BY...LIMIT`).
+- **OutboxPurgeScheduler**: Scheduled component that purges terminal events on a configurable interval. Builder pattern, `AutoCloseable`, daemon threads (same lifecycle as `OutboxPoller`). Loops batches until `count < batchSize`.
 
 ### Event Flow
 

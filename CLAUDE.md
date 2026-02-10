@@ -127,6 +127,27 @@ outbox-jdbc/src/main/java/
 - H2 in-memory database for tests
 - Tests in `outbox-core/src/test`, `outbox-jdbc/src/test`, and `outbox-spring-adapter/src/test`
 
+## Release Process
+
+Published to GitHub Packages. CI workflow (`.github/workflows/publish.yml`) auto-deploys on `v*` tags.
+
+8 pom.xml files need version updates: `pom.xml`, `outbox-core/pom.xml`, `outbox-jdbc/pom.xml`, `outbox-spring-adapter/pom.xml`, `samples/pom.xml`, `samples/outbox-demo/pom.xml`, `samples/outbox-multi-ds-demo/pom.xml`, `samples/outbox-spring-demo/pom.xml`.
+
+```bash
+# 1. Update all 8 pom.xml: X-SNAPSHOT → X
+# 2. Verify
+mvn clean test
+# 3. Commit and tag
+git commit -am "release: X"
+git tag vX
+# 4. Bump to next dev version in all 8 pom.xml: X → Y-SNAPSHOT
+git commit -am "chore: bump version to Y-SNAPSHOT"
+# 5. Push (tag triggers publish workflow)
+git push && git push origin vX
+```
+
+Only library modules are published: `outbox-core`, `outbox-jdbc`, `outbox-spring-adapter` (not samples).
+
 ## Documentation
 
 - `README.md`: Project introduction, architecture diagram, and doc links

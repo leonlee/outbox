@@ -403,7 +403,7 @@ public class EventController {
         EventEnvelope.builder("UserCreated")
             .aggregateType("User")
             .aggregateId(userId)
-            .header("source", "api")
+            .headers(Map.of("source", "api"))
             .payloadJson("{\"userId\":\"" + userId + "\",\"name\":\"" + name + "\"}")
             .build());
     return Map.of("status", "ok", "eventId", eventId, "userId", userId);

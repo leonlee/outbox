@@ -79,11 +79,11 @@ OutboxDispatcher 的优先级策略：
 核心接口、Hook、Dispatcher、Poller 和注册中心。**零外部依赖。**
 
 包结构：
-- `outbox` — 主 API：OutboxWriter、EventEnvelope、EventType、AggregateType、EventListener
-- `outbox.spi` — 扩展点接口：TxContext、ConnectionProvider、EventStore、MetricsExporter、AfterCommitHook、OutboxPollerHandler
+- `outbox` — 主 API：OutboxWriter、EventEnvelope、EventType、AggregateType、EventListener、AfterCommitHook
+- `outbox.spi` — 扩展点接口：TxContext、ConnectionProvider、EventStore、MetricsExporter
 - `outbox.model` — 领域对象：OutboxEvent、EventStatus
 - `outbox.dispatch` — OutboxDispatcher、重试策略、InFlight 追踪
-- `outbox.poller` — OutboxPoller
+- `outbox.poller` — OutboxPoller、OutboxPollerHandler
 - `outbox.registry` — Listener 注册中心
 - `outbox.util` — JsonCodec（无外部 JSON 依赖）
 
@@ -463,6 +463,7 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
     .coldQueueCapacity(1000)                 // 默认: 1000
     .metrics(metricsExporter)                // 默认: MetricsExporter.NOOP
     .interceptor(interceptor)                // 可选，可多次调用
+    .interceptors(List.of(i1, i2))           // 可选，批量添加
     .drainTimeoutMs(5000)                    // 默认: 5000
     .build();
 ```
@@ -568,32 +569,20 @@ new DefaultInFlightTracker(long ttlMs) // 带 TTL，用于回收卡住的条目
 
 ## 10. OutboxPoller
 
-### 10.1 构造方法
+### 10.1 Builder
 
 ```java
-// 7 参数：无锁定（单实例模式）
-public OutboxPoller(
-    ConnectionProvider connectionProvider,
-    EventStore eventStore,
-    OutboxPollerHandler handler,
-    Duration skipRecent,
-    int batchSize,
-    long intervalMs,
-    MetricsExporter metrics
-)
-
-// 9 参数：claim 锁定（多实例模式）
-public OutboxPoller(
-    ConnectionProvider connectionProvider,
-    EventStore eventStore,
-    OutboxPollerHandler handler,
-    Duration skipRecent,
-    int batchSize,
-    long intervalMs,
-    MetricsExporter metrics,
-    String ownerId,         // null 则自动生成
-    Duration lockTimeout    // null 默认 5 分钟
-)
+OutboxPoller poller = OutboxPoller.builder()
+    .connectionProvider(connectionProvider)  // 必填
+    .eventStore(eventStore)                  // 必填
+    .handler(handler)                        // 必填
+    .skipRecent(Duration.ofSeconds(1))       // 默认: Duration.ZERO
+    .batchSize(50)                           // 默认: 50
+    .intervalMs(5000)                        // 默认: 5000
+    .metrics(metricsExporter)                // 默认: MetricsExporter.NOOP
+    .ownerId("poller-1")                     // 默认: 设置 lockTimeout 时自动生成
+    .lockTimeout(Duration.ofMinutes(5))      // 默认: 5 分钟
+    .build();
 ```
 
 ### 10.2 方法
@@ -608,7 +597,7 @@ void close()    // 停止轮询
 
 - 按固定间隔运行（默认 5000ms）
 - 轮询前检查 Handler 容量，无空间则跳过本轮
-- 跳过 `skipRecent` 时间内创建的事件（默认 1000ms）
+- 跳过 `skipRecent` 时间内创建的事件（默认 `Duration.ZERO`）
 - 查询 status IN (0, 2) 且 available_at <= now
 - 将 OutboxEvent 转为 EventEnvelope
 - 交给 Handler 处理（受背压控制）
@@ -616,7 +605,7 @@ void close()    // 停止轮询
 
 ### 10.4 事件锁定
 
-提供 `ownerId` 时（9 参数构造），Poller 使用 claim 锁定机制：
+提供 `ownerId` 时，Poller 使用 claim 锁定机制：
 
 - **加锁**：原子设置 `locked_by` 和 `locked_at`
 - **过期**：超过 `lockTimeout` 的锁视为已过期，可被重新 claim

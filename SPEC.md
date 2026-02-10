@@ -79,11 +79,11 @@ OutboxDispatcher MUST prioritize:
 Core interfaces, hooks, dispatcher, poller, and registries. **Zero external dependencies.**
 
 Packages:
-- `outbox` - Main API: OutboxWriter, EventEnvelope, EventType, AggregateType, EventListener
-- `outbox.spi` - Extension point interfaces: TxContext, ConnectionProvider, EventStore, MetricsExporter, AfterCommitHook, OutboxPollerHandler
+- `outbox` - Main API: OutboxWriter, EventEnvelope, EventType, AggregateType, EventListener, AfterCommitHook
+- `outbox.spi` - Extension point interfaces: TxContext, ConnectionProvider, EventStore, MetricsExporter
 - `outbox.model` - Domain objects: OutboxEvent, EventStatus
 - `outbox.dispatch` - OutboxDispatcher, retry policy, inflight tracking
-- `outbox.poller` - OutboxPoller
+- `outbox.poller` - OutboxPoller, OutboxPollerHandler
 - `outbox.registry` - Listener registry
 - `outbox.util` - JsonCodec (no external JSON library)
 
@@ -463,6 +463,7 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
     .coldQueueCapacity(1000)                 // default: 1000
     .metrics(metricsExporter)                // default: MetricsExporter.NOOP
     .interceptor(interceptor)                // optional, repeatable
+    .interceptors(List.of(i1, i2))           // optional, bulk add
     .drainTimeoutMs(5000)                    // default: 5000
     .build();
 ```
@@ -570,32 +571,20 @@ new DefaultInFlightTracker(long ttlMs) // With TTL for stale entry recovery
 
 ## 10. OutboxPoller
 
-### 10.1 Constructor
+### 10.1 Builder
 
 ```java
-// 7-arg: no locking (single-instance mode)
-public OutboxPoller(
-    ConnectionProvider connectionProvider,
-    EventStore eventStore,
-    OutboxPollerHandler handler,
-    Duration skipRecent,
-    int batchSize,
-    long intervalMs,
-    MetricsExporter metrics
-)
-
-// 9-arg: claim-based locking (multi-instance mode)
-public OutboxPoller(
-    ConnectionProvider connectionProvider,
-    EventStore eventStore,
-    OutboxPollerHandler handler,
-    Duration skipRecent,
-    int batchSize,
-    long intervalMs,
-    MetricsExporter metrics,
-    String ownerId,         // null to auto-generate
-    Duration lockTimeout    // null defaults to 5 minutes
-)
+OutboxPoller poller = OutboxPoller.builder()
+    .connectionProvider(connectionProvider)  // required
+    .eventStore(eventStore)                  // required
+    .handler(handler)                        // required
+    .skipRecent(Duration.ofSeconds(1))       // default: Duration.ZERO
+    .batchSize(50)                           // default: 50
+    .intervalMs(5000)                        // default: 5000
+    .metrics(metricsExporter)                // default: MetricsExporter.NOOP
+    .ownerId("poller-1")                     // default: auto-generated if lockTimeout set
+    .lockTimeout(Duration.ofMinutes(5))      // default: 5 minutes
+    .build();
 ```
 
 ### 10.2 Methods
@@ -610,7 +599,7 @@ void close()    // Stop polling
 
 - Runs on scheduled interval (default 5000ms)
 - Checks handler capacity before polling; skips cycle if full
-- Skips events created within `skipRecent` duration (default 1000ms)
+- Skips events created within `skipRecent` duration (default `Duration.ZERO`)
 - Queries status IN (0, 2) with available_at <= now
 - Converts OutboxEvent to EventEnvelope
 - Delegates to handler for processing (subject to backpressure)
@@ -618,7 +607,7 @@ void close()    // Stop polling
 
 ### 10.4 Event Locking
 
-When `ownerId` is provided (9-arg constructor), the poller uses claim-based locking:
+When `ownerId` is provided, the poller uses claim-based locking:
 
 - **Claim**: Sets `locked_by` and `locked_at` on pending events atomically
 - **Expiry**: Locks older than `lockTimeout` are considered expired and can be reclaimed

@@ -31,7 +31,7 @@ public final class DispatcherCommitHook implements AfterCommitHook {
         metrics.incrementHotEnqueued();
       } else {
         metrics.incrementHotDropped();
-        logger.log(Level.WARNING, "Hot queue full, falling back to poller for eventId={0}", event.eventId());
+        logger.log(Level.WARNING, "Hot queue full, falling back to poller for eventId=" + event.eventId());
       }
     } catch (RuntimeException ex) {
       metrics.incrementHotDropped();

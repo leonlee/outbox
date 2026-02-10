@@ -26,6 +26,9 @@ public final class EventEnvelope {
   private EventEnvelope(Builder builder) {
     this.eventId = builder.eventId == null ? newEventId() : builder.eventId;
     this.eventType = Objects.requireNonNull(builder.eventType, "eventType");
+    if (this.eventType.isEmpty()) {
+      throw new IllegalArgumentException("eventType cannot be empty");
+    }
     this.occurredAt = builder.occurredAt == null ? Instant.now() : builder.occurredAt;
     this.aggregateType = builder.aggregateType == null
         ? AggregateType.GLOBAL.name() : builder.aggregateType;

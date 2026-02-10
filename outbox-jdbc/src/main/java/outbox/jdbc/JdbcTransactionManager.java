@@ -78,8 +78,13 @@ public final class JdbcTransactionManager {
         callbackException = e;
       } finally {
         completed = true;
-        connection.setAutoCommit(true);
-        connection.close();
+        try {
+          connection.setAutoCommit(true);
+        } catch (SQLException e) {
+          if (callbackException != null) callbackException.addSuppressed(e);
+        } finally {
+          connection.close();
+        }
       }
       if (callbackException != null) {
         throw callbackException;

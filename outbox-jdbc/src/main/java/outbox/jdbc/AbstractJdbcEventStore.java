@@ -10,6 +10,7 @@ import java.sql.Connection;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Objects;
 
@@ -44,7 +45,11 @@ public abstract class AbstractJdbcEventStore implements EventStore {
   }
 
   protected AbstractJdbcEventStore(String tableName) {
-    this.tableName = Objects.requireNonNull(tableName, "tableName");
+    Objects.requireNonNull(tableName, "tableName");
+    if (!tableName.matches("[a-zA-Z_][a-zA-Z0-9_]*")) {
+      throw new IllegalArgumentException("Invalid table name: " + tableName);
+    }
+    this.tableName = tableName;
   }
 
   /**
@@ -114,6 +119,8 @@ public abstract class AbstractJdbcEventStore implements EventStore {
   @Override
   public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
       Instant lockExpiry, Duration skipRecent, int limit) {
+    // Truncate to millis so stored value matches query (DB may drop nanos)
+    Instant nowMs = now.truncatedTo(ChronoUnit.MILLIS);
     Instant recentCutoff = recentCutoff(now, skipRecent);
     // Phase 1: UPDATE with subquery (H2-compatible default)
     String claimSql = "UPDATE " + tableName + " SET locked_by=?, locked_at=? " +
@@ -123,14 +130,14 @@ public abstract class AbstractJdbcEventStore implements EventStore {
         " AND (locked_by IS NULL OR locked_at < ?)" +
         " AND created_at <= ? ORDER BY created_at LIMIT ?)";
     int updated = JdbcTemplate.update(conn, claimSql,
-        ownerId, Timestamp.from(now), Timestamp.from(now),
+        ownerId, Timestamp.from(nowMs), Timestamp.from(now),
         Timestamp.from(lockExpiry), Timestamp.from(recentCutoff), limit);
     if (updated == 0) return List.of();
-    // Phase 2: SELECT claimed rows
+    // Phase 2: SELECT rows claimed in this cycle
     String selectSql = "SELECT event_id, event_type, aggregate_type, aggregate_id, " +
         "tenant_id, payload, headers, attempts, created_at " +
-        "FROM " + tableName + " WHERE locked_by=? ORDER BY created_at";
-    return JdbcTemplate.query(conn, selectSql, EVENT_ROW_MAPPER, ownerId);
+        "FROM " + tableName + " WHERE locked_by=? AND locked_at=? ORDER BY created_at";
+    return JdbcTemplate.query(conn, selectSql, EVENT_ROW_MAPPER, ownerId, Timestamp.from(nowMs));
   }
 
   protected Instant recentCutoff(Instant now, Duration skipRecent) {

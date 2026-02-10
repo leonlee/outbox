@@ -101,7 +101,7 @@ public final class JdbcEventStores {
 
     for (AbstractJdbcEventStore store : STORES) {
       for (String prefix : store.jdbcUrlPrefixes()) {
-        if (jdbcUrl.startsWith(prefix)) {
+        if (jdbcUrl.toLowerCase().startsWith(prefix.toLowerCase())) {
           return store;
         }
       }

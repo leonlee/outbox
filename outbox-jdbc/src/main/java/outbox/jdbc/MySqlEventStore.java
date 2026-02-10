@@ -1,6 +1,5 @@
 package outbox.jdbc;
 
-import outbox.model.EventStatus;
 import outbox.model.OutboxEvent;
 
 import java.sql.Connection;
@@ -16,9 +15,6 @@ import java.util.List;
  * <p>Uses {@code UPDATE...ORDER BY...LIMIT} for claim (no subquery needed).
  */
 public final class MySqlEventStore extends AbstractJdbcEventStore {
-
-  private static final String PENDING_STATUS_IN =
-      "(" + EventStatus.NEW.code() + "," + EventStatus.RETRY.code() + ")";
 
   public MySqlEventStore() {
     super();

@@ -1,6 +1,5 @@
 package outbox.jdbc;
 
-import outbox.model.EventStatus;
 import outbox.model.OutboxEvent;
 
 import java.sql.Connection;
@@ -16,9 +15,6 @@ import java.util.List;
  * single-round-trip claim.
  */
 public final class PostgresEventStore extends AbstractJdbcEventStore {
-
-  private static final String PENDING_STATUS_IN =
-      "(" + EventStatus.NEW.code() + "," + EventStatus.RETRY.code() + ")";
 
   public PostgresEventStore() {
     super();

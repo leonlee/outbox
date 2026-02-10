@@ -27,7 +27,7 @@ public abstract class AbstractJdbcEventStore implements EventStore {
   protected static final String DEFAULT_TABLE = "outbox_event";
   private static final int MAX_ERROR_LENGTH = 4000;
 
-  private static final String PENDING_STATUS_IN =
+  protected static final String PENDING_STATUS_IN =
       "(" + EventStatus.NEW.code() + "," + EventStatus.RETRY.code() + ")";
 
   protected static final JdbcTemplate.RowMapper<OutboxEvent> EVENT_ROW_MAPPER = rs -> new OutboxEvent(

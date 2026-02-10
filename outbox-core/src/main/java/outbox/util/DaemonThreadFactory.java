@@ -1,5 +1,6 @@
 package outbox.util;
 
+import java.util.Objects;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -11,7 +12,7 @@ public final class DaemonThreadFactory implements ThreadFactory {
   private final AtomicInteger counter = new AtomicInteger(1);
 
   public DaemonThreadFactory(String prefix) {
-    this.prefix = prefix;
+    this.prefix = Objects.requireNonNull(prefix, "prefix");
   }
 
   @Override

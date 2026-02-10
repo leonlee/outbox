@@ -6,6 +6,7 @@ import outbox.registry.ListenerRegistry;
 import outbox.spi.ConnectionProvider;
 import outbox.spi.EventStore;
 import outbox.spi.MetricsExporter;
+import outbox.util.DaemonThreadFactory;
 
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -23,8 +24,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-
-import outbox.util.DaemonThreadFactory;
 
 public final class OutboxDispatcher implements AutoCloseable {
   private static final Logger logger = Logger.getLogger(OutboxDispatcher.class.getName());

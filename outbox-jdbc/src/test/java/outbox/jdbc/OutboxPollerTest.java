@@ -76,15 +76,15 @@ class OutboxPollerTest {
         .build();
 
     RecordingMetrics metrics = new RecordingMetrics();
-    try (OutboxPoller poller = new OutboxPoller(
-        connectionProvider,
-        eventStore,
-        new DispatcherPollerHandler(dispatcher),
-        Duration.ofHours(1),
-        10,
-        10,
-        metrics
-    )) {
+    try (OutboxPoller poller = OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .skipRecent(Duration.ofHours(1))
+        .batchSize(10)
+        .intervalMs(10)
+        .metrics(metrics)
+        .build()) {
       poller.poll();
     }
 
@@ -113,15 +113,15 @@ class OutboxPollerTest {
         .build();
 
     RecordingMetrics metrics = new RecordingMetrics();
-    try (OutboxPoller poller = new OutboxPoller(
-        connectionProvider,
-        eventStore,
-        new DispatcherPollerHandler(dispatcher),
-        Duration.ZERO,
-        10,
-        10,
-        metrics
-    )) {
+    try (OutboxPoller poller = OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .skipRecent(Duration.ZERO)
+        .batchSize(10)
+        .intervalMs(10)
+        .metrics(metrics)
+        .build()) {
       poller.poll();
     }
 
@@ -154,17 +154,17 @@ class OutboxPollerTest {
         .build();
 
     RecordingMetrics metrics = new RecordingMetrics();
-    try (OutboxPoller poller = new OutboxPoller(
-        connectionProvider,
-        eventStore,
-        new DispatcherPollerHandler(dispatcher),
-        Duration.ZERO,
-        10,
-        10,
-        metrics,
-        "test-poller",
-        Duration.ofMinutes(5)
-    )) {
+    try (OutboxPoller poller = OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .skipRecent(Duration.ZERO)
+        .batchSize(10)
+        .intervalMs(10)
+        .metrics(metrics)
+        .ownerId("test-poller")
+        .lockTimeout(Duration.ofMinutes(5))
+        .build()) {
       poller.poll();
     }
 

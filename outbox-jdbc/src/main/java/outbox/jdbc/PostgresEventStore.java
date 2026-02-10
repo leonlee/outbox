@@ -1,5 +1,6 @@
 package outbox.jdbc;
 
+import outbox.model.EventStatus;
 import outbox.model.OutboxEvent;
 
 import java.sql.Connection;
@@ -15,6 +16,9 @@ import java.util.List;
  * single-round-trip claim.
  */
 public final class PostgresEventStore extends AbstractJdbcEventStore {
+
+  private static final String PENDING_STATUS_IN =
+      "(" + EventStatus.NEW.code() + "," + EventStatus.RETRY.code() + ")";
 
   public PostgresEventStore() {
     super();
@@ -42,7 +46,7 @@ public final class PostgresEventStore extends AbstractJdbcEventStore {
     String sql = "UPDATE " + tableName() + " SET locked_by=?, locked_at=? " +
         "WHERE event_id IN (" +
         "SELECT event_id FROM " + tableName() +
-        " WHERE status IN (0,2) AND available_at <= ?" +
+        " WHERE status IN " + PENDING_STATUS_IN + " AND available_at <= ?" +
         " AND (locked_by IS NULL OR locked_at < ?)" +
         " AND created_at <= ? ORDER BY created_at LIMIT ?" +
         " FOR UPDATE SKIP LOCKED" +

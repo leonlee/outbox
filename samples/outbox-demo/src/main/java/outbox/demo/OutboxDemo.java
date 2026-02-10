@@ -2,7 +2,6 @@ package outbox.demo;
 
 import outbox.EventEnvelope;
 import outbox.OutboxWriter;
-import outbox.spi.MetricsExporter;
 import outbox.dispatch.DefaultInFlightTracker;
 import outbox.dispatch.DispatcherCommitHook;
 import outbox.dispatch.DispatcherPollerHandler;
@@ -79,15 +78,14 @@ public final class OutboxDemo {
         .build();
 
     // 4. Create poller (fallback for missed events)
-    OutboxPoller poller = new OutboxPoller(
-        connectionProvider,
-        eventStore,
-        new DispatcherPollerHandler(dispatcher),
-        Duration.ofMillis(500),  // skipRecent
-        50,                       // batchSize
-        1000,                     // intervalMs
-        MetricsExporter.NOOP
-    );
+    OutboxPoller poller = OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .skipRecent(Duration.ofMillis(500))
+        .batchSize(50)
+        .intervalMs(1000)
+        .build();
     poller.start();
 
     // 5. Create transaction manager and writer

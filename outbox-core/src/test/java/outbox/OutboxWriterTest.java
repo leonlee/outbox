@@ -1,6 +1,5 @@
 package outbox;
 
-import outbox.spi.AfterCommitHook;
 import outbox.spi.EventStore;
 import outbox.spi.TxContext;
 

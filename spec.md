@@ -957,11 +957,14 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
         log.info("Dispatching: {}", event.eventType())))
     .build();
 
-OutboxPoller poller = new OutboxPoller(
-    connectionProvider, eventStore, new DispatcherPollerHandler(dispatcher),
-    Duration.ofMillis(1000), 200, 5000,
-    MetricsExporter.NOOP
-);
+OutboxPoller poller = OutboxPoller.builder()
+    .connectionProvider(connectionProvider)
+    .eventStore(eventStore)
+    .handler(new DispatcherPollerHandler(dispatcher))
+    .skipRecent(Duration.ofMillis(1000))
+    .batchSize(200)
+    .intervalMs(5000)
+    .build();
 poller.start();
 
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);

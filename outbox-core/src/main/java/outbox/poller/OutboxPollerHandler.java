@@ -1,4 +1,4 @@
-package outbox.spi;
+package outbox.poller;
 
 import outbox.EventEnvelope;
 

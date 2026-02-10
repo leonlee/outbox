@@ -90,15 +90,14 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
         System.out.println("Dispatching: " + event.eventType())))
     .build();
 
-OutboxPoller poller = new OutboxPoller(
-    connectionProvider,
-    eventStore,
-    new DispatcherPollerHandler(dispatcher),
-    Duration.ofMillis(1000),
-    200,
-    5000,
-    MetricsExporter.NOOP
-);
+OutboxPoller poller = OutboxPoller.builder()
+    .connectionProvider(connectionProvider)
+    .eventStore(eventStore)
+    .handler(new DispatcherPollerHandler(dispatcher))
+    .skipRecent(Duration.ofMillis(1000))
+    .batchSize(200)
+    .intervalMs(5000)
+    .build();
 
 poller.start();
 
@@ -178,15 +177,14 @@ public final class OutboxExample {
         .coldQueueCapacity(100)
         .build();
 
-    OutboxPoller poller = new OutboxPoller(
-        connectionProvider,
-        eventStore,
-        new DispatcherPollerHandler(dispatcher),
-        Duration.ofMillis(500),
-        50,
-        1000,
-        MetricsExporter.NOOP
-    );
+    OutboxPoller poller = OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .skipRecent(Duration.ofMillis(500))
+        .batchSize(50)
+        .intervalMs(1000)
+        .build();
     poller.start();
 
     OutboxWriter writer = new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
@@ -317,23 +315,22 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 For multi-instance deployments, enable claim-based locking so pollers don't compete for the same events. OutboxPoller requires a handler; use `DispatcherPollerHandler` with the built-in dispatcher.
 
 ```java
-OutboxPoller poller = new OutboxPoller(
-    connectionProvider,
-    eventStore,
-    new DispatcherPollerHandler(dispatcher),
-    Duration.ofMillis(1000),  // skipRecent
-    200,                       // batchSize
-    5000,                      // intervalMs
-    MetricsExporter.NOOP,
-    "poller-node-1",           // ownerId (or null to auto-generate)
-    Duration.ofMinutes(5)      // lockTimeout
-);
+OutboxPoller poller = OutboxPoller.builder()
+    .connectionProvider(connectionProvider)
+    .eventStore(eventStore)
+    .handler(new DispatcherPollerHandler(dispatcher))
+    .skipRecent(Duration.ofMillis(1000))
+    .batchSize(200)
+    .intervalMs(5000)
+    .ownerId("poller-node-1")
+    .lockTimeout(Duration.ofMinutes(5))
+    .build();
 ```
 
 - Each poller claims events by setting `locked_by`/`locked_at` columns
 - Expired locks (older than `lockTimeout`) are automatically reclaimed
 - Locks are cleared when events reach DONE, RETRY, or DEAD status
-- Use the 7-arg constructor (without `ownerId`/`lockTimeout`) for single-instance mode (no locking)
+- Omit `ownerId`/`lockTimeout` from the builder for single-instance mode (no locking)
 
 ## CDC Consumption (High QPS)
 
@@ -346,7 +343,7 @@ For high-throughput workloads, you can disable the in-process poller and use CDC
 
 ```java
 import outbox.OutboxWriter;
-import outbox.spi.AfterCommitHook;
+import outbox.AfterCommitHook;
 
 OutboxWriter writer = new OutboxWriter(txContext, eventStore);
 // or: new OutboxWriter(txContext, eventStore, AfterCommitHook.NOOP)

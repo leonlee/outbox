@@ -1,6 +1,4 @@
-package outbox.spi;
-
-import outbox.EventEnvelope;
+package outbox;
 
 @FunctionalInterface
 public interface AfterCommitHook {

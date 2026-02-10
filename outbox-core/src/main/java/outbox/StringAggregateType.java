@@ -17,12 +17,15 @@ import java.util.Objects;
  *     .build();
  * }</pre>
  */
-public final class StringAggregateType implements AggregateType {
+public record StringAggregateType(String name) implements AggregateType {
 
-  private final String name;
-
-  private StringAggregateType(String name) {
-    this.name = Objects.requireNonNull(name, "name");
+  /**
+   * @param name the aggregate type name
+   * @throws NullPointerException if name is null
+   * @throws IllegalArgumentException if name is empty
+   */
+  public StringAggregateType {
+    Objects.requireNonNull(name, "name");
     if (name.isEmpty()) {
       throw new IllegalArgumentException("Aggregate type name cannot be empty");
     }
@@ -38,24 +41,6 @@ public final class StringAggregateType implements AggregateType {
    */
   public static StringAggregateType of(String name) {
     return new StringAggregateType(name);
-  }
-
-  @Override
-  public String name() {
-    return name;
-  }
-
-  @Override
-  public boolean equals(Object o) {
-    if (this == o) return true;
-    if (!(o instanceof StringAggregateType)) return false;
-    StringAggregateType that = (StringAggregateType) o;
-    return name.equals(that.name);
-  }
-
-  @Override
-  public int hashCode() {
-    return name.hashCode();
   }
 
   @Override

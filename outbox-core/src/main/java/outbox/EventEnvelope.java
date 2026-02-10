@@ -141,6 +141,15 @@ public final class EventEnvelope {
     return Arrays.copyOf(payloadBytes, payloadBytes.length);
   }
 
+  @Override
+  public String toString() {
+    return "EventEnvelope{eventId=" + eventId
+        + ", eventType=" + eventType
+        + ", aggregateType=" + aggregateType
+        + ", aggregateId=" + aggregateId
+        + "}";
+  }
+
   public static final class Builder {
     private final String eventType;
     private String eventId;

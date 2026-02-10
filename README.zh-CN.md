@@ -7,13 +7,13 @@
 [![Javadoc](https://img.shields.io/badge/Javadoc-latest-green)](https://leonlee.github.io/outbox/)
 # outbox-java
 
-Minimal, Spring-free outbox framework with JDBC persistence, optional hot-path enqueue, and poller/CDC fallback.
+轻量 Outbox 框架，无需依赖 Spring。基于 JDBC 实现持久化，支持热路径直推与轮询器/CDC 兜底两种投递方式。
 
-## Installation
+## 安装
 
-Artifacts are published to [GitHub Packages](https://github.com/leonlee/outbox/packages). Current release: **0.3.0**.
+构件托管在 [GitHub Packages](https://github.com/leonlee/outbox/packages)，当前版本 **0.3.0**。
 
-Add the GitHub Packages repository to your `pom.xml`:
+先在 `pom.xml` 中添加仓库地址：
 
 ```xml
 <repositories>
@@ -24,24 +24,24 @@ Add the GitHub Packages repository to your `pom.xml`:
 </repositories>
 ```
 
-Then add the dependencies you need:
+再按需引入依赖：
 
 ```xml
-<!-- Core APIs, dispatcher, poller, registries (required) -->
+<!-- 核心：API、Dispatcher、Poller、Registry（必选） -->
 <dependency>
   <groupId>outbox</groupId>
   <artifactId>outbox-core</artifactId>
   <version>0.3.0</version>
 </dependency>
 
-<!-- JDBC event store and transaction helpers (required for persistence) -->
+<!-- JDBC 实现：EventStore 及事务管理（持久化必选） -->
 <dependency>
   <groupId>outbox</groupId>
   <artifactId>outbox-jdbc</artifactId>
   <version>0.3.0</version>
 </dependency>
 
-<!-- Spring transaction integration (optional, only if using Spring) -->
+<!-- Spring 适配器（可选，仅 Spring 项目使用） -->
 <dependency>
   <groupId>outbox</groupId>
   <artifactId>outbox-spring-adapter</artifactId>
@@ -49,18 +49,18 @@ Then add the dependencies you need:
 </dependency>
 ```
 
-> **Note:** GitHub Packages requires authentication. See [GitHub's guide](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-apache-maven-registry#authenticating-to-github-packages) for configuring your `~/.m2/settings.xml`.
+> **注意：** GitHub Packages 需要认证，详见 [GitHub 官方文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-apache-maven-registry#authenticating-to-github-packages)中关于 `~/.m2/settings.xml` 的配置说明。
 
-## Modules
+## 模块
 
-- `outbox-core`: core APIs, hooks, dispatcher, poller, and registries.
-- `outbox-jdbc`: JDBC event store and transaction helpers.
-- `outbox-spring-adapter`: optional `TxContext` implementation for Spring.
-- `samples/outbox-demo`: minimal, non-Spring demo (H2).
-- `samples/outbox-spring-demo`: Spring demo app.
-- `samples/outbox-multi-ds-demo`: multi-datasource demo (two H2 databases).
+- `outbox-core`：核心 API、Hook、Dispatcher、Poller、Registry，零外部依赖。
+- `outbox-jdbc`：JDBC EventStore 实现及事务管理工具。
+- `outbox-spring-adapter`：可选的 Spring `TxContext` 适配。
+- `samples/outbox-demo`：纯 JDBC 示例（H2，无 Spring）。
+- `samples/outbox-spring-demo`：Spring Boot 示例。
+- `samples/outbox-multi-ds-demo`：多数据源示例（双 H2 库）。
 
-## Architecture
+## 架构
 
 ```text
   +-----------------------+        write()        +---------------+
@@ -100,19 +100,19 @@ Then add the dependencies you need:
   OutboxDispatcher ---> mark DONE/RETRY/DEAD ---> EventStore
 ```
 
-Hot path is optional: supply an `AfterCommitHook` (for example, `DispatcherCommitHook`) or omit it for CDC-only consumption.
+热路径是可选的——配置 `AfterCommitHook`（如 `DispatcherCommitHook`）即可启用；不配置则完全由 CDC 消费。
 
-## Requirements
+## 环境要求
 
-- Java 17 or later
+- Java 17+
 
-## Documentation
+## 文档
 
-- [**OBJECTIVE.md**](OBJECTIVE.md) -- Project goals, constraints, non-goals, and acceptance criteria
-- [**SPEC.md**](SPEC.md) -- Technical specification: API contracts, data model, behavioral rules, configuration, observability
-- [**TUTORIAL.md**](TUTORIAL.md) -- Step-by-step guides with runnable code examples
+- [**OBJECTIVE.md**](OBJECTIVE.zh-CN.md) -- 项目目标、约束与验收标准
+- [**SPEC.md**](SPEC.zh-CN.md) -- 技术规范：API 契约、数据模型、行为规则、配置与可观测性
+- [**TUTORIAL.md**](TUTORIAL.zh-CN.md) -- 手把手教程，含可直接运行的代码示例
 
-## Notes
+## 补充说明
 
-- Delivery is **at-least-once**. Use `eventId` for downstream dedupe.
-- Hot queue drops (DispatcherCommitHook) do not throw; the poller (if enabled) or CDC should pick up the event.
+- 语义为 **at-least-once**，下游需按 `eventId` 去重。
+- 热队列满时 DispatcherCommitHook 不会抛异常，事件仍安全落库，由 Poller 或 CDC 兜底投递。

@@ -1,45 +1,44 @@
 [English](TUTORIAL.md) | [中文](TUTORIAL.zh-CN.md)
 
-# Outbox Framework Tutorial
+# Outbox 框架教程
 
-Step-by-step guides and runnable code examples for the outbox-java framework.
+分步指南与可运行的代码示例。
 
-For project goals, see [OBJECTIVE.md](OBJECTIVE.md).
-For the full technical specification, see [SPEC.md](SPEC.md).
+项目目标见 [OBJECTIVE.md](OBJECTIVE.zh-CN.md)，完整技术规范见 [SPEC.md](SPEC.zh-CN.md)。
 
-## Table of Contents
+## 目录
 
-**Getting Started**
+**快速上手**
 
-1. [Outbox Table Schemas](#1-outbox-table-schemas)
-2. [Quick Start (Manual JDBC)](#2-quick-start-manual-jdbc)
-3. [Full End-to-End Example (H2 In-Memory)](#3-full-end-to-end-example-h2-in-memory)
+1. [Outbox 表结构](#1-outbox-表结构)
+2. [快速开始（纯 JDBC）](#2-快速开始纯-jdbc)
+3. [完整示例（H2 内存库）](#3-完整示例h2-内存库)
 
-**Core Features**
+**核心功能**
 
-4. [Type-Safe Event + Aggregate Types](#4-type-safe-event--aggregate-types)
-5. [Spring Integration](#5-spring-integration)
+4. [类型安全的 Event 与 Aggregate 类型](#4-类型安全的-event-与-aggregate-类型)
+5. [Spring 集成](#5-spring-集成)
 
-**Advanced Topics**
+**进阶**
 
-6. [Poller Event Locking](#6-poller-event-locking)
-7. [CDC Consumption (High QPS)](#7-cdc-consumption-high-qps)
-8. [Multi-Datasource](#8-multi-datasource)
+6. [Poller 事件锁定](#6-poller-事件锁定)
+7. [CDC 消费（高 QPS 场景）](#7-cdc-消费高-qps-场景)
+8. [多数据源](#8-多数据源)
 
 ---
 
-## 1. Outbox Table Schemas
+## 1. Outbox 表结构
 
-Before writing any code, create the `outbox_event` table in your database. Canonical schema files ship in the `outbox-jdbc` JAR under `schema/`:
+使用前先在数据库中创建 `outbox_event` 表。`outbox-jdbc` JAR 里自带 `schema/` 目录，包含各数据库的标准建表语句：
 
-| Database   | File                                                             | Key types                                            |
+| 数据库     | 文件                                                             | 关键类型                                            |
 |------------|------------------------------------------------------------------|------------------------------------------------------|
 | H2         | [`h2.sql`](outbox-jdbc/src/main/resources/schema/h2.sql)               | `CLOB`, `TIMESTAMP`, `TINYINT`                |
 | MySQL 8    | [`mysql.sql`](outbox-jdbc/src/main/resources/schema/mysql.sql)         | `JSON`, `DATETIME(6)`, `TINYINT`              |
 | PostgreSQL | [`postgresql.sql`](outbox-jdbc/src/main/resources/schema/postgresql.sql) | `JSONB`, `TIMESTAMPTZ`, `SMALLINT`          |
 
 <details>
-<summary>MySQL 8 example</summary>
+<summary>MySQL 8 示例</summary>
 
 ```sql
 CREATE TABLE outbox_event (
@@ -66,7 +65,7 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 </details>
 
 <details>
-<summary>PostgreSQL example</summary>
+<summary>PostgreSQL 示例</summary>
 
 ```sql
 CREATE TABLE outbox_event (
@@ -94,7 +93,7 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 
 ---
 
-## 2. Quick Start (Manual JDBC)
+## 2. 快速开始（纯 JDBC）
 
 ```java
 import outbox.EventEnvelope;
@@ -114,7 +113,7 @@ import outbox.jdbc.ThreadLocalTxContext;
 import javax.sql.DataSource;
 import java.time.Duration;
 
-DataSource dataSource = /* your DataSource */;
+DataSource dataSource = /* 你的 DataSource */;
 
 var eventStore = JdbcEventStores.detect(dataSource);
 DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
@@ -125,10 +124,10 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
     .eventStore(eventStore)
     .listenerRegistry(new DefaultListenerRegistry()
         .register("UserCreated", event -> {
-          // publish to MQ; include event.eventId() for dedupe
+          // 发送到 MQ；用 event.eventId() 做去重
         }))
     .interceptor(EventInterceptor.before(event ->
-        System.out.println("Dispatching: " + event.eventType())))
+        System.out.println("正在分发: " + event.eventType())))
     .build();
 
 OutboxPoller poller = OutboxPoller.builder()
@@ -153,7 +152,7 @@ try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
 
 ---
 
-## 3. Full End-to-End Example (H2 In-Memory)
+## 3. 完整示例（H2 内存库）
 
 ```java
 import outbox.EventEnvelope;
@@ -214,7 +213,7 @@ public final class OutboxExample {
         .eventStore(eventStore)
         .listenerRegistry(new DefaultListenerRegistry()
             .register("UserCreated", event ->
-                System.out.println("Published to MQ: " + event.eventId())))
+                System.out.println("已发送到 MQ: " + event.eventId())))
         .workerCount(2)
         .hotQueueCapacity(100)
         .coldQueueCapacity(100)
@@ -246,9 +245,9 @@ public final class OutboxExample {
 
 ---
 
-## 4. Type-Safe Event + Aggregate Types
+## 4. 类型安全的 Event 与 Aggregate 类型
 
-You can use enums (or any class) implementing `EventType` and `AggregateType` for compile-time safety:
+可以用 enum（或任意类）实现 `EventType` 和 `AggregateType` 接口，获得编译期类型检查：
 
 ```java
 import outbox.AggregateType;
@@ -282,13 +281,13 @@ EventEnvelope envelope = EventEnvelope.builder(UserEvents.USER_CREATED)
 
 ---
 
-## 5. Spring Integration
+## 5. Spring 集成
 
-The `outbox-spring-adapter` module provides `SpringTxContext`, which hooks into Spring's transaction lifecycle so that `afterCommit` callbacks fire naturally after `@Transactional` methods complete.
+`outbox-spring-adapter` 模块提供了 `SpringTxContext`，接入 Spring 事务生命周期，使 `afterCommit` 回调在 `@Transactional` 方法提交后自动触发。
 
-### Configuration
+### Bean 配置
 
-Wire all outbox beans in a `@Configuration` class:
+在 `@Configuration` 类中注册所有 outbox 组件：
 
 ```java
 import outbox.OutboxWriter;
@@ -330,10 +329,10 @@ public class OutboxConfiguration {
   public DefaultListenerRegistry listenerRegistry() {
     return new DefaultListenerRegistry()
         .register("User", "UserCreated", event ->
-            log.info("User created: id={}, payload={}",
+            log.info("用户已创建: id={}, payload={}",
                 event.eventId(), event.payloadJson()))
         .register("Order", "OrderPlaced", event ->
-            log.info("Order placed: id={}, payload={}",
+            log.info("订单已提交: id={}, payload={}",
                 event.eventId(), event.payloadJson()));
   }
 
@@ -349,7 +348,7 @@ public class OutboxConfiguration {
         .inFlightTracker(new DefaultInFlightTracker(30_000))
         .workerCount(2)
         .interceptor(EventInterceptor.before(event ->
-            log.info("[Audit] Dispatching: type={}, aggregateId={}",
+            log.info("[审计] 正在分发: type={}, aggregateId={}",
                 event.eventType(), event.aggregateId())))
         .build();
   }
@@ -381,9 +380,9 @@ public class OutboxConfiguration {
 }
 ```
 
-### Publishing Events from @Transactional Methods
+### 在 @Transactional 方法中发布事件
 
-Inject `OutboxWriter` into any Spring-managed bean and call `write()` inside a `@Transactional` method. The event is inserted within the same database transaction as your business logic. After Spring commits, the `DispatcherCommitHook` fires automatically.
+注入 `OutboxWriter`，在 `@Transactional` 方法中调用 `write()`。事件写入与业务逻辑共享同一个数据库事务，Spring 提交后 `DispatcherCommitHook` 自动触发。
 
 ```java
 @RestController
@@ -412,13 +411,13 @@ public class EventController {
 }
 ```
 
-### Running the Spring Demo
+### 运行 Spring Demo
 
 ```bash
 mvn install -DskipTests && mvn -f samples/outbox-spring-demo/pom.xml spring-boot:run
 ```
 
-Test with:
+测试接口：
 
 ```bash
 curl -X POST 'http://localhost:8080/events/user-created?name=Alice'
@@ -428,9 +427,9 @@ curl http://localhost:8080/events
 
 ---
 
-## 6. Poller Event Locking
+## 6. Poller 事件锁定
 
-For multi-instance deployments, enable claim-based locking so pollers don't compete for the same events. OutboxPoller requires a handler; use `DispatcherPollerHandler` with the built-in dispatcher.
+多实例部署时，开启 claim 锁可防止多个 Poller 抢同一批事件。Poller 需要一个 Handler，可直接用 `DispatcherPollerHandler`。
 
 ```java
 OutboxPoller poller = OutboxPoller.builder()
@@ -445,64 +444,64 @@ OutboxPoller poller = OutboxPoller.builder()
     .build();
 ```
 
-- Each poller claims events by setting `locked_by`/`locked_at` columns
-- Expired locks (older than `lockTimeout`) are automatically reclaimed
-- Locks are cleared when events reach DONE, RETRY, or DEAD status
-- Omit `ownerId`/`lockTimeout` from the builder for single-instance mode (no locking)
+- 每个 Poller 通过设置 `locked_by`/`locked_at` 列来 claim 事件
+- 超过 `lockTimeout` 的锁会被自动回收
+- 事件到达 DONE、RETRY 或 DEAD 状态时锁自动释放
+- 单实例部署不需要锁，省略 `ownerId`/`lockTimeout` 即可
 
 ---
 
-## 7. CDC Consumption (High QPS)
+## 7. CDC 消费（高 QPS 场景）
 
-For high-throughput workloads, you can disable the in-process poller and use CDC to consume the outbox table.
+高吞吐场景下，可以关闭进程内 Poller，改用 CDC 消费 outbox 表。
 
-1. Do not start `OutboxPoller`.
-2. Create `OutboxWriter` without a hook (or with `AfterCommitHook.NOOP`) to skip hot-path enqueue.
-3. Use CDC to read `outbox_event` inserts and publish downstream; dedupe by `event_id`.
-4. Status updates are optional in CDC-only mode. If you do not mark DONE, treat the table as append-only and enforce retention (e.g., partitioning + TTL).
+1. 不启动 `OutboxPoller`
+2. 创建 `OutboxWriter` 时不传 Hook（或用 `AfterCommitHook.NOOP`），跳过热路径入队
+3. 用 CDC 监听 `outbox_event` 的 INSERT，下游按 `event_id` 去重
+4. 纯 CDC 模式下可以不更新状态，将表当作 append-only 使用，配合分区 + TTL 做数据清理
 
 ```java
 import outbox.OutboxWriter;
 import outbox.AfterCommitHook;
 
 OutboxWriter writer = new OutboxWriter(txContext, eventStore);
-// or: new OutboxWriter(txContext, eventStore, AfterCommitHook.NOOP)
+// 或: new OutboxWriter(txContext, eventStore, AfterCommitHook.NOOP)
 ```
 
-If you enable both `DispatcherCommitHook` and CDC, you must dedupe downstream or choose one primary delivery path.
+如果同时启用了 `DispatcherCommitHook` 和 CDC，下游需要做去重，或只选其中一条投递路径。
 
 ---
 
-## 8. Multi-Datasource
+## 8. 多数据源
 
-The outbox pattern requires the `outbox_event` table to live in the **same database** as the business data so that publishes are transactionally atomic. When your system spans multiple databases, each datasource needs its own full outbox stack. Stateless `EventListener` and `EventInterceptor` instances can be shared across stacks, but each stack gets its own `ListenerRegistry` (the per-stack routing table).
+Outbox 模式要求 `outbox_event` 表和业务数据在**同一个数据库**中，保证写入的事务原子性。当系统涉及多个数据库时，每个数据源需要独立的完整 outbox 栈。无状态的 `EventListener` 和 `EventInterceptor` 可以跨栈共享，但每个栈有自己的 `ListenerRegistry`（路由表）。
 
-### Per-Stack Components
+### 每个栈的组件
 
-Each datasource needs all of these, completely independent of other stacks:
+每个数据源需要以下全部组件，彼此完全独立：
 
-| Component | Purpose |
+| 组件 | 用途 |
 |-----------|---------|
-| `DataSource` | Database connection pool |
-| `DataSourceConnectionProvider` | Wraps DataSource for outbox components |
-| `EventStore` | Auto-detected via `JdbcEventStores.detect()` |
-| `ThreadLocalTxContext` | Transaction lifecycle hooks |
-| `JdbcTransactionManager` | Manages JDBC transactions |
-| `DefaultListenerRegistry` | Per-stack event routing table |
-| `OutboxDispatcher` | Worker threads and queues |
-| `OutboxPoller` | Fallback polling loop |
-| `OutboxWriter` | Event publishing API |
+| `DataSource` | 数据库连接池 |
+| `DataSourceConnectionProvider` | 为 outbox 组件封装 DataSource |
+| `EventStore` | 通过 `JdbcEventStores.detect()` 自动识别 |
+| `ThreadLocalTxContext` | 事务生命周期 Hook |
+| `JdbcTransactionManager` | 管理 JDBC 事务 |
+| `DefaultListenerRegistry` | 该栈的事件路由表 |
+| `OutboxDispatcher` | Worker 线程与队列 |
+| `OutboxPoller` | 兜底轮询 |
+| `OutboxWriter` | 事件发布 API |
 
-### Example: Orders + Inventory Stacks
+### 示例：订单 + 库存 双栈
 
 ```java
-// --- Shared stateless listener (safe to reuse) ---
+// --- 共享的无状态 Listener（可安全复用）---
 EventListener sharedListener = event ->
     System.out.printf("[%s/%s] eventId=%s payload=%s%n",
         event.aggregateType(), event.eventType(),
         event.eventId(), event.payloadJson());
 
-// --- Orders stack ---
+// --- 订单栈 ---
 DataSource ordersDs = createDataSource("orders");
 var ordersEventStore = JdbcEventStores.detect(ordersDs);
 var ordersConn = new DataSourceConnectionProvider(ordersDs);
@@ -530,7 +529,7 @@ var ordersTxManager = new JdbcTransactionManager(ordersConn, ordersTx);
 var ordersWriter = new OutboxWriter(ordersTx, ordersEventStore,
     new DispatcherCommitHook(ordersDispatcher));
 
-// --- Inventory stack (same pattern, different datasource) ---
+// --- 库存栈（同样的模式，不同数据源）---
 DataSource inventoryDs = createDataSource("inventory");
 var invEventStore = JdbcEventStores.detect(inventoryDs);
 var invConn = new DataSourceConnectionProvider(inventoryDs);
@@ -558,7 +557,7 @@ var invTxManager = new JdbcTransactionManager(invConn, invTx);
 var invWriter = new OutboxWriter(invTx, invEventStore,
     new DispatcherCommitHook(invDispatcher));
 
-// --- Publish to each stack independently ---
+// --- 分别向各自的栈发布事件 ---
 try (var tx = ordersTxManager.begin()) {
   ordersWriter.write(EventEnvelope.builder("OrderPlaced")
       .aggregateType("Order").aggregateId("order-1")
@@ -576,9 +575,9 @@ try (var tx = invTxManager.begin()) {
 }
 ```
 
-Each stack is completely independent -- separate worker threads, separate pollers, separate transaction managers. The only shared component is the stateless listener.
+每个栈完全独立 -- 独立的 Worker 线程、独立的 Poller、独立的事务管理器。唯一共享的是无状态的 Listener。
 
-### Running the Multi-Datasource Demo
+### 运行多数据源 Demo
 
 ```bash
 mvn install -DskipTests && mvn -pl samples/outbox-multi-ds-demo exec:java

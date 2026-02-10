@@ -1,3 +1,5 @@
+[English](SPEC.md) | [中文](SPEC.zh-CN.md)
+
 # Outbox Framework Technical Specification
 
 Formal API contracts, data model, behavioral rules, configuration, and observability for the outbox-java framework.

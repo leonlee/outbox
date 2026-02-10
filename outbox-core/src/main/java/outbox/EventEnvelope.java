@@ -10,6 +10,16 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 
+/**
+ * Immutable event envelope containing metadata and payload for an outbox event.
+ *
+ * <p>Each envelope is assigned a ULID-based {@code eventId} by default. The payload
+ * (JSON string or raw bytes) is limited to {@value #MAX_PAYLOAD_BYTES} bytes.
+ * Use the {@linkplain Builder builder} or the {@code ofJson} factory methods to create instances.
+ *
+ * @see OutboxWriter
+ * @see EventType
+ */
 public final class EventEnvelope {
   public static final int MAX_PAYLOAD_BYTES = 1024 * 1024; // 1MB
 

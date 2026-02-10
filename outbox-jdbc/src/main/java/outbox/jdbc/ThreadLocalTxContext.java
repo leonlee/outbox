@@ -6,6 +6,16 @@ import java.sql.Connection;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * {@link TxContext} implementation that stores transaction state in a {@link ThreadLocal}.
+ *
+ * <p>Designed for manual JDBC transaction management. Use with
+ * {@link JdbcTransactionManager} which handles binding, commit/rollback callbacks,
+ * and cleanup automatically.
+ *
+ * @see JdbcTransactionManager
+ * @see TxContext
+ */
 public final class ThreadLocalTxContext implements TxContext {
   private final ThreadLocal<TxState> state = new ThreadLocal<>();
 

@@ -7,6 +7,12 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.Objects;
 
+/**
+ * {@link ConnectionProvider} backed by a {@link DataSource}.
+ * Delegates directly to {@link DataSource#getConnection()}.
+ *
+ * @see ConnectionProvider
+ */
 public final class DataSourceConnectionProvider implements ConnectionProvider {
   private final DataSource dataSource;
 

@@ -23,6 +23,19 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+/**
+ * Scheduled database scanner that polls for pending outbox events as a fallback
+ * when the hot path is unavailable or events are dropped.
+ *
+ * <p>Supports claim-based locking via {@code ownerId}/{@code lockTimeout} for safe
+ * multi-instance deployments. Create instances via {@link #builder()}.
+ *
+ * <p>This class is thread-safe. The {@link #start()} and {@link #close()} methods are
+ * synchronized to prevent concurrent lifecycle transitions.
+ *
+ * @see OutboxPoller.Builder
+ * @see OutboxPollerHandler
+ */
 public final class OutboxPoller implements AutoCloseable {
   private static final Logger logger = Logger.getLogger(OutboxPoller.class.getName());
   private static final Duration DEFAULT_LOCK_TIMEOUT = Duration.ofMinutes(5);
@@ -74,6 +87,9 @@ public final class OutboxPoller implements AutoCloseable {
     return new Builder();
   }
 
+  /**
+   * Starts the scheduled polling loop. Subsequent calls are no-ops if already started.
+   */
   public synchronized void start() {
     if (pollTask != null) {
       return;
@@ -81,6 +97,7 @@ public final class OutboxPoller implements AutoCloseable {
     pollTask = scheduler.scheduleWithFixedDelay(this::poll, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
   }
 
+  /** Executes a single poll cycle. Called automatically by the scheduler, but may also be invoked directly for testing. */
   public void poll() {
     try {
       if (!handler.hasCapacity()) {
@@ -169,6 +186,7 @@ public final class OutboxPoller implements AutoCloseable {
     }
   }
 
+  /** Cancels the polling schedule and shuts down the scheduler thread. */
   @Override
   public synchronized void close() {
     if (pollTask != null) {

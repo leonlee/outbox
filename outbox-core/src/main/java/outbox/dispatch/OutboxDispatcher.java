@@ -25,6 +25,21 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+/**
+ * Dual-queue event processor that dispatches outbox events to registered listeners.
+ *
+ * <p>Events arrive via two paths: the <em>hot queue</em> (after-commit callbacks) and
+ * the <em>cold queue</em> (poller fallback). Worker threads drain both queues using a
+ * weighted 2:1 round-robin favoring the hot queue. Duplicate processing is prevented
+ * by an {@link InFlightTracker}.
+ *
+ * <p>Create instances via {@link #builder()}. This class is thread-safe and implements
+ * {@link AutoCloseable} for graceful shutdown with a configurable drain timeout.
+ *
+ * @see OutboxDispatcher.Builder
+ * @see DispatcherCommitHook
+ * @see DispatcherPollerHandler
+ */
 public final class OutboxDispatcher implements AutoCloseable {
   private static final Logger logger = Logger.getLogger(OutboxDispatcher.class.getName());
 
@@ -93,6 +108,13 @@ public final class OutboxDispatcher implements AutoCloseable {
     return new Builder();
   }
 
+  /**
+   * Offers an event to the hot queue. Returns {@code false} if the queue is full
+   * or the dispatcher is no longer accepting events.
+   *
+   * @param event the queued event to enqueue
+   * @return {@code true} if the event was accepted
+   */
   public boolean enqueueHot(QueuedEvent event) {
     if (!accepting.get()) return false;
     boolean enqueued = hotQueue.offer(event);
@@ -100,6 +122,13 @@ public final class OutboxDispatcher implements AutoCloseable {
     return enqueued;
   }
 
+  /**
+   * Offers an event to the cold queue. Returns {@code false} if the queue is full
+   * or the dispatcher is no longer accepting events.
+   *
+   * @param event the queued event to enqueue
+   * @return {@code true} if the event was accepted
+   */
   public boolean enqueueCold(QueuedEvent event) {
     if (!accepting.get()) return false;
     boolean enqueued = coldQueue.offer(event);
@@ -248,6 +277,10 @@ public final class OutboxDispatcher implements AutoCloseable {
     void execute(Connection conn) throws SQLException;
   }
 
+  /**
+   * Initiates graceful shutdown: stops accepting new events, drains remaining queued
+   * events within the configured drain timeout, then shuts down worker threads.
+   */
   @Override
   public void close() {
     accepting.set(false);

@@ -2,10 +2,20 @@ package outbox.dispatch;
 
 import java.util.concurrent.ThreadLocalRandom;
 
+/**
+ * Retry policy using exponential backoff with jitter.
+ *
+ * <p>Delay formula: {@code baseDelay * 2^(attempt-1)}, capped at {@code maxDelay},
+ * with random jitter in the range [0.5, 1.5).
+ */
 public final class ExponentialBackoffRetryPolicy implements RetryPolicy {
   private final long baseDelayMs;
   private final long maxDelayMs;
 
+  /**
+   * @param baseDelayMs base delay for the first retry (milliseconds)
+   * @param maxDelayMs  maximum delay cap (milliseconds)
+   */
   public ExponentialBackoffRetryPolicy(long baseDelayMs, long maxDelayMs) {
     this.baseDelayMs = baseDelayMs;
     this.maxDelayMs = maxDelayMs;

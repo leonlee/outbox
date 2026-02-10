@@ -8,6 +8,15 @@ import java.util.Objects;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+/**
+ * Bridges {@link outbox.OutboxWriter} to the dispatcher's hot queue by implementing
+ * {@link AfterCommitHook}. When the transaction commits, the event is offered to
+ * {@link OutboxDispatcher#enqueueHot}; if the queue is full the event is dropped
+ * (logged) and left for the poller fallback.
+ *
+ * @see OutboxDispatcher
+ * @see AfterCommitHook
+ */
 public final class DispatcherCommitHook implements AfterCommitHook {
   private static final Logger logger = Logger.getLogger(DispatcherCommitHook.class.getName());
 

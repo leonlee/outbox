@@ -4,10 +4,20 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+/**
+ * Lightweight JSON encoder/decoder for {@code Map<String, String>} header maps.
+ * Has no external dependencies; only supports flat string-to-string objects.
+ */
 public final class JsonCodec {
   private JsonCodec() {
   }
 
+  /**
+   * Encodes a string map as a JSON object string. Returns {@code null} if the map is null or empty.
+   *
+   * @param headers the headers to encode
+   * @return JSON string, or {@code null}
+   */
   public static String toJson(Map<String, String> headers) {
     if (headers == null || headers.isEmpty()) {
       return null;
@@ -27,6 +37,14 @@ public final class JsonCodec {
     return sb.toString();
   }
 
+  /**
+   * Parses a JSON object string into a string map. Returns an empty map for {@code null},
+   * empty, or {@code "null"} input.
+   *
+   * @param json the JSON string to parse
+   * @return parsed map (never {@code null})
+   * @throws IllegalArgumentException if the input is not a valid JSON object
+   */
   public static Map<String, String> parseObject(String json) {
     if (json == null) {
       return Collections.emptyMap();

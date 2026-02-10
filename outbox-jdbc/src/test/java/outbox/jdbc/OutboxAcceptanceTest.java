@@ -10,7 +10,6 @@ import outbox.poller.OutboxPoller;
 import outbox.model.EventStatus;
 import outbox.dispatch.QueuedEvent;
 import outbox.registry.DefaultListenerRegistry;
-import outbox.spi.MetricsExporter;
 
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.AfterEach;
@@ -115,15 +114,14 @@ class OutboxAcceptanceTest {
         .register("Overflow", event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers);
-    try (OutboxPoller poller = new OutboxPoller(
-        connectionProvider,
-        eventStore,
-        new DispatcherPollerHandler(dispatcher),
-        Duration.ofMillis(0),
-        10,
-        10,
-        MetricsExporter.NOOP
-    )) {
+    try (OutboxPoller poller = OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .skipRecent(Duration.ofMillis(0))
+        .batchSize(10)
+        .intervalMs(10)
+        .build()) {
       for (int i = 0; i < 20 && getStatus(eventId) != EventStatus.DONE.code(); i++) {
         poller.poll();
         Thread.sleep(25);
@@ -151,15 +149,14 @@ class OutboxAcceptanceTest {
       tx.commit();
     }
 
-    try (OutboxPoller poller = new OutboxPoller(
-        connectionProvider,
-        eventStore,
-        new DispatcherPollerHandler(dispatcher),
-        Duration.ofMillis(0),
-        10,
-        10,
-        MetricsExporter.NOOP
-    )) {
+    try (OutboxPoller poller = OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .skipRecent(Duration.ofMillis(0))
+        .batchSize(10)
+        .intervalMs(10)
+        .build()) {
       long deadline = System.currentTimeMillis() + 2_000;
       while (System.currentTimeMillis() < deadline && getStatus(eventId) != EventStatus.DEAD.code()) {
         poller.poll();

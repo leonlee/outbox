@@ -1,7 +1,7 @@
 package outbox.dispatch;
 
+import outbox.AfterCommitHook;
 import outbox.EventEnvelope;
-import outbox.spi.AfterCommitHook;
 import outbox.spi.MetricsExporter;
 
 import java.util.Objects;

@@ -15,12 +15,15 @@ import java.util.Objects;
  *     .build();
  * }</pre>
  */
-public final class StringEventType implements EventType {
+public record StringEventType(String name) implements EventType {
 
-  private final String name;
-
-  private StringEventType(String name) {
-    this.name = Objects.requireNonNull(name, "name");
+  /**
+   * @param name the event type name
+   * @throws NullPointerException if name is null
+   * @throws IllegalArgumentException if name is empty
+   */
+  public StringEventType {
+    Objects.requireNonNull(name, "name");
     if (name.isEmpty()) {
       throw new IllegalArgumentException("Event type name cannot be empty");
     }
@@ -36,24 +39,6 @@ public final class StringEventType implements EventType {
    */
   public static StringEventType of(String name) {
     return new StringEventType(name);
-  }
-
-  @Override
-  public String name() {
-    return name;
-  }
-
-  @Override
-  public boolean equals(Object o) {
-    if (this == o) return true;
-    if (!(o instanceof StringEventType)) return false;
-    StringEventType that = (StringEventType) o;
-    return name.equals(that.name);
-  }
-
-  @Override
-  public int hashCode() {
-    return name.hashCode();
   }
 
   @Override

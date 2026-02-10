@@ -5,7 +5,7 @@ import outbox.model.OutboxEvent;
 import outbox.spi.ConnectionProvider;
 import outbox.spi.EventStore;
 import outbox.spi.MetricsExporter;
-import outbox.spi.OutboxPollerHandler;
+import outbox.util.DaemonThreadFactory;
 import outbox.util.JsonCodec;
 
 import java.sql.Connection;
@@ -19,9 +19,7 @@ import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -42,30 +40,15 @@ public final class OutboxPoller implements AutoCloseable {
   private final ScheduledExecutorService scheduler;
   private volatile ScheduledFuture<?> pollTask;
 
-  public OutboxPoller(
-      ConnectionProvider connectionProvider,
-      EventStore eventStore,
-      OutboxPollerHandler handler,
-      Duration skipRecent,
-      int batchSize,
-      long intervalMs,
-      MetricsExporter metrics
-  ) {
-    this(connectionProvider, eventStore, handler, skipRecent,
-        batchSize, intervalMs, metrics, null, null);
-  }
+  private OutboxPoller(Builder builder) {
+    this.connectionProvider = Objects.requireNonNull(builder.connectionProvider, "connectionProvider");
+    this.eventStore = Objects.requireNonNull(builder.eventStore, "eventStore");
+    this.handler = Objects.requireNonNull(builder.handler, "handler");
 
-  public OutboxPoller(
-      ConnectionProvider connectionProvider,
-      EventStore eventStore,
-      OutboxPollerHandler handler,
-      Duration skipRecent,
-      int batchSize,
-      long intervalMs,
-      MetricsExporter metrics,
-      String ownerId,
-      Duration lockTimeout
-  ) {
+    int batchSize = builder.batchSize;
+    long intervalMs = builder.intervalMs;
+    Duration skipRecent = builder.skipRecent;
+
     if (batchSize <= 0) {
       throw new IllegalArgumentException("batchSize must be > 0");
     }
@@ -75,18 +58,20 @@ public final class OutboxPoller implements AutoCloseable {
     if (skipRecent != null && skipRecent.isNegative()) {
       throw new IllegalArgumentException("skipRecent must be >= 0");
     }
-    this.connectionProvider = Objects.requireNonNull(connectionProvider, "connectionProvider");
-    this.eventStore = Objects.requireNonNull(eventStore, "eventStore");
-    this.handler = Objects.requireNonNull(handler, "handler");
+
     this.skipRecent = skipRecent == null ? Duration.ZERO : skipRecent;
     this.batchSize = batchSize;
     this.intervalMs = intervalMs;
-    this.metrics = metrics == null ? MetricsExporter.NOOP : metrics;
-    this.ownerId = ownerId != null
-        ? ownerId
-        : (lockTimeout != null ? "poller-" + UUID.randomUUID().toString().substring(0, 8) : null);
-    this.lockTimeout = lockTimeout != null ? lockTimeout : DEFAULT_LOCK_TIMEOUT;
-    this.scheduler = Executors.newSingleThreadScheduledExecutor(new PollerThreadFactory());
+    this.metrics = builder.metrics != null ? builder.metrics : MetricsExporter.NOOP;
+    this.ownerId = builder.ownerId != null
+        ? builder.ownerId
+        : (builder.lockTimeout != null ? "poller-" + UUID.randomUUID().toString().substring(0, 8) : null);
+    this.lockTimeout = builder.lockTimeout != null ? builder.lockTimeout : DEFAULT_LOCK_TIMEOUT;
+    this.scheduler = Executors.newSingleThreadScheduledExecutor(new DaemonThreadFactory("outbox-poller-"));
+  }
+
+  public static Builder builder() {
+    return new Builder();
   }
 
   public synchronized void start() {
@@ -197,14 +182,66 @@ public final class OutboxPoller implements AutoCloseable {
     }
   }
 
-  private static final class PollerThreadFactory implements ThreadFactory {
-    private final AtomicInteger counter = new AtomicInteger(1);
+  public static final class Builder {
+    private ConnectionProvider connectionProvider;
+    private EventStore eventStore;
+    private OutboxPollerHandler handler;
+    private Duration skipRecent;
+    private int batchSize = 50;
+    private long intervalMs = 5000;
+    private MetricsExporter metrics;
+    private String ownerId;
+    private Duration lockTimeout;
 
-    @Override
-    public Thread newThread(Runnable runnable) {
-      Thread thread = new Thread(runnable, "outbox-poller-" + counter.getAndIncrement());
-      thread.setDaemon(true);
-      return thread;
+    private Builder() {}
+
+    public Builder connectionProvider(ConnectionProvider connectionProvider) {
+      this.connectionProvider = connectionProvider;
+      return this;
+    }
+
+    public Builder eventStore(EventStore eventStore) {
+      this.eventStore = eventStore;
+      return this;
+    }
+
+    public Builder handler(OutboxPollerHandler handler) {
+      this.handler = handler;
+      return this;
+    }
+
+    public Builder skipRecent(Duration skipRecent) {
+      this.skipRecent = skipRecent;
+      return this;
+    }
+
+    public Builder batchSize(int batchSize) {
+      this.batchSize = batchSize;
+      return this;
+    }
+
+    public Builder intervalMs(long intervalMs) {
+      this.intervalMs = intervalMs;
+      return this;
+    }
+
+    public Builder metrics(MetricsExporter metrics) {
+      this.metrics = metrics;
+      return this;
+    }
+
+    public Builder ownerId(String ownerId) {
+      this.ownerId = ownerId;
+      return this;
+    }
+
+    public Builder lockTimeout(Duration lockTimeout) {
+      this.lockTimeout = lockTimeout;
+      return this;
+    }
+
+    public OutboxPoller build() {
+      return new OutboxPoller(this);
     }
   }
 }

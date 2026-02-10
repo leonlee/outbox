@@ -1,7 +1,6 @@
 package outbox;
 
 import outbox.spi.EventStore;
-import outbox.spi.AfterCommitHook;
 import outbox.spi.TxContext;
 
 import java.sql.Connection;

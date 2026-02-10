@@ -2,7 +2,6 @@ package outbox.demo.multids;
 
 import outbox.EventEnvelope;
 import outbox.OutboxWriter;
-import outbox.spi.MetricsExporter;
 import outbox.dispatch.DispatcherCommitHook;
 import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.OutboxDispatcher;
@@ -62,9 +61,14 @@ public final class MultiDatasourceDemo {
             .register("Order", "OrderShipped", sharedListener))
         .build();
 
-    OutboxPoller ordersPoller = new OutboxPoller(
-        ordersConn, ordersEventStore, new DispatcherPollerHandler(ordersDispatcher),
-        Duration.ofMillis(500), 50, 1000, MetricsExporter.NOOP);
+    OutboxPoller ordersPoller = OutboxPoller.builder()
+        .connectionProvider(ordersConn)
+        .eventStore(ordersEventStore)
+        .handler(new DispatcherPollerHandler(ordersDispatcher))
+        .skipRecent(Duration.ofMillis(500))
+        .batchSize(50)
+        .intervalMs(1000)
+        .build();
     ordersPoller.start();
 
     JdbcTransactionManager ordersTxMgr = new JdbcTransactionManager(ordersConn, ordersTx);
@@ -84,9 +88,14 @@ public final class MultiDatasourceDemo {
             .register("Inventory", "StockDepleted", sharedListener))
         .build();
 
-    OutboxPoller invPoller = new OutboxPoller(
-        invConn, invEventStore, new DispatcherPollerHandler(invDispatcher),
-        Duration.ofMillis(500), 50, 1000, MetricsExporter.NOOP);
+    OutboxPoller invPoller = OutboxPoller.builder()
+        .connectionProvider(invConn)
+        .eventStore(invEventStore)
+        .handler(new DispatcherPollerHandler(invDispatcher))
+        .skipRecent(Duration.ofMillis(500))
+        .batchSize(50)
+        .intervalMs(1000)
+        .build();
     invPoller.start();
 
     JdbcTransactionManager invTxMgr = new JdbcTransactionManager(invConn, invTx);

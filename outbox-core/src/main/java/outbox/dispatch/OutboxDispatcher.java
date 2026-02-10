@@ -6,6 +6,7 @@ import outbox.registry.ListenerRegistry;
 import outbox.spi.ConnectionProvider;
 import outbox.spi.EventStore;
 import outbox.spi.MetricsExporter;
+import outbox.util.DaemonThreadFactory;
 
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -18,7 +19,6 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -79,13 +79,13 @@ public final class OutboxDispatcher implements AutoCloseable {
     this.coldQueue = new ArrayBlockingQueue<>(coldQueueCapacity);
 
     if (workerCount > 0) {
-      this.workers = Executors.newFixedThreadPool(workerCount, new DispatcherThreadFactory());
+      this.workers = Executors.newFixedThreadPool(workerCount, new DaemonThreadFactory("outbox-dispatcher-"));
       for (int i = 0; i < workerCount; i++) {
         workers.submit(this::workerLoop);
       }
     } else {
       // workerCount=0 for testing scenarios where manual dispatch control is needed
-      this.workers = Executors.newFixedThreadPool(1, new DispatcherThreadFactory());
+      this.workers = Executors.newFixedThreadPool(1, new DaemonThreadFactory("outbox-dispatcher-"));
     }
   }
 
@@ -220,30 +220,32 @@ public final class OutboxDispatcher implements AutoCloseable {
   }
 
   private void markDone(String eventId) {
-    try (Connection conn = connectionProvider.getConnection()) {
-      conn.setAutoCommit(true);
-      eventStore.markDone(conn, eventId);
-    } catch (SQLException e) {
-      logger.log(Level.SEVERE, "Failed to mark DONE for eventId=" + eventId, e);
-    }
+    withConnection("mark DONE", eventId,
+        conn -> eventStore.markDone(conn, eventId));
   }
 
   private void markRetry(String eventId, Instant nextAt, Exception failure) {
-    try (Connection conn = connectionProvider.getConnection()) {
-      conn.setAutoCommit(true);
-      eventStore.markRetry(conn, eventId, nextAt, failure == null ? null : failure.getMessage());
-    } catch (SQLException e) {
-      logger.log(Level.SEVERE, "Failed to mark RETRY for eventId=" + eventId, e);
-    }
+    withConnection("mark RETRY", eventId,
+        conn -> eventStore.markRetry(conn, eventId, nextAt, failure == null ? null : failure.getMessage()));
   }
 
   private void markDead(String eventId, Exception failure) {
+    withConnection("mark DEAD", eventId,
+        conn -> eventStore.markDead(conn, eventId, failure == null ? null : failure.getMessage()));
+  }
+
+  private void withConnection(String action, String eventId, SqlAction op) {
     try (Connection conn = connectionProvider.getConnection()) {
       conn.setAutoCommit(true);
-      eventStore.markDead(conn, eventId, failure == null ? null : failure.getMessage());
+      op.execute(conn);
     } catch (SQLException e) {
-      logger.log(Level.SEVERE, "Failed to mark DEAD for eventId=" + eventId, e);
+      logger.log(Level.SEVERE, "Failed to " + action + " for eventId=" + eventId, e);
     }
+  }
+
+  @FunctionalInterface
+  private interface SqlAction {
+    void execute(Connection conn) throws SQLException;
   }
 
   @Override
@@ -350,14 +352,4 @@ public final class OutboxDispatcher implements AutoCloseable {
     }
   }
 
-  private static final class DispatcherThreadFactory implements ThreadFactory {
-    private final AtomicInteger counter = new AtomicInteger(1);
-
-    @Override
-    public Thread newThread(Runnable runnable) {
-      Thread thread = new Thread(runnable, "outbox-dispatcher-" + counter.getAndIncrement());
-      thread.setDaemon(true);
-      return thread;
-    }
-  }
 }

@@ -4,7 +4,6 @@ import outbox.registry.DefaultListenerRegistry;
 import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.dispatch.ExponentialBackoffRetryPolicy;
-import outbox.spi.MetricsExporter;
 import outbox.poller.OutboxPoller;
 import outbox.model.EventStatus;
 
@@ -72,15 +71,14 @@ class OutboxEdgeCaseTest {
         .workerCount(1)
         .build();
 
-    try (OutboxPoller poller = new OutboxPoller(
-        connectionProvider,
-        eventStore,
-        new DispatcherPollerHandler(dispatcher),
-        Duration.ofMillis(0),
-        10,
-        10,
-        MetricsExporter.NOOP
-    )) {
+    try (OutboxPoller poller = OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .skipRecent(Duration.ofMillis(0))
+        .batchSize(10)
+        .intervalMs(10)
+        .build()) {
       poller.poll();
     }
 
@@ -127,35 +125,30 @@ class OutboxEdgeCaseTest {
         .workerCount(1)
         .build();
 
-    assertThrows(IllegalArgumentException.class, () -> new OutboxPoller(
-        connectionProvider,
-        eventStore,
-        new DispatcherPollerHandler(dispatcher),
-        Duration.ofMillis(0),
-        0,
-        10,
-        MetricsExporter.NOOP
-    ));
+    assertThrows(IllegalArgumentException.class, () -> OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .batchSize(0)
+        .intervalMs(10)
+        .build());
 
-    assertThrows(IllegalArgumentException.class, () -> new OutboxPoller(
-        connectionProvider,
-        eventStore,
-        new DispatcherPollerHandler(dispatcher),
-        Duration.ofMillis(0),
-        10,
-        0,
-        MetricsExporter.NOOP
-    ));
+    assertThrows(IllegalArgumentException.class, () -> OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .batchSize(10)
+        .intervalMs(0)
+        .build());
 
-    assertThrows(IllegalArgumentException.class, () -> new OutboxPoller(
-        connectionProvider,
-        eventStore,
-        new DispatcherPollerHandler(dispatcher),
-        Duration.ofMillis(-1),
-        10,
-        10,
-        MetricsExporter.NOOP
-    ));
+    assertThrows(IllegalArgumentException.class, () -> OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .skipRecent(Duration.ofMillis(-1))
+        .batchSize(10)
+        .intervalMs(10)
+        .build());
 
     dispatcher.close();
   }

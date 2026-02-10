@@ -39,9 +39,10 @@ outbox-core/src/main/java/
     ├── EventEnvelope.java
     ├── EventType.java (interface)
     ├── AggregateType.java (interface)
-    ├── StringEventType.java
-    ├── StringAggregateType.java
+    ├── StringEventType.java (record)
+    ├── StringAggregateType.java (record)
     ├── EventListener.java (interface)
+    ├── AfterCommitHook.java (interface)
     │
     │  # SPI - Extension Point Interfaces
     ├── spi/
@@ -52,7 +53,7 @@ outbox-core/src/main/java/
     │
     │  # Model - Domain objects
     ├── model/
-    │   ├── OutboxEvent.java
+    │   ├── OutboxEvent.java (record)
     │   └── EventStatus.java
     │
     │  # Feature Packages
@@ -62,18 +63,20 @@ outbox-core/src/main/java/
     │   ├── ExponentialBackoffRetryPolicy.java
     │   ├── InFlightTracker.java (interface)
     │   ├── DefaultInFlightTracker.java
-    │   ├── QueuedEvent.java
+    │   ├── QueuedEvent.java (record)
     │   ├── EventInterceptor.java (interface)
     │   └── UnroutableEventException.java
     │
     ├── poller/
-    │   └── OutboxPoller.java
+    │   ├── OutboxPoller.java
+    │   └── OutboxPollerHandler.java (interface)
     │
     ├── registry/
     │   ├── ListenerRegistry.java (interface)
     │   └── DefaultListenerRegistry.java
     │
     └── util/
+        ├── DaemonThreadFactory.java
         └── JsonCodec.java
 
 outbox-jdbc/src/main/java/
@@ -97,7 +100,7 @@ outbox-jdbc/src/main/java/
 - **AbstractJdbcEventStore**: Base JDBC event store with shared SQL, row mapper, and H2-compatible default `claimPending`. Subclasses: `H2EventStore`, `MySqlEventStore` (UPDATE...ORDER BY...LIMIT), `PostgresEventStore` (FOR UPDATE SKIP LOCKED + RETURNING).
 - **JdbcEventStores**: Static utility with ServiceLoader registry and `detect(DataSource)` auto-detection.
 - **OutboxDispatcher**: Dual-queue event processor with hot queue (afterCommit callbacks) and cold queue (poller fallback). Created via `OutboxDispatcher.builder()`. Uses `InFlightTracker` for deduplication, `RetryPolicy` for exponential backoff, `EventInterceptor` for cross-cutting hooks, fair 2:1 hot/cold queue draining, and graceful shutdown with configurable drain timeout.
-- **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails. Uses an `OutboxPollerHandler` to forward events. Supports claim-based locking via `ownerId`/`lockTimeout` for multi-instance deployments.
+- **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails. Created via `OutboxPoller.builder()`. Uses an `OutboxPollerHandler` to forward events. Supports claim-based locking via `ownerId`/`lockTimeout` for multi-instance deployments.
 - **AfterCommitHook**: Optional post-commit hook used by OutboxWriter to trigger hot-path processing (e.g., DispatcherCommitHook).
 - **JdbcTemplate**: Lightweight JDBC helper (`update`, `query`, `updateReturning`) used by `AbstractJdbcEventStore` subclasses.
 - **ListenerRegistry**: Maps `(aggregateType, eventType)` pairs to a single `EventListener`. Uses `AggregateType.GLOBAL` as default. Unroutable events (no listener) are immediately marked DEAD.

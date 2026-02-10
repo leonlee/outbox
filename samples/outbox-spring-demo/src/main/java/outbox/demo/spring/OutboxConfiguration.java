@@ -1,7 +1,6 @@
 package outbox.demo.spring;
 
 import outbox.OutboxWriter;
-import outbox.spi.MetricsExporter;
 import outbox.spi.TxContext;
 import outbox.dispatch.DefaultInFlightTracker;
 import outbox.dispatch.EventInterceptor;
@@ -81,15 +80,14 @@ public class OutboxConfiguration {
       AbstractJdbcEventStore eventStore,
       OutboxDispatcher dispatcher
   ) {
-    OutboxPoller poller = new OutboxPoller(
-        connectionProvider,
-        eventStore,
-        new DispatcherPollerHandler(dispatcher),
-        Duration.ofMillis(500),
-        100,
-        5000,
-        MetricsExporter.NOOP
-    );
+    OutboxPoller poller = OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .eventStore(eventStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .skipRecent(Duration.ofMillis(500))
+        .batchSize(100)
+        .intervalMs(5000)
+        .build();
     poller.start();
     log.info("OutboxPoller started");
     return poller;

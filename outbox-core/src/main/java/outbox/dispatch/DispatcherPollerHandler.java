@@ -1,7 +1,7 @@
 package outbox.dispatch;
 
 import outbox.EventEnvelope;
-import outbox.spi.OutboxPollerHandler;
+import outbox.poller.OutboxPollerHandler;
 
 import java.util.Objects;
 

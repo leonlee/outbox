@@ -129,6 +129,8 @@ outbox-jdbc/src/main/java/
 
 ## Documentation
 
-- `README.md`: Usage examples and quick start
-- `spec.md`: Detailed behavioral specification (16 sections)
+- `README.md`: Project introduction, architecture diagram, and doc links
+- `OBJECTIVE.md`: Project goals, constraints, non-goals, and acceptance criteria
+- `SPEC.md`: Technical specification (16 sections: API contracts, data model, behavioral rules)
+- `TUTORIAL.md`: Step-by-step guides with runnable code examples
 - `CODE_REVIEW.md`: Prior review findings and fixes

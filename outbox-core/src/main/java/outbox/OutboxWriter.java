@@ -19,7 +19,7 @@ public final class OutboxWriter {
   private final AfterCommitHook afterCommitHook;
 
   public OutboxWriter(TxContext txContext, EventStore eventStore) {
-    this(txContext, eventStore, null);
+    this(txContext, eventStore, AfterCommitHook.NOOP);
   }
 
   public OutboxWriter(
@@ -29,7 +29,7 @@ public final class OutboxWriter {
   ) {
     this.txContext = Objects.requireNonNull(txContext, "txContext");
     this.eventStore = Objects.requireNonNull(eventStore, "eventStore");
-    this.afterCommitHook = afterCommitHook;
+    this.afterCommitHook = afterCommitHook == null ? AfterCommitHook.NOOP : afterCommitHook;
   }
 
   public String write(EventEnvelope event) {
@@ -41,7 +41,7 @@ public final class OutboxWriter {
     Connection conn = txContext.currentConnection();
     eventStore.insertNew(conn, event);
 
-    if (afterCommitHook != null && afterCommitHook != AfterCommitHook.NOOP) {
+    if (afterCommitHook != AfterCommitHook.NOOP) {
       txContext.afterCommit(() -> runAfterCommitHook(event));
     }
 

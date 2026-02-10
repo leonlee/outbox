@@ -78,14 +78,14 @@ public final class OutboxDispatcher implements AutoCloseable {
     this.hotQueue = new ArrayBlockingQueue<>(hotQueueCapacity);
     this.coldQueue = new ArrayBlockingQueue<>(coldQueueCapacity);
 
-    // Create thread pool with minimum 1 thread (required by ExecutorService),
-    // but only start workers if workerCount > 0. This allows workerCount=0
-    // for testing scenarios where manual dispatch control is needed.
-    int threadCount = Math.max(1, workerCount);
-    this.workers = Executors.newFixedThreadPool(threadCount, new DispatcherThreadFactory());
-
-    for (int i = 0; i < workerCount; i++) {
-      workers.submit(this::workerLoop);
+    if (workerCount > 0) {
+      this.workers = Executors.newFixedThreadPool(workerCount, new DispatcherThreadFactory());
+      for (int i = 0; i < workerCount; i++) {
+        workers.submit(this::workerLoop);
+      }
+    } else {
+      // workerCount=0 for testing scenarios where manual dispatch control is needed
+      this.workers = Executors.newFixedThreadPool(1, new DispatcherThreadFactory());
     }
   }
 
@@ -224,7 +224,7 @@ public final class OutboxDispatcher implements AutoCloseable {
       conn.setAutoCommit(true);
       eventStore.markDone(conn, eventId);
     } catch (SQLException e) {
-      throw new RuntimeException("Failed to mark DONE for eventId=" + eventId, e);
+      logger.log(Level.SEVERE, "Failed to mark DONE for eventId=" + eventId, e);
     }
   }
 

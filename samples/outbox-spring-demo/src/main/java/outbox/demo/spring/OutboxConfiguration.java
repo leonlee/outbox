@@ -47,12 +47,12 @@ public class OutboxConfiguration {
   @Bean
   public ListenerRegistry listenerRegistry() {
     return new DefaultListenerRegistry()
-        .register("UserCreated", event -> {
-          log.info("[Listener] UserCreated: id={}, payload={}",
+        .register("User", "UserCreated", event -> {
+          log.info("[Listener] User/UserCreated: id={}, payload={}",
               event.eventId(), event.payloadJson());
         })
-        .register("OrderPlaced", event -> {
-          log.info("[Listener] OrderPlaced: id={}, payload={}",
+        .register("Order", "OrderPlaced", event -> {
+          log.info("[Listener] Order/OrderPlaced: id={}, payload={}",
               event.eventId(), event.payloadJson());
         });
   }

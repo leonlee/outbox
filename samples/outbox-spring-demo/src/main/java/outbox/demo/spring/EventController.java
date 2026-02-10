@@ -11,6 +11,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import outbox.util.JsonCodec;
+
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -40,7 +43,7 @@ public class EventController {
         .aggregateType("User")
         .aggregateId(userId)
         .headers(Map.of("source", "api", "version", "1"))
-        .payloadJson(String.format("{\"userId\":\"%s\",\"name\":\"%s\"}", userId, name))
+        .payloadJson(JsonCodec.toJson(Map.of("userId", userId, "name", name)))
         .build());
 
     return Map.of(
@@ -65,7 +68,7 @@ public class EventController {
         .aggregateId(orderId)
         .tenantId("default")
         .headers(Map.of("source", "api"))
-        .payloadJson(String.format("{\"orderId\":\"%s\",\"amount\":%.2f}", orderId, amount))
+        .payloadJson(JsonCodec.toJson(Map.of("orderId", orderId, "amount", String.valueOf(amount))))
         .build());
 
     return Map.of(

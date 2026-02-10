@@ -18,16 +18,17 @@ public final class DefaultInFlightTracker implements InFlightTracker {
   @Override
   public boolean tryAcquire(String eventId) {
     long now = System.currentTimeMillis();
-   for (int attempt = 0; attempt < 10; attempt++) {
+    for (int attempt = 0; attempt < 10; attempt++) {
       Long existing = inflight.putIfAbsent(eventId, now);
       if (existing == null) {
         return true;
       }
       if (ttlMs > 0 && now - existing > ttlMs) {
+        now = System.currentTimeMillis();
         if (inflight.replace(eventId, existing, now)) {
           return true;
         }
-        Thread.yield();
+        // CAS failed — another thread claimed it; retry
         continue;
       }
       return false;

@@ -21,7 +21,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <junit.version>5.10.2</junit.version>
     <h2.version>2.2.224</h2.version>
-    <spring.version>7.0.3</spring.version>
+    <spring.version>6.2.15</spring.version>
     <ulid-creator.version>5.2.3</ulid-creator.version>
   </properties>
 

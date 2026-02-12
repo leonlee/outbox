@@ -2,11 +2,13 @@ package outbox.jdbc.store;
 
 import outbox.jdbc.JdbcTemplate;
 import outbox.model.OutboxEvent;
+import outbox.util.JsonCodec;
 
 import java.sql.Connection;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 /**
@@ -25,6 +27,10 @@ public final class PostgresOutboxStore extends AbstractJdbcOutboxStore {
     super(tableName);
   }
 
+  public PostgresOutboxStore(String tableName, JsonCodec jsonCodec) {
+    super(tableName, jsonCodec);
+  }
+
   @Override
   public String name() {
     return "postgresql";
@@ -38,6 +44,7 @@ public final class PostgresOutboxStore extends AbstractJdbcOutboxStore {
   @Override
   public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
       Instant lockExpiry, Duration skipRecent, int limit) {
+    now = now.truncatedTo(ChronoUnit.MILLIS);
     Instant recentCutoff = recentCutoff(now, skipRecent);
     // Single round-trip: FOR UPDATE SKIP LOCKED + RETURNING
     String sql = "UPDATE " + tableName() + " SET locked_by=?, locked_at=? " +

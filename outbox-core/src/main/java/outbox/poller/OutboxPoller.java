@@ -49,9 +49,11 @@ public final class OutboxPoller implements AutoCloseable {
   private final MetricsExporter metrics;
   private final String ownerId;
   private final Duration lockTimeout;
+  private final JsonCodec jsonCodec;
 
   private final ScheduledExecutorService scheduler;
   private volatile ScheduledFuture<?> pollTask;
+  private volatile boolean closed;
 
   private OutboxPoller(Builder builder) {
     this.connectionProvider = Objects.requireNonNull(builder.connectionProvider, "connectionProvider");
@@ -80,6 +82,7 @@ public final class OutboxPoller implements AutoCloseable {
         ? builder.ownerId
         : (builder.lockTimeout != null ? "poller-" + UUID.randomUUID().toString().substring(0, 8) : null);
     this.lockTimeout = builder.lockTimeout != null ? builder.lockTimeout : DEFAULT_LOCK_TIMEOUT;
+    this.jsonCodec = builder.jsonCodec != null ? builder.jsonCodec : JsonCodec.getDefault();
     this.scheduler = Executors.newSingleThreadScheduledExecutor(new DaemonThreadFactory("outbox-poller-"));
   }
 
@@ -91,6 +94,9 @@ public final class OutboxPoller implements AutoCloseable {
    * Starts the scheduled polling loop. Subsequent calls are no-ops if already started.
    */
   public synchronized void start() {
+    if (closed) {
+      throw new IllegalStateException("OutboxPoller has been closed");
+    }
     if (pollTask != null) {
       return;
     }
@@ -165,7 +171,7 @@ public final class OutboxPoller implements AutoCloseable {
   }
 
   private EventEnvelope convertToEnvelope(OutboxEvent row) {
-    Map<String, String> headers = JsonCodec.parseObject(row.headersJson());
+    Map<String, String> headers = jsonCodec.parseObject(row.headersJson());
     return EventEnvelope.builder(row.eventType())
         .eventId(row.eventId())
         .occurredAt(row.createdAt())
@@ -189,8 +195,10 @@ public final class OutboxPoller implements AutoCloseable {
   /** Cancels the polling schedule and shuts down the scheduler thread. */
   @Override
   public synchronized void close() {
+    closed = true;
     if (pollTask != null) {
       pollTask.cancel(false);
+      pollTask = null;
     }
     scheduler.shutdownNow();
     try {
@@ -210,6 +218,7 @@ public final class OutboxPoller implements AutoCloseable {
     private MetricsExporter metrics;
     private String ownerId;
     private Duration lockTimeout;
+    private JsonCodec jsonCodec;
 
     private Builder() {}
 
@@ -255,6 +264,11 @@ public final class OutboxPoller implements AutoCloseable {
 
     public Builder lockTimeout(Duration lockTimeout) {
       this.lockTimeout = lockTimeout;
+      return this;
+    }
+
+    public Builder jsonCodec(JsonCodec jsonCodec) {
+      this.jsonCodec = jsonCodec;
       return this;
     }
 

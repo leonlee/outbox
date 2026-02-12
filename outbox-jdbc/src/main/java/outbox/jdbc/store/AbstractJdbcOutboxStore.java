@@ -2,6 +2,7 @@ package outbox.jdbc.store;
 
 import outbox.EventEnvelope;
 import outbox.jdbc.JdbcTemplate;
+import outbox.jdbc.TableNames;
 import outbox.model.EventStatus;
 import outbox.model.OutboxEvent;
 import outbox.spi.OutboxStore;
@@ -13,7 +14,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
-import java.util.Objects;
 
 /**
  * Base JDBC outbox store with standard SQL implementations.
@@ -25,7 +25,7 @@ import java.util.Objects;
  * @see JdbcOutboxStores
  */
 public abstract class AbstractJdbcOutboxStore implements OutboxStore {
-  protected static final String DEFAULT_TABLE = "outbox_event";
+  protected static final String DEFAULT_TABLE = TableNames.DEFAULT_TABLE;
   private static final int MAX_ERROR_LENGTH = 4000;
 
   protected static final String PENDING_STATUS_IN =
@@ -43,17 +43,19 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
       rs.getTimestamp("created_at").toInstant());
 
   private final String tableName;
+  private final JsonCodec jsonCodec;
 
   protected AbstractJdbcOutboxStore() {
     this(DEFAULT_TABLE);
   }
 
   protected AbstractJdbcOutboxStore(String tableName) {
-    Objects.requireNonNull(tableName, "tableName");
-    if (!tableName.matches("[a-zA-Z_][a-zA-Z0-9_]*")) {
-      throw new IllegalArgumentException("Invalid table name: " + tableName);
-    }
-    this.tableName = tableName;
+    this(tableName, JsonCodec.getDefault());
+  }
+
+  protected AbstractJdbcOutboxStore(String tableName, JsonCodec jsonCodec) {
+    this.tableName = TableNames.validate(tableName);
+    this.jsonCodec = java.util.Objects.requireNonNull(jsonCodec, "jsonCodec");
   }
 
   /**
@@ -81,7 +83,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     JdbcTemplate.update(conn, sql,
         event.eventId(), event.eventType(), event.aggregateType(),
         event.aggregateId(), event.tenantId(), event.payloadJson(),
-        JsonCodec.toJson(event.headers()),
+        jsonCodec.toJson(event.headers()),
         EventStatus.NEW.code(), 0, now, now);
   }
 
@@ -122,6 +124,16 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
         Timestamp.from(now), Timestamp.from(recentCutoff), limit);
   }
 
+  /**
+   * H2-compatible two-phase claim: UPDATE with subquery, then SELECT claimed rows.
+   *
+   * <p><strong>Not atomic under concurrent access.</strong> Two concurrent pollers may
+   * claim overlapping rows because H2 does not support {@code FOR UPDATE SKIP LOCKED}.
+   * This default is intended for testing and single-instance deployments only.
+   * Production multi-instance deployments should use {@code PostgresOutboxStore}
+   * ({@code FOR UPDATE SKIP LOCKED}) or {@code MySqlOutboxStore}
+   * ({@code UPDATE ... ORDER BY ... LIMIT}).
+   */
   @Override
   public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
       Instant lockExpiry, Duration skipRecent, int limit) {

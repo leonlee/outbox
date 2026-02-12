@@ -1,10 +1,13 @@
 package outbox.jdbc.store;
 
+import outbox.util.JsonCodec;
+
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.ServiceLoader;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -109,6 +112,47 @@ public final class JdbcOutboxStores {
 
     throw new IllegalArgumentException("No outbox store found for JDBC URL: " + jdbcUrl +
         ". Supported prefixes: " + allPrefixes());
+  }
+
+  /**
+   * Auto-detects outbox store from a DataSource with a custom {@link JsonCodec}.
+   *
+   * @param dataSource the data source
+   * @param jsonCodec  the JSON codec to use
+   * @return detected outbox store configured with the given codec
+   * @throws IllegalStateException if detection fails or no matching outbox store
+   */
+  public static AbstractJdbcOutboxStore detect(DataSource dataSource, JsonCodec jsonCodec) {
+    Objects.requireNonNull(jsonCodec, "jsonCodec");
+    try (Connection conn = dataSource.getConnection()) {
+      String url = conn.getMetaData().getURL();
+      return detect(url, jsonCodec);
+    } catch (SQLException e) {
+      throw new IllegalStateException("Failed to detect outbox store from DataSource", e);
+    }
+  }
+
+  /**
+   * Auto-detects outbox store from a JDBC URL with a custom {@link JsonCodec}.
+   *
+   * @param jdbcUrl   the JDBC URL
+   * @param jsonCodec the JSON codec to use
+   * @return detected outbox store configured with the given codec
+   * @throws IllegalArgumentException if no matching outbox store found
+   */
+  public static AbstractJdbcOutboxStore detect(String jdbcUrl, JsonCodec jsonCodec) {
+    Objects.requireNonNull(jsonCodec, "jsonCodec");
+    AbstractJdbcOutboxStore template = detect(jdbcUrl);
+    return newInstance(template, jsonCodec);
+  }
+
+  private static AbstractJdbcOutboxStore newInstance(AbstractJdbcOutboxStore template, JsonCodec jsonCodec) {
+    return switch (template.name()) {
+      case "h2" -> new H2OutboxStore(template.tableName(), jsonCodec);
+      case "mysql" -> new MySqlOutboxStore(template.tableName(), jsonCodec);
+      case "postgresql" -> new PostgresOutboxStore(template.tableName(), jsonCodec);
+      default -> throw new IllegalStateException("Cannot create instance for store: " + template.name());
+    };
   }
 
   private static List<String> allPrefixes() {

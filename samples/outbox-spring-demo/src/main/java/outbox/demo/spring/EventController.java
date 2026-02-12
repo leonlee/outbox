@@ -43,7 +43,7 @@ public class EventController {
         .aggregateType("User")
         .aggregateId(userId)
         .headers(Map.of("source", "api", "version", "1"))
-        .payloadJson(JsonCodec.toJson(Map.of("userId", userId, "name", name)))
+        .payloadJson(JsonCodec.getDefault().toJson(Map.of("userId", userId, "name", name)))
         .build());
 
     return Map.of(
@@ -68,7 +68,7 @@ public class EventController {
         .aggregateId(orderId)
         .tenantId("default")
         .headers(Map.of("source", "api"))
-        .payloadJson(JsonCodec.toJson(Map.of("orderId", orderId, "amount", String.valueOf(amount))))
+        .payloadJson(JsonCodec.getDefault().toJson(Map.of("orderId", orderId, "amount", String.valueOf(amount))))
         .build());
 
     return Map.of(

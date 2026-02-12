@@ -7,13 +7,15 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-class JsonCodecTest {
+class DefaultJsonCodecTest {
+
+  private final JsonCodec codec = JsonCodec.getDefault();
 
   @Test
   void toJsonWithEmptyMapReturnsNull() {
     Map<String, String> map = Map.of();
 
-    String json = JsonCodec.toJson(map);
+    String json = codec.toJson(map);
 
     assertNull(json); // Empty maps return null to save DB space
   }
@@ -22,7 +24,7 @@ class JsonCodecTest {
   void toJsonWithSingleEntry() {
     Map<String, String> map = Map.of("key", "value");
 
-    String json = JsonCodec.toJson(map);
+    String json = codec.toJson(map);
 
     assertEquals("{\"key\":\"value\"}", json);
   }
@@ -33,7 +35,7 @@ class JsonCodecTest {
     map.put("a", "1");
     map.put("b", "2");
 
-    String json = JsonCodec.toJson(map);
+    String json = codec.toJson(map);
 
     assertEquals("{\"a\":\"1\",\"b\":\"2\"}", json);
   }
@@ -42,7 +44,7 @@ class JsonCodecTest {
   void toJsonEscapesSpecialCharacters() {
     Map<String, String> map = Map.of("msg", "Hello \"World\"\nNew\\Line");
 
-    String json = JsonCodec.toJson(map);
+    String json = codec.toJson(map);
 
     assertTrue(json.contains("\\\"World\\\""));
     assertTrue(json.contains("\\n"));
@@ -51,7 +53,7 @@ class JsonCodecTest {
 
   @Test
   void toJsonWithNullMap() {
-    String json = JsonCodec.toJson(null);
+    String json = codec.toJson(null);
 
     assertNull(json);
   }
@@ -61,21 +63,33 @@ class JsonCodecTest {
     Map<String, String> map = new LinkedHashMap<>();
     map.put("key", null);
 
-    String json = JsonCodec.toJson(map);
+    String json = codec.toJson(map);
 
-    assertEquals("{\"key\":\"\"}", json);
+    assertEquals("{\"key\":null}", json);
+  }
+
+  @Test
+  void roundTripPreservesNullValue() {
+    Map<String, String> original = new LinkedHashMap<>();
+    original.put("present", "value");
+    original.put("absent", null);
+
+    String json = codec.toJson(original);
+    Map<String, String> parsed = codec.parseObject(json);
+
+    assertEquals(original, parsed);
   }
 
   @Test
   void parseObjectWithEmptyJson() {
-    Map<String, String> map = JsonCodec.parseObject("{}");
+    Map<String, String> map = codec.parseObject("{}");
 
     assertTrue(map.isEmpty());
   }
 
   @Test
   void parseObjectWithSingleEntry() {
-    Map<String, String> map = JsonCodec.parseObject("{\"key\":\"value\"}");
+    Map<String, String> map = codec.parseObject("{\"key\":\"value\"}");
 
     assertEquals(1, map.size());
     assertEquals("value", map.get("key"));
@@ -83,7 +97,7 @@ class JsonCodecTest {
 
   @Test
   void parseObjectWithMultipleEntries() {
-    Map<String, String> map = JsonCodec.parseObject("{\"a\":\"1\",\"b\":\"2\",\"c\":\"3\"}");
+    Map<String, String> map = codec.parseObject("{\"a\":\"1\",\"b\":\"2\",\"c\":\"3\"}");
 
     assertEquals(3, map.size());
     assertEquals("1", map.get("a"));
@@ -93,28 +107,28 @@ class JsonCodecTest {
 
   @Test
   void parseObjectUnescapesSpecialCharacters() {
-    Map<String, String> map = JsonCodec.parseObject("{\"msg\":\"Hello \\\"World\\\"\\nNew\\\\Line\"}");
+    Map<String, String> map = codec.parseObject("{\"msg\":\"Hello \\\"World\\\"\\nNew\\\\Line\"}");
 
     assertEquals("Hello \"World\"\nNew\\Line", map.get("msg"));
   }
 
   @Test
   void parseObjectWithNull() {
-    Map<String, String> map = JsonCodec.parseObject(null);
+    Map<String, String> map = codec.parseObject(null);
 
     assertTrue(map.isEmpty());
   }
 
   @Test
   void parseObjectWithEmptyString() {
-    Map<String, String> map = JsonCodec.parseObject("");
+    Map<String, String> map = codec.parseObject("");
 
     assertTrue(map.isEmpty());
   }
 
   @Test
   void parseObjectWithWhitespace() {
-    Map<String, String> map = JsonCodec.parseObject("  {  \"key\"  :  \"value\"  }  ");
+    Map<String, String> map = codec.parseObject("  {  \"key\"  :  \"value\"  }  ");
 
     assertEquals("value", map.get("key"));
   }
@@ -122,13 +136,13 @@ class JsonCodecTest {
   @Test
   void parseObjectRejectsNonObject() {
     assertThrows(IllegalArgumentException.class, () ->
-        JsonCodec.parseObject("[\"array\"]"));
+        codec.parseObject("[\"array\"]"));
 
     assertThrows(IllegalArgumentException.class, () ->
-        JsonCodec.parseObject("\"string\""));
+        codec.parseObject("\"string\""));
 
     assertThrows(IllegalArgumentException.class, () ->
-        JsonCodec.parseObject("123"));
+        codec.parseObject("123"));
   }
 
   @Test
@@ -140,23 +154,28 @@ class JsonCodecTest {
     original.put("backslash", "path\\to\\file");
     original.put("unicode", "café");
 
-    String json = JsonCodec.toJson(original);
-    Map<String, String> parsed = JsonCodec.parseObject(json);
+    String json = codec.toJson(original);
+    Map<String, String> parsed = codec.parseObject(json);
 
     assertEquals(original, parsed);
   }
 
   @Test
   void handlesUnicodeEscapes() {
-    Map<String, String> map = JsonCodec.parseObject("{\"emoji\":\"\\u0048\\u0065\\u006c\\u006c\\u006f\"}");
+    Map<String, String> map = codec.parseObject("{\"emoji\":\"\\u0048\\u0065\\u006c\\u006c\\u006f\"}");
 
     assertEquals("Hello", map.get("emoji"));
   }
 
   @Test
   void handlesTabAndCarriageReturn() {
-    Map<String, String> map = JsonCodec.parseObject("{\"text\":\"a\\tb\\rc\"}");
+    Map<String, String> map = codec.parseObject("{\"text\":\"a\\tb\\rc\"}");
 
     assertEquals("a\tb\rc", map.get("text"));
+  }
+
+  @Test
+  void getDefaultReturnsSingleton() {
+    assertSame(JsonCodec.getDefault(), JsonCodec.getDefault());
   }
 }

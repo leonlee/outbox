@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -92,6 +93,19 @@ class EventEnvelopeTest {
 
     assertThrows(UnsupportedOperationException.class, () ->
         envelope.headers().put("newKey", "newValue"));
+  }
+
+  @Test
+  void rejectsNullHeaderKey() {
+    Map<String, String> headers = new LinkedHashMap<>();
+    headers.put(null, "value");
+
+    IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+        EventEnvelope.builder("Test")
+            .headers(headers)
+            .payloadJson("{}")
+            .build());
+    assertTrue(ex.getMessage().contains("headers cannot contain null keys"));
   }
 
   @Test

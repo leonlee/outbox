@@ -69,6 +69,16 @@ class DefaultJsonCodecTest {
   }
 
   @Test
+  void toJsonWithNullKeyThrows() {
+    Map<String, String> map = new LinkedHashMap<>();
+    map.put(null, "value");
+
+    IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+        codec.toJson(map));
+    assertTrue(ex.getMessage().contains("headers cannot contain null keys"));
+  }
+
+  @Test
   void roundTripPreservesNullValue() {
     Map<String, String> original = new LinkedHashMap<>();
     original.put("present", "value");

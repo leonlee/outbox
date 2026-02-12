@@ -116,6 +116,21 @@ class OutboxPurgeSchedulerTest {
   }
 
   @Test
+  void schedulerStartAfterCloseThrows() throws Exception {
+    OutboxPurgeScheduler scheduler = OutboxPurgeScheduler.builder()
+        .connectionProvider(dataSource::getConnection)
+        .purger(new H2EventPurger())
+        .retention(Duration.ofDays(7))
+        .batchSize(500)
+        .intervalSeconds(1)
+        .build();
+    scheduler.close();
+
+    IllegalStateException ex = assertThrows(IllegalStateException.class, scheduler::start);
+    assertTrue(ex.getMessage().contains("has been closed"));
+  }
+
+  @Test
   void schedulerBuilderValidation() {
     assertThrows(NullPointerException.class, () ->
         OutboxPurgeScheduler.builder()

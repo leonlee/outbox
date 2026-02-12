@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.DefaultTransactionDefinition;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -108,6 +109,20 @@ class SpringAdapterIntegrationTest {
     assertEquals(-1, getStatus(eventId));
 
     dispatcher.close();
+  }
+
+  @Test
+  void afterCommitFailsWhenSynchronizationDisabled() {
+    TransactionSynchronizationManager.setActualTransactionActive(true);
+    try {
+      IllegalStateException ex = org.junit.jupiter.api.Assertions.assertThrows(
+          IllegalStateException.class,
+          () -> txContext.afterCommit(() -> {})
+      );
+      assertTrue(ex.getMessage().contains("Transaction synchronization is not active"));
+    } finally {
+      TransactionSynchronizationManager.clear();
+    }
   }
 
   private OutboxDispatcher dispatcher(int workers, int hotCapacity, int coldCapacity, DefaultListenerRegistry listeners) {

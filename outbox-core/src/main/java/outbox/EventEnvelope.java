@@ -48,6 +48,9 @@ public final class EventEnvelope {
     Map<String, String> headerCopy = builder.headers == null
         ? Collections.emptyMap()
         : Collections.unmodifiableMap(new LinkedHashMap<>(builder.headers));
+    if (headerCopy.containsKey(null)) {
+      throw new IllegalArgumentException("headers cannot contain null keys");
+    }
     this.headers = headerCopy;
 
     if (builder.payloadJson == null && builder.payloadBytes == null) {

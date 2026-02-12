@@ -43,6 +43,7 @@ public final class OutboxPurgeScheduler implements AutoCloseable {
 
   private final ScheduledExecutorService scheduler;
   private volatile ScheduledFuture<?> purgeTask;
+  private volatile boolean closed;
 
   private OutboxPurgeScheduler(Builder builder) {
     this.connectionProvider = Objects.requireNonNull(builder.connectionProvider, "connectionProvider");
@@ -73,6 +74,9 @@ public final class OutboxPurgeScheduler implements AutoCloseable {
    * Starts the scheduled purge loop. Subsequent calls are no-ops if already started.
    */
   public synchronized void start() {
+    if (closed) {
+      throw new IllegalStateException("OutboxPurgeScheduler has been closed");
+    }
     if (purgeTask != null) {
       return;
     }
@@ -117,8 +121,10 @@ public final class OutboxPurgeScheduler implements AutoCloseable {
   /** Cancels the purge schedule and shuts down the scheduler thread. */
   @Override
   public synchronized void close() {
+    closed = true;
     if (purgeTask != null) {
       purgeTask.cancel(false);
+      purgeTask = null;
     }
     scheduler.shutdownNow();
     try {

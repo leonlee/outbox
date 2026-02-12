@@ -41,9 +41,8 @@ public final class SpringTxContext implements TxContext {
 
   @Override
   public void afterCommit(Runnable callback) {
-    if (!isTransactionActive()) {
-      throw new IllegalStateException("No active transaction");
-    }
+    Objects.requireNonNull(callback, "callback");
+    requireSynchronizationActive("afterCommit");
     TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
       @Override
       public void afterCommit() {
@@ -54,9 +53,8 @@ public final class SpringTxContext implements TxContext {
 
   @Override
   public void afterRollback(Runnable callback) {
-    if (!isTransactionActive()) {
-      throw new IllegalStateException("No active transaction");
-    }
+    Objects.requireNonNull(callback, "callback");
+    requireSynchronizationActive("afterRollback");
     TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
       @Override
       public void afterCompletion(int status) {
@@ -65,5 +63,15 @@ public final class SpringTxContext implements TxContext {
         }
       }
     });
+  }
+
+  private void requireSynchronizationActive(String operation) {
+    if (!isTransactionActive()) {
+      throw new IllegalStateException("No active transaction");
+    }
+    if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+      throw new IllegalStateException(
+          "Transaction synchronization is not active; cannot register " + operation + " callback");
+    }
   }
 }

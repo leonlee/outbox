@@ -26,6 +26,9 @@ public final class DefaultJsonCodec implements JsonCodec {
     sb.append('{');
     boolean first = true;
     for (Map.Entry<String, String> entry : headers.entrySet()) {
+      if (entry.getKey() == null) {
+        throw new IllegalArgumentException("headers cannot contain null keys");
+      }
       if (!first) {
         sb.append(',');
       }

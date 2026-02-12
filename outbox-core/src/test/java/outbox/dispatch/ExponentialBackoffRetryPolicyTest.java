@@ -25,9 +25,10 @@ class ExponentialBackoffRetryPolicyTest {
     long delay2 = policy.computeDelayMs(2); // base * 2^1 = 200
     long delay3 = policy.computeDelayMs(3); // base * 2^2 = 400
 
-    // Each delay should roughly double (accounting for jitter)
-    assertTrue(delay2 > delay1 * 0.8, "delay2 should be larger than delay1");
-    assertTrue(delay3 > delay2 * 0.8, "delay3 should be larger than delay2");
+    // Verify each delay falls in expected range: base * 2^(n-1) * jitter[0.5, 1.5)
+    assertTrue(delay1 >= 50 && delay1 < 150, "delay1 range: got " + delay1);
+    assertTrue(delay2 >= 100 && delay2 < 300, "delay2 range: got " + delay2);
+    assertTrue(delay3 >= 200 && delay3 < 600, "delay3 range: got " + delay3);
   }
 
   @Test

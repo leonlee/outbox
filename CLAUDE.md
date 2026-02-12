@@ -14,7 +14,7 @@ mvn install -DskipTests && mvn -f samples/outbox-spring-demo/pom.xml spring-boot
 mvn install -DskipTests && mvn -pl samples/outbox-multi-ds-demo exec:java  # Run multi-datasource demo
 ```
 
-Java 17 is the baseline.
+Java 17 is the baseline. CI tests against Java 17 and 21.
 
 ## Architecture
 
@@ -81,12 +81,14 @@ outbox-core/src/main/java/
     │
     └── util/
         ├── DaemonThreadFactory.java
-        └── JsonCodec.java
+        ├── JsonCodec.java (interface)
+        └── DefaultJsonCodec.java
 
 outbox-jdbc/src/main/java/
 └── outbox/jdbc/
     │  # Shared JDBC utilities (root package)
     ├── JdbcTemplate.java
+    ├── TableNames.java
     ├── OutboxStoreException.java
     ├── DataSourceConnectionProvider.java
     │
@@ -116,9 +118,11 @@ outbox-jdbc/src/main/java/
 - **TxContext**: Abstracts transaction lifecycle (`isTransactionActive()`, `currentConnection()`, `afterCommit()`, `afterRollback()`). Implementations: `ThreadLocalTxContext` (`outbox.jdbc.tx`, JDBC), `SpringTxContext` (Spring).
 - **OutboxStore**: Persistence contract (`insertNew`, `markDone`, `markRetry`, `markDead`, `pollPending`, `claimPending`). Implemented by `AbstractJdbcOutboxStore` hierarchy in `outbox.jdbc.store`.
 - **AbstractJdbcOutboxStore** (`outbox.jdbc.store`): Base JDBC outbox store with shared SQL, row mapper, and H2-compatible default `claimPending`. Subclasses: `H2OutboxStore`, `MySqlOutboxStore` (UPDATE...ORDER BY...LIMIT), `PostgresOutboxStore` (FOR UPDATE SKIP LOCKED + RETURNING).
-- **JdbcOutboxStores** (`outbox.jdbc.store`): Static utility with ServiceLoader registry (`META-INF/services/outbox.jdbc.store.AbstractJdbcOutboxStore`) and `detect(DataSource)` auto-detection.
+- **JdbcOutboxStores** (`outbox.jdbc.store`): Static utility with ServiceLoader registry (`META-INF/services/outbox.jdbc.store.AbstractJdbcOutboxStore`) and `detect(DataSource)` auto-detection. Overloaded `detect(DataSource, JsonCodec)` creates new instances with a custom codec.
 - **OutboxDispatcher**: Dual-queue event processor with hot queue (afterCommit callbacks) and cold queue (poller fallback). Created via `OutboxDispatcher.builder()`. Uses `InFlightTracker` for deduplication, `RetryPolicy` for exponential backoff, `EventInterceptor` for cross-cutting hooks, fair 2:1 hot/cold queue draining, and graceful shutdown with configurable drain timeout.
-- **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails. Created via `OutboxPoller.builder()`. Uses an `OutboxPollerHandler` to forward events. Supports claim-based locking via `ownerId`/`lockTimeout` for multi-instance deployments.
+- **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails. Created via `OutboxPoller.builder()`. Uses an `OutboxPollerHandler` to forward events. Supports claim-based locking via `ownerId`/`lockTimeout` for multi-instance deployments. Accepts optional `JsonCodec` via `.jsonCodec()` builder method.
+- **JsonCodec**: Interface for `Map<String, String>` ↔ JSON encoding/decoding. `DefaultJsonCodec` is the built-in zero-dependency implementation (singleton via `JsonCodec.getDefault()`). Injectable into `AbstractJdbcOutboxStore`, `OutboxPoller`, and `JdbcOutboxStores.detect()` for users who prefer Jackson/Gson.
+- **TableNames**: Shared utility in `outbox.jdbc` for table name validation (regex `[a-zA-Z_][a-zA-Z0-9_]*`).
 - **AfterCommitHook**: Optional post-commit hook used by OutboxWriter to trigger hot-path processing (e.g., DispatcherCommitHook).
 - **JdbcTemplate**: Lightweight JDBC helper (`update`, `query`, `updateReturning`) used by `AbstractJdbcOutboxStore` subclasses.
 - **ListenerRegistry**: Maps `(aggregateType, eventType)` pairs to a single `EventListener`. Uses `AggregateType.GLOBAL` as default. Unroutable events (no listener) are immediately marked DEAD.
@@ -149,7 +153,7 @@ outbox-jdbc/src/main/java/
 
 ## Release Process
 
-Published to GitHub Packages. CI workflow (`.github/workflows/publish.yml`) auto-deploys on `v*` tags and creates a GitHub Release with auto-generated notes.
+Published to GitHub Packages. CI workflow (`.github/workflows/publish.yml`) auto-deploys on `v*` tags, validates tag matches POM version, and creates a GitHub Release with auto-generated notes.
 
 Uses `versions-maven-plugin` for version updates. **Caveat**: `versions:set` won't update `samples/outbox-spring-demo/pom.xml` (uses Spring Boot parent) — must update manually.
 

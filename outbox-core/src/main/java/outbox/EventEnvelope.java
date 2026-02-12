@@ -80,6 +80,7 @@ public final class EventEnvelope {
    * @return a new builder
    */
   public static Builder builder(EventType eventType) {
+    Objects.requireNonNull(eventType, "eventType");
     return new Builder(eventType.name());
   }
 

@@ -39,6 +39,10 @@ public interface OutboxStore {
   /**
    * Marks an event for retry with a scheduled next-attempt time.
    *
+   * <p>Implementations <strong>must</strong> increment the event's {@code attempts} column
+   * as part of this operation. The dispatcher relies on the stored attempt count to
+   * determine when {@code maxAttempts} has been reached.
+   *
    * @param conn    the JDBC connection
    * @param eventId the event ID to update
    * @param nextAt  earliest time for the next attempt

@@ -185,7 +185,7 @@ class ThreadLocalTxContextTest {
   }
 
   @Test
-  void callbackExceptionStopsSubsequentCallbacks() throws SQLException {
+  void callbackExceptionDoesNotStopSubsequentCallbacks() throws SQLException {
     AtomicInteger counter = new AtomicInteger();
 
     try (Connection conn = dataSource.getConnection()) {
@@ -196,13 +196,12 @@ class ThreadLocalTxContextTest {
       });
       txContext.afterCommit(() -> counter.incrementAndGet());
 
-      try {
-        txContext.clearAfterCommit();
-      } catch (RuntimeException ignored) {
-      }
+      RuntimeException ex = assertThrows(RuntimeException.class,
+          () -> txContext.clearAfterCommit());
 
-      // First callback ran, second threw, third did not run
-      assertEquals(1, counter.get());
+      assertEquals("boom", ex.getMessage());
+      // All callbacks ran: first and third incremented, second threw
+      assertEquals(2, counter.get());
       // State is still cleared even after exception
       assertFalse(txContext.isTransactionActive());
     }

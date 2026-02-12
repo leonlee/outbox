@@ -3,6 +3,11 @@ name: Publish Javadoc
 on:
   push:
     branches: [main]
+    paths:
+      - 'outbox-core/src/main/java/**'
+      - 'outbox-jdbc/src/main/java/**'
+      - 'outbox-spring-adapter/src/main/java/**'
+      - '**/package-info.java'
   workflow_dispatch:
 
 permissions:

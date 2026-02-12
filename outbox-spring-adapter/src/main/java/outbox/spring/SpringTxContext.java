@@ -33,11 +33,17 @@ public final class SpringTxContext implements TxContext {
 
   @Override
   public Connection currentConnection() {
+    if (!isTransactionActive()) {
+      throw new IllegalStateException("No active transaction");
+    }
     return DataSourceUtils.getConnection(dataSource);
   }
 
   @Override
   public void afterCommit(Runnable callback) {
+    if (!isTransactionActive()) {
+      throw new IllegalStateException("No active transaction");
+    }
     TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
       @Override
       public void afterCommit() {
@@ -48,6 +54,9 @@ public final class SpringTxContext implements TxContext {
 
   @Override
   public void afterRollback(Runnable callback) {
+    if (!isTransactionActive()) {
+      throw new IllegalStateException("No active transaction");
+    }
     TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
       @Override
       public void afterCompletion(int status) {

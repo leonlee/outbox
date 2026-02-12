@@ -64,9 +64,16 @@ public final class ThreadLocalTxContext implements TxContext {
       return;
     }
     try {
+      RuntimeException first = null;
       for (Runnable callback : current.afterCommit) {
-        callback.run();
+        try {
+          callback.run();
+        } catch (RuntimeException e) {
+          if (first == null) first = e;
+          else first.addSuppressed(e);
+        }
       }
+      if (first != null) throw first;
     } finally {
       state.remove();
     }
@@ -78,9 +85,16 @@ public final class ThreadLocalTxContext implements TxContext {
       return;
     }
     try {
+      RuntimeException first = null;
       for (Runnable callback : current.afterRollback) {
-        callback.run();
+        try {
+          callback.run();
+        } catch (RuntimeException e) {
+          if (first == null) first = e;
+          else first.addSuppressed(e);
+        }
       }
+      if (first != null) throw first;
     } finally {
       state.remove();
     }

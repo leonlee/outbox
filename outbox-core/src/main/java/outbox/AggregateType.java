@@ -9,11 +9,7 @@ package outbox;
  *   USER,
  *   ORDER,
  *   PRODUCT;
- *
- *   @Override
- *   public String name() {
- *     return name(); // Enum.name() already returns the constant name
- *   }
+ *   // No need to override name() — Enum.name() already satisfies the contract
  * }
  * }</pre>
  *

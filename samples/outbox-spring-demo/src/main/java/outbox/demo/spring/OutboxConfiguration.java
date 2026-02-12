@@ -17,8 +17,10 @@ import outbox.spring.SpringTxContext;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.event.EventListener;
 
 import javax.sql.DataSource;
 import java.time.Duration;
@@ -80,7 +82,7 @@ public class OutboxConfiguration {
       AbstractJdbcOutboxStore outboxStore,
       OutboxDispatcher dispatcher
   ) {
-    OutboxPoller poller = OutboxPoller.builder()
+    return OutboxPoller.builder()
         .connectionProvider(connectionProvider)
         .outboxStore(outboxStore)
         .handler(new DispatcherPollerHandler(dispatcher))
@@ -88,9 +90,12 @@ public class OutboxConfiguration {
         .batchSize(100)
         .intervalMs(5000)
         .build();
-    poller.start();
+  }
+
+  @EventListener(ApplicationReadyEvent.class)
+  public void onReady(ApplicationReadyEvent event) {
+    event.getApplicationContext().getBean(OutboxPoller.class).start();
     log.info("OutboxPoller started");
-    return poller;
   }
 
   @Bean

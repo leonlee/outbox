@@ -55,7 +55,7 @@ jobs:
 
       - name: Install sqldef
         run: |
-          SQLDEF_VERSION=$(curl -s https://api.github.com/repos/sqldef/sqldef/releases/latest | jq -r .tag_name)
+          SQLDEF_VERSION=v0.17.22
           curl -sL "https://github.com/sqldef/sqldef/releases/download/${SQLDEF_VERSION}/mysqldef_linux_amd64.tar.gz" | tar xz -C /usr/local/bin mysqldef
           curl -sL "https://github.com/sqldef/sqldef/releases/download/${SQLDEF_VERSION}/psqldef_linux_amd64.tar.gz" | tar xz -C /usr/local/bin psqldef
           chmod +x /usr/local/bin/mysqldef /usr/local/bin/psqldef

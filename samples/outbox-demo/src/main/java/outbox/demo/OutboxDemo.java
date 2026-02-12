@@ -150,8 +150,10 @@ public final class OutboxDemo {
   }
 
   private static void createSchema(JdbcDataSource dataSource) throws SQLException {
-    try (Connection conn = dataSource.getConnection()) {
-      conn.createStatement().execute(
+    try (Connection conn = dataSource.getConnection();
+         var stmt1 = conn.createStatement();
+         var stmt2 = conn.createStatement()) {
+      stmt1.execute(
           "CREATE TABLE outbox_event (" +
               "event_id VARCHAR(36) PRIMARY KEY," +
               "event_type VARCHAR(128) NOT NULL," +
@@ -170,19 +172,19 @@ public final class OutboxDemo {
               "locked_at TIMESTAMP" +
               ")"
       );
-      conn.createStatement().execute(
+      stmt2.execute(
           "CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_at)"
       );
     }
   }
 
   private static void showOutboxState(JdbcDataSource dataSource) throws SQLException {
-    try (Connection conn = dataSource.getConnection()) {
-      ResultSet rs = conn.createStatement().executeQuery(
-          "SELECT event_id, event_type, status, attempts, " +
-              "CASE status WHEN 0 THEN 'NEW' WHEN 1 THEN 'DONE' WHEN 2 THEN 'RETRY' WHEN 3 THEN 'DEAD' END as status_name " +
-              "FROM outbox_event ORDER BY created_at"
-      );
+    try (Connection conn = dataSource.getConnection();
+         var stmt = conn.createStatement();
+         ResultSet rs = stmt.executeQuery(
+             "SELECT event_id, event_type, status, attempts, " +
+                 "CASE status WHEN 0 THEN 'NEW' WHEN 1 THEN 'DONE' WHEN 2 THEN 'RETRY' WHEN 3 THEN 'DEAD' END as status_name " +
+                 "FROM outbox_event ORDER BY created_at")) {
       System.out.printf("%-36s | %-15s | %-6s | %s%n", "EVENT_ID", "TYPE", "STATUS", "ATTEMPTS");
       System.out.println("-".repeat(80));
       while (rs.next()) {

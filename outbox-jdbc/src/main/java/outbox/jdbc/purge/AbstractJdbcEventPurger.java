@@ -1,13 +1,13 @@
 package outbox.jdbc.purge;
 
 import outbox.jdbc.JdbcTemplate;
+import outbox.jdbc.TableNames;
 import outbox.model.EventStatus;
 import outbox.spi.EventPurger;
 
 import java.sql.Connection;
 import java.sql.Timestamp;
 import java.time.Instant;
-import java.util.Objects;
 
 /**
  * Base JDBC event purger with default subquery-based SQL that works for H2
@@ -21,7 +21,7 @@ import java.util.Objects;
  * @see PostgresEventPurger
  */
 public abstract class AbstractJdbcEventPurger implements EventPurger {
-  protected static final String DEFAULT_TABLE = "outbox_event";
+  protected static final String DEFAULT_TABLE = TableNames.DEFAULT_TABLE;
 
   protected static final String TERMINAL_STATUS_IN =
       "(" + EventStatus.DONE.code() + "," + EventStatus.DEAD.code() + ")";
@@ -33,11 +33,7 @@ public abstract class AbstractJdbcEventPurger implements EventPurger {
   }
 
   protected AbstractJdbcEventPurger(String tableName) {
-    Objects.requireNonNull(tableName, "tableName");
-    if (!tableName.matches("[a-zA-Z_][a-zA-Z0-9_]*")) {
-      throw new IllegalArgumentException("Invalid table name: " + tableName);
-    }
-    this.tableName = tableName;
+    this.tableName = TableNames.validate(tableName);
   }
 
   protected String tableName() {

@@ -99,8 +99,9 @@ public final class OutboxDispatcher implements AutoCloseable {
         workers.submit(this::workerLoop);
       }
     } else {
-      // workerCount=0 for testing scenarios where manual dispatch control is needed
-      this.workers = Executors.newFixedThreadPool(1, new DaemonThreadFactory("outbox-dispatcher-"));
+      // workerCount=0: no workers started; events remain queued (testing only)
+      logger.warning("workerCount=0: no dispatch workers started; events will not be processed");
+      this.workers = Executors.newCachedThreadPool(new DaemonThreadFactory("outbox-dispatcher-"));
     }
   }
 

@@ -2,6 +2,7 @@ package outbox.dispatch;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * {@link ConcurrentHashMap}-based in-flight tracker with optional time-based expiry.
@@ -15,6 +16,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class DefaultInFlightTracker implements InFlightTracker {
   private final Map<String, Long> inflight = new ConcurrentHashMap<>();
   private final long ttlMs;
+  private final AtomicInteger evictCounter = new AtomicInteger();
 
   /** Creates a tracker with no TTL (entries persist until released). */
   public DefaultInFlightTracker() {
@@ -33,6 +35,7 @@ public final class DefaultInFlightTracker implements InFlightTracker {
   @Override
   public boolean tryAcquire(String eventId) {
     long now = System.currentTimeMillis();
+    maybeEvictExpired(now);
     for (int attempt = 0; attempt < 10; attempt++) {
       Long existing = inflight.putIfAbsent(eventId, now);
       if (existing == null) {
@@ -49,6 +52,13 @@ public final class DefaultInFlightTracker implements InFlightTracker {
       return false;
     }
     return false;
+  }
+
+  private void maybeEvictExpired(long now) {
+    if (ttlMs <= 0) return;
+    // Evict periodically: every ~1000 acquires (lightweight sampling)
+    if ((evictCounter.incrementAndGet() & 0x3FF) != 0) return;
+    inflight.entrySet().removeIf(e -> now - e.getValue() > ttlMs * 2);
   }
 
   @Override

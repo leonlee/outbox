@@ -30,7 +30,10 @@ public final class ExponentialBackoffRetryPolicy implements RetryPolicy {
     if (attempts >= 31) {
       expDelay = Long.MAX_VALUE;
     } else {
-      expDelay = baseDelayMs * (1L << (attempts - 1));
+      long shift = 1L << (attempts - 1);
+      // Guard against overflow: if shift exceeds maxDelayMs/baseDelayMs, cap directly
+      expDelay = (baseDelayMs != 0 && shift > maxDelayMs / baseDelayMs)
+          ? Long.MAX_VALUE : baseDelayMs * shift;
     }
     long capped = Math.min(maxDelayMs, expDelay);
     double jitter = ThreadLocalRandom.current().nextDouble(0.5, 1.5);

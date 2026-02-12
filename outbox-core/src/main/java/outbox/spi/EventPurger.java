@@ -14,7 +14,7 @@ import java.time.Instant;
  * <p>All methods receive an explicit {@link Connection} so the caller controls
  * transaction boundaries. Implementations live in the {@code outbox-jdbc} module.
  *
- * @see outbox.jdbc.AbstractJdbcEventPurger
+ * @see outbox.jdbc.purge.AbstractJdbcEventPurger
  */
 public interface EventPurger {
 

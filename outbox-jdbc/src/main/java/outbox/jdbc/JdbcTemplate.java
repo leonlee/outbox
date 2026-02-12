@@ -5,6 +5,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -64,7 +65,7 @@ public final class JdbcTemplate {
     for (int i = 0; i < params.length; i++) {
       Object param = params[i];
       if (param == null) {
-        ps.setObject(i + 1, null);
+        ps.setNull(i + 1, Types.NULL);
       } else if (param instanceof String s) {
         ps.setString(i + 1, s);
       } else if (param instanceof Integer n) {

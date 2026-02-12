@@ -5,6 +5,8 @@ import outbox.spi.ConnectionProvider;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.Objects;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Lightweight transaction manager for manual JDBC usage. Obtains a connection,
@@ -47,6 +49,8 @@ public final class JdbcTransactionManager {
    * If neither is called, {@link #close()} triggers a rollback automatically.
    */
   public static final class Transaction implements AutoCloseable {
+    private static final Logger LOG = Logger.getLogger(JdbcTransactionManager.class.getName());
+
     private final Connection connection;
     private final ThreadLocalTxContext txContext;
     private boolean completed;
@@ -105,7 +109,11 @@ public final class JdbcTransactionManager {
         try {
           connection.setAutoCommit(true);
         } catch (SQLException e) {
-          if (callbackException != null) callbackException.addSuppressed(e);
+          if (callbackException != null) {
+            callbackException.addSuppressed(e);
+          } else {
+            LOG.log(Level.WARNING, "Failed to reset autoCommit", e);
+          }
         } finally {
           connection.close();
         }

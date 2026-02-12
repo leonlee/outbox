@@ -6,10 +6,10 @@ import java.sql.Connection;
  * Abstracts the transaction lifecycle so outbox operations can participate in
  * the caller's transaction without depending on a specific transaction manager.
  *
- * <p>Implementations: {@link outbox.jdbc.ThreadLocalTxContext} (manual JDBC),
+ * <p>Implementations: {@link outbox.jdbc.tx.ThreadLocalTxContext} (manual JDBC),
  * {@code outbox.spring.SpringTxContext} (Spring-managed).
  *
- * @see outbox.jdbc.ThreadLocalTxContext
+ * @see outbox.jdbc.tx.ThreadLocalTxContext
  */
 public interface TxContext {
 

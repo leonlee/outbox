@@ -24,6 +24,7 @@
 6. [Poller 事件锁定](#6-poller-事件锁定)
 7. [CDC 消费（高 QPS 场景）](#7-cdc-消费高-qps-场景)
 8. [多数据源](#8-多数据源)
+9. [事件清理](#9-事件清理)
 
 ---
 
@@ -106,22 +107,22 @@ import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcEventStores;
-import outbox.jdbc.JdbcTransactionManager;
-import outbox.jdbc.ThreadLocalTxContext;
+import outbox.jdbc.store.JdbcOutboxStores;
+import outbox.jdbc.tx.JdbcTransactionManager;
+import outbox.jdbc.tx.ThreadLocalTxContext;
 
 import javax.sql.DataSource;
 import java.time.Duration;
 
 DataSource dataSource = /* 你的 DataSource */;
 
-var eventStore = JdbcEventStores.detect(dataSource);
+var outboxStore = JdbcOutboxStores.detect(dataSource);
 DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
 ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 
 OutboxDispatcher dispatcher = OutboxDispatcher.builder()
     .connectionProvider(connectionProvider)
-    .eventStore(eventStore)
+    .outboxStore(outboxStore)
     .listenerRegistry(new DefaultListenerRegistry()
         .register("UserCreated", event -> {
           // 发送到 MQ；用 event.eventId() 做去重
@@ -132,7 +133,7 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
 
 OutboxPoller poller = OutboxPoller.builder()
     .connectionProvider(connectionProvider)
-    .eventStore(eventStore)
+    .outboxStore(outboxStore)
     .handler(new DispatcherPollerHandler(dispatcher))
     .skipRecent(Duration.ofMillis(1000))
     .batchSize(200)
@@ -142,7 +143,7 @@ OutboxPoller poller = OutboxPoller.builder()
 poller.start();
 
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
-OutboxWriter writer = new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
+OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
 
 try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
   writer.write("UserCreated", "{\"id\":123}");
@@ -164,9 +165,9 @@ import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.H2EventStore;
-import outbox.jdbc.JdbcTransactionManager;
-import outbox.jdbc.ThreadLocalTxContext;
+import outbox.jdbc.store.H2OutboxStore;
+import outbox.jdbc.tx.JdbcTransactionManager;
+import outbox.jdbc.tx.ThreadLocalTxContext;
 
 import org.h2.jdbcx.JdbcDataSource;
 
@@ -203,14 +204,14 @@ public final class OutboxExample {
       );
     }
 
-    var eventStore = new H2EventStore();
+    var outboxStore = new H2OutboxStore();
     DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
     ThreadLocalTxContext txContext = new ThreadLocalTxContext();
     JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
 
     OutboxDispatcher dispatcher = OutboxDispatcher.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .listenerRegistry(new DefaultListenerRegistry()
             .register("UserCreated", event ->
                 System.out.println("已发送到 MQ: " + event.eventId())))
@@ -221,7 +222,7 @@ public final class OutboxExample {
 
     OutboxPoller poller = OutboxPoller.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .handler(new DispatcherPollerHandler(dispatcher))
         .skipRecent(Duration.ofMillis(500))
         .batchSize(50)
@@ -229,7 +230,7 @@ public final class OutboxExample {
         .build();
     poller.start();
 
-    OutboxWriter writer = new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
+    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
 
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
       writer.write("UserCreated", "{\"id\":123}");
@@ -300,9 +301,9 @@ import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.spi.TxContext;
 import outbox.spring.SpringTxContext;
-import outbox.jdbc.AbstractJdbcEventStore;
+import outbox.jdbc.store.AbstractJdbcOutboxStore;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcEventStores;
+import outbox.jdbc.store.JdbcOutboxStores;
 
 import javax.sql.DataSource;
 import java.time.Duration;
@@ -311,8 +312,8 @@ import java.time.Duration;
 public class OutboxConfiguration {
 
   @Bean
-  public AbstractJdbcEventStore eventStore(DataSource dataSource) {
-    return JdbcEventStores.detect(dataSource);
+  public AbstractJdbcOutboxStore outboxStore(DataSource dataSource) {
+    return JdbcOutboxStores.detect(dataSource);
   }
 
   @Bean
@@ -339,11 +340,11 @@ public class OutboxConfiguration {
   @Bean(destroyMethod = "close")
   public OutboxDispatcher dispatcher(
       DataSourceConnectionProvider connectionProvider,
-      AbstractJdbcEventStore eventStore,
+      AbstractJdbcOutboxStore outboxStore,
       DefaultListenerRegistry listenerRegistry) {
     return OutboxDispatcher.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .listenerRegistry(listenerRegistry)
         .inFlightTracker(new DefaultInFlightTracker(30_000))
         .workerCount(2)
@@ -356,11 +357,11 @@ public class OutboxConfiguration {
   @Bean(destroyMethod = "close")
   public OutboxPoller poller(
       DataSourceConnectionProvider connectionProvider,
-      AbstractJdbcEventStore eventStore,
+      AbstractJdbcOutboxStore outboxStore,
       OutboxDispatcher dispatcher) {
     OutboxPoller poller = OutboxPoller.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .handler(new DispatcherPollerHandler(dispatcher))
         .skipRecent(Duration.ofMillis(500))
         .batchSize(100)
@@ -373,9 +374,9 @@ public class OutboxConfiguration {
   @Bean
   public OutboxWriter outboxWriter(
       TxContext txContext,
-      AbstractJdbcEventStore eventStore,
+      AbstractJdbcOutboxStore outboxStore,
       OutboxDispatcher dispatcher) {
-    return new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
+    return new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
   }
 }
 ```
@@ -434,7 +435,7 @@ curl http://localhost:8080/events
 ```java
 OutboxPoller poller = OutboxPoller.builder()
     .connectionProvider(connectionProvider)
-    .eventStore(eventStore)
+    .outboxStore(outboxStore)
     .handler(new DispatcherPollerHandler(dispatcher))
     .skipRecent(Duration.ofMillis(1000))
     .batchSize(200)
@@ -464,8 +465,8 @@ OutboxPoller poller = OutboxPoller.builder()
 import outbox.OutboxWriter;
 import outbox.AfterCommitHook;
 
-OutboxWriter writer = new OutboxWriter(txContext, eventStore);
-// 或: new OutboxWriter(txContext, eventStore, AfterCommitHook.NOOP)
+OutboxWriter writer = new OutboxWriter(txContext, outboxStore);
+// 或: new OutboxWriter(txContext, outboxStore, AfterCommitHook.NOOP)
 ```
 
 如果同时启用了 `DispatcherCommitHook` 和 CDC，下游需要做去重，或只选其中一条投递路径。
@@ -484,7 +485,7 @@ Outbox 模式要求 `outbox_event` 表和业务数据在**同一个数据库**�
 |-----------|---------|
 | `DataSource` | 数据库连接池 |
 | `DataSourceConnectionProvider` | 为 outbox 组件封装 DataSource |
-| `EventStore` | 通过 `JdbcEventStores.detect()` 自动识别 |
+| `OutboxStore` | 通过 `JdbcOutboxStores.detect()` 自动识别 |
 | `ThreadLocalTxContext` | 事务生命周期 Hook |
 | `JdbcTransactionManager` | 管理 JDBC 事务 |
 | `DefaultListenerRegistry` | 该栈的事件路由表 |
@@ -503,13 +504,13 @@ EventListener sharedListener = event ->
 
 // --- 订单栈 ---
 DataSource ordersDs = createDataSource("orders");
-var ordersEventStore = JdbcEventStores.detect(ordersDs);
+var ordersOutboxStore = JdbcOutboxStores.detect(ordersDs);
 var ordersConn = new DataSourceConnectionProvider(ordersDs);
 var ordersTx = new ThreadLocalTxContext();
 
 OutboxDispatcher ordersDispatcher = OutboxDispatcher.builder()
     .connectionProvider(ordersConn)
-    .eventStore(ordersEventStore)
+    .outboxStore(ordersOutboxStore)
     .listenerRegistry(new DefaultListenerRegistry()
         .register("Order", "OrderPlaced", sharedListener)
         .register("Order", "OrderShipped", sharedListener))
@@ -517,7 +518,7 @@ OutboxDispatcher ordersDispatcher = OutboxDispatcher.builder()
 
 OutboxPoller ordersPoller = OutboxPoller.builder()
     .connectionProvider(ordersConn)
-    .eventStore(ordersEventStore)
+    .outboxStore(ordersOutboxStore)
     .handler(new DispatcherPollerHandler(ordersDispatcher))
     .skipRecent(Duration.ofMillis(500))
     .batchSize(50)
@@ -526,18 +527,18 @@ OutboxPoller ordersPoller = OutboxPoller.builder()
 ordersPoller.start();
 
 var ordersTxManager = new JdbcTransactionManager(ordersConn, ordersTx);
-var ordersWriter = new OutboxWriter(ordersTx, ordersEventStore,
+var ordersWriter = new OutboxWriter(ordersTx, ordersOutboxStore,
     new DispatcherCommitHook(ordersDispatcher));
 
 // --- 库存栈（同样的模式，不同数据源）---
 DataSource inventoryDs = createDataSource("inventory");
-var invEventStore = JdbcEventStores.detect(inventoryDs);
+var invOutboxStore = JdbcOutboxStores.detect(inventoryDs);
 var invConn = new DataSourceConnectionProvider(inventoryDs);
 var invTx = new ThreadLocalTxContext();
 
 OutboxDispatcher invDispatcher = OutboxDispatcher.builder()
     .connectionProvider(invConn)
-    .eventStore(invEventStore)
+    .outboxStore(invOutboxStore)
     .listenerRegistry(new DefaultListenerRegistry()
         .register("Inventory", "StockReserved", sharedListener)
         .register("Inventory", "StockDepleted", sharedListener))
@@ -545,7 +546,7 @@ OutboxDispatcher invDispatcher = OutboxDispatcher.builder()
 
 OutboxPoller invPoller = OutboxPoller.builder()
     .connectionProvider(invConn)
-    .eventStore(invEventStore)
+    .outboxStore(invOutboxStore)
     .handler(new DispatcherPollerHandler(invDispatcher))
     .skipRecent(Duration.ofMillis(500))
     .batchSize(50)
@@ -554,7 +555,7 @@ OutboxPoller invPoller = OutboxPoller.builder()
 invPoller.start();
 
 var invTxManager = new JdbcTransactionManager(invConn, invTx);
-var invWriter = new OutboxWriter(invTx, invEventStore,
+var invWriter = new OutboxWriter(invTx, invOutboxStore,
     new DispatcherCommitHook(invDispatcher));
 
 // --- 分别向各自的栈发布事件 ---
@@ -582,3 +583,99 @@ try (var tx = invTxManager.begin()) {
 ```bash
 mvn install -DskipTests && mvn -pl samples/outbox-multi-ds-demo exec:java
 ```
+
+---
+
+## 9. 事件清理
+
+Outbox 表是临时缓冲区而非 outbox 存储。随着时间推移，终态事件（DONE、DEAD）不断积累，会降低 Poller 查询性能。`OutboxPurgeScheduler` 可定期删除这些过期事件。
+
+### 基本配置
+
+```java
+import outbox.purge.OutboxPurgeScheduler;
+import outbox.jdbc.purge.H2EventPurger;   // 或 MySqlEventPurger、PostgresEventPurger
+import outbox.jdbc.DataSourceConnectionProvider;
+
+import java.time.Duration;
+
+DataSource dataSource = /* 你的 DataSource */;
+DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
+
+OutboxPurgeScheduler purgeScheduler = OutboxPurgeScheduler.builder()
+    .connectionProvider(connectionProvider)
+    .purger(new H2EventPurger())       // 根据数据库选择
+    .retention(Duration.ofDays(7))     // 删除 7 天前的 DONE/DEAD 事件
+    .batchSize(500)                    // 每批行数（控制锁持续时间）
+    .intervalSeconds(3600)             // 每小时执行一次
+    .build();
+
+purgeScheduler.start();
+
+// ... 应用运行 ...
+
+purgeScheduler.close();  // 优雅关闭
+```
+
+### 选择合适的清理器
+
+| 数据库     | 清理器类              |
+|------------|----------------------|
+| H2         | `H2EventPurger`      |
+| MySQL/TiDB | `MySqlEventPurger`   |
+| PostgreSQL | `PostgresEventPurger`|
+
+所有清理器类均支持自定义表名：`new H2EventPurger("custom_outbox")`。
+
+### 一次性清理
+
+可以不启动定时器，直接触发单次清理：
+
+```java
+OutboxPurgeScheduler purgeScheduler = OutboxPurgeScheduler.builder()
+    .connectionProvider(connectionProvider)
+    .purger(new H2EventPurger())
+    .retention(Duration.ofDays(30))
+    .build();
+
+purgeScheduler.runOnce();  // 立即清理
+purgeScheduler.close();
+```
+
+### Spring 集成
+
+在现有 outbox 配置的基础上，将清理调度器注册为 Spring Bean：
+
+```java
+@Bean(destroyMethod = "close")
+public OutboxPurgeScheduler purgeScheduler(
+    DataSourceConnectionProvider connectionProvider,
+    AbstractJdbcOutboxStore outboxStore) {
+  // 根据数据库选择清理器
+  var purger = new MySqlEventPurger();
+
+  OutboxPurgeScheduler scheduler = OutboxPurgeScheduler.builder()
+      .connectionProvider(connectionProvider)
+      .purger(purger)
+      .retention(Duration.ofDays(14))
+      .batchSize(1000)
+      .intervalSeconds(1800)  // 每 30 分钟
+      .build();
+  scheduler.start();
+  return scheduler;
+}
+```
+
+### 工作原理
+
+1. 每隔 `intervalSeconds` 秒，调度器计算截止时间 `cutoff = now - retention`
+2. 删除终态事件（DONE 或 DEAD 状态），条件为 `COALESCE(done_at, created_at) < cutoff`
+3. 分批删除，每批使用独立的自动提交连接，批大小为 `batchSize`
+4. 持续分批直到某批删除行数小于 `batchSize`（积压清空）
+5. 活跃事件（NEW、RETRY）永远不会被触及
+
+### 注意事项
+
+- **先归档**：如需审计记录，应在 `EventListener` 中归档事件，趁它们超过保留期被清理之前
+- **无需改表**：清理器使用现有的 `outbox_event` 表，无需新表或新列
+- **安全**：仅删除终态事件（DONE=1、DEAD=3），活跃事件（NEW=0、RETRY=2）永远不受影响

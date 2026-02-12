@@ -1,4 +1,6 @@
-package outbox.jdbc;
+package outbox.jdbc.purge;
+
+import outbox.jdbc.JdbcTemplate;
 
 import java.sql.Connection;
 import java.sql.Timestamp;

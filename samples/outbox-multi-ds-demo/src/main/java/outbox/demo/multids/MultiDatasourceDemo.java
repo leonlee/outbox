@@ -8,9 +8,9 @@ import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcEventStores;
-import outbox.jdbc.JdbcTransactionManager;
-import outbox.jdbc.ThreadLocalTxContext;
+import outbox.jdbc.store.JdbcOutboxStores;
+import outbox.jdbc.tx.JdbcTransactionManager;
+import outbox.jdbc.tx.ThreadLocalTxContext;
 
 import org.h2.jdbcx.JdbcDataSource;
 
@@ -49,13 +49,13 @@ public final class MultiDatasourceDemo {
     };
 
     // ── Orders stack ─────────────────────────────────────────────
-    var ordersEventStore = JdbcEventStores.detect(ordersDs);
+    var ordersOutboxStore = JdbcOutboxStores.detect(ordersDs);
     var ordersConn = new DataSourceConnectionProvider(ordersDs);
     var ordersTx = new ThreadLocalTxContext();
 
     OutboxDispatcher ordersDispatcher = OutboxDispatcher.builder()
         .connectionProvider(ordersConn)
-        .eventStore(ordersEventStore)
+        .outboxStore(ordersOutboxStore)
         .listenerRegistry(new DefaultListenerRegistry()
             .register("Order", "OrderPlaced", sharedListener)
             .register("Order", "OrderShipped", sharedListener))
@@ -63,7 +63,7 @@ public final class MultiDatasourceDemo {
 
     OutboxPoller ordersPoller = OutboxPoller.builder()
         .connectionProvider(ordersConn)
-        .eventStore(ordersEventStore)
+        .outboxStore(ordersOutboxStore)
         .handler(new DispatcherPollerHandler(ordersDispatcher))
         .skipRecent(Duration.ofMillis(500))
         .batchSize(50)
@@ -73,16 +73,16 @@ public final class MultiDatasourceDemo {
 
     JdbcTransactionManager ordersTxMgr = new JdbcTransactionManager(ordersConn, ordersTx);
     OutboxWriter ordersWriter = new OutboxWriter(
-        ordersTx, ordersEventStore, new DispatcherCommitHook(ordersDispatcher));
+        ordersTx, ordersOutboxStore, new DispatcherCommitHook(ordersDispatcher));
 
     // ── Inventory stack ──────────────────────────────────────────
-    var invEventStore = JdbcEventStores.detect(inventoryDs);
+    var invOutboxStore = JdbcOutboxStores.detect(inventoryDs);
     var invConn = new DataSourceConnectionProvider(inventoryDs);
     var invTx = new ThreadLocalTxContext();
 
     OutboxDispatcher invDispatcher = OutboxDispatcher.builder()
         .connectionProvider(invConn)
-        .eventStore(invEventStore)
+        .outboxStore(invOutboxStore)
         .listenerRegistry(new DefaultListenerRegistry()
             .register("Inventory", "StockReserved", sharedListener)
             .register("Inventory", "StockDepleted", sharedListener))
@@ -90,7 +90,7 @@ public final class MultiDatasourceDemo {
 
     OutboxPoller invPoller = OutboxPoller.builder()
         .connectionProvider(invConn)
-        .eventStore(invEventStore)
+        .outboxStore(invOutboxStore)
         .handler(new DispatcherPollerHandler(invDispatcher))
         .skipRecent(Duration.ofMillis(500))
         .batchSize(50)
@@ -100,7 +100,7 @@ public final class MultiDatasourceDemo {
 
     JdbcTransactionManager invTxMgr = new JdbcTransactionManager(invConn, invTx);
     OutboxWriter invWriter = new OutboxWriter(
-        invTx, invEventStore, new DispatcherCommitHook(invDispatcher));
+        invTx, invOutboxStore, new DispatcherCommitHook(invDispatcher));
 
     // ── Publish events ───────────────────────────────────────────
     System.out.println("=== Multi-Datasource Demo ===\n");

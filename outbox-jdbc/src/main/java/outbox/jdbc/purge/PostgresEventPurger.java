@@ -1,4 +1,4 @@
-package outbox.jdbc;
+package outbox.jdbc.purge;
 
 /**
  * PostgreSQL event purger.

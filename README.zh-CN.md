@@ -34,7 +34,7 @@
   <version>0.3.0</version>
 </dependency>
 
-<!-- JDBC 实现：EventStore 及事务管理（持久化必选） -->
+<!-- JDBC 实现：OutboxStore 及事务管理（持久化必选） -->
 <dependency>
   <groupId>outbox</groupId>
   <artifactId>outbox-jdbc</artifactId>
@@ -54,7 +54,7 @@
 ## 模块
 
 - `outbox-core`：核心 API、Hook、Dispatcher、Poller、Registry，零外部依赖。
-- `outbox-jdbc`：JDBC EventStore 实现及事务管理工具。
+- `outbox-jdbc`：JDBC OutboxStore 实现及事务管理工具。
 - `outbox-spring-adapter`：可选的 Spring `TxContext` 适配。
 - `samples/outbox-demo`：纯 JDBC 示例（H2，无 Spring）。
 - `samples/outbox-spring-demo`：Spring Boot 示例。
@@ -69,7 +69,7 @@
                                                     | insert
                                                     v
                                             +--------------------+
-                                            |    EventStore      |
+                                            |    OutboxStore      |
                                             +---------+----------+
                                                       | persist
                                                       v
@@ -97,10 +97,56 @@
            +--------------------------> | Listener B |
                                          +------------+
 
-  OutboxDispatcher ---> mark DONE/RETRY/DEAD ---> EventStore
+  OutboxDispatcher ---> mark DONE/RETRY/DEAD ---> OutboxStore
 ```
 
-热路径是可选的——配置 `AfterCommitHook`（如 `DispatcherCommitHook`）即可启用；不配置则完全由 CDC 消费。
+热路径是可选的——配置 `AfterCommitHook`（如 `DispatcherCommitHook`）即可启用；不配置则可由 Poller 或 CDC 消费。
+
+## 工作原理
+
+- **事务内写入**：`OutboxWriter.write(...)` 使用业务事务的同一 JDBC 连接写入 `outbox_event`。
+- **提交后 Hook**：`DispatcherCommitHook` 在提交后将事件入热队列；队列满时事件留在 DB。
+- **派发**：`OutboxDispatcher` 消费热/冷队列，路由到唯一监听器，并更新状态 `DONE`/`RETRY`/`DEAD`。
+- **兜底**：`OutboxPoller` 定期扫描/Claim 待处理行并入冷队列。
+- **至少一次**：监听器可能重复收到事件，下游需按 `eventId` 去重。
+- **清理**：`OutboxPurgeScheduler` 定期删除超过保留期的终态事件（DONE/DEAD），防止表膨胀。
+
+## 运行模式
+
+- **热路径 + Poller（默认）**：启用 `DispatcherCommitHook` 并启动 `OutboxPoller`，低延迟 + 兜底。
+- **仅 Poller**：不配置 Hook，启动 `OutboxPoller`，更简单但延迟更高。
+- **仅 CDC**：不配置 Hook 也不启动 Poller；由 CDC 消费并自行去重与保留策略。
+
+## 调优与背压
+
+- `workerCount` 控制最大并发 listener 数。
+- `hotQueueCapacity`/`coldQueueCapacity` 控制内存队列容量。
+- `skipRecent` 减少与刚提交事件的竞争。
+- `ownerId` + `lockTimeout` 支持多实例锁定。
+- `maxAttempts` 和 `RetryPolicy` 控制重试策略。
+
+## 事件保留与清理
+
+Outbox 表是临时缓冲区而非 outbox 存储。终态事件（DONE、DEAD）应在保留期后被清理以防表膨胀：
+
+```java
+OutboxPurgeScheduler purgeScheduler = OutboxPurgeScheduler.builder()
+    .connectionProvider(connectionProvider)
+    .purger(new H2EventPurger())       // 或 MySqlEventPurger、PostgresEventPurger
+    .retention(Duration.ofDays(7))     // 默认: 7 天
+    .batchSize(500)                    // 默认: 500
+    .intervalSeconds(3600)             // 默认: 1 小时
+    .build();
+purgeScheduler.start();
+```
+
+如需归档事件用于审计，应在 `EventListener` 中完成，趁事件被清理之前。
+
+## 失败与投递语义
+
+- 语义为 **at-least-once**，下游必须按 `eventId` 去重。
+- Listener 异常触发 `RETRY`，超过 `maxAttempts` 进入 `DEAD`。
+- 状态更新失败时事件仍保留在 DB，之后可重试。
 
 ## 环境要求
 

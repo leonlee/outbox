@@ -6,7 +6,7 @@
  *
  * @see outbox.spi.TxContext
  * @see outbox.spi.ConnectionProvider
- * @see outbox.spi.EventStore
+ * @see outbox.spi.OutboxStore
  * @see outbox.spi.MetricsExporter
  */
 package outbox.spi;

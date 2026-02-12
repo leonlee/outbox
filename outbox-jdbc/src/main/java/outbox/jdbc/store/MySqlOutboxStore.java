@@ -1,5 +1,6 @@
-package outbox.jdbc;
+package outbox.jdbc.store;
 
+import outbox.jdbc.JdbcTemplate;
 import outbox.model.OutboxEvent;
 
 import java.sql.Connection;
@@ -10,17 +11,17 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 /**
- * MySQL event store. Also compatible with TiDB.
+ * MySQL outbox store. Also compatible with TiDB.
  *
  * <p>Uses {@code UPDATE...ORDER BY...LIMIT} for claim (no subquery needed).
  */
-public final class MySqlEventStore extends AbstractJdbcEventStore {
+public final class MySqlOutboxStore extends AbstractJdbcOutboxStore {
 
-  public MySqlEventStore() {
+  public MySqlOutboxStore() {
     super();
   }
 
-  public MySqlEventStore(String tableName) {
+  public MySqlOutboxStore(String tableName) {
     super(tableName);
   }
 

@@ -23,7 +23,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 ### Modules
 
 - **outbox-core**: Core interfaces, dispatcher, poller, registries. Zero external dependencies.
-- **outbox-jdbc**: JDBC event store hierarchy (`AbstractJdbcEventStore` with H2/MySQL/PostgreSQL subclasses), `JdbcTemplate` utility, manual transaction helpers (`JdbcTransactionManager`, `ThreadLocalTxContext`).
+- **outbox-jdbc**: JDBC outbox store hierarchy (`AbstractJdbcOutboxStore` with H2/MySQL/PostgreSQL subclasses), `JdbcTemplate` utility, manual transaction helpers (`JdbcTransactionManager`, `ThreadLocalTxContext`).
 - **outbox-spring-adapter**: Optional `SpringTxContext` for Spring transaction integration.
 - **samples/outbox-demo**: Simple runnable demo with H2 (no Spring).
 - **samples/outbox-spring-demo**: Spring Boot demo with REST API (standalone).
@@ -48,7 +48,7 @@ outbox-core/src/main/java/
     ├── spi/
     │   ├── TxContext.java
     │   ├── ConnectionProvider.java
-    │   ├── EventStore.java
+    │   ├── OutboxStore.java
     │   ├── EventPurger.java
     │   └── MetricsExporter.java (contains Noop inner class)
     │
@@ -85,35 +85,45 @@ outbox-core/src/main/java/
 
 outbox-jdbc/src/main/java/
 └── outbox/jdbc/
-    ├── AbstractJdbcEventStore.java   (base: shared SQL, row mapper, JDBC boilerplate)
-    ├── H2EventStore.java             (inherits default subquery-based claim)
-    ├── MySqlEventStore.java          (UPDATE...ORDER BY...LIMIT claim)
-    ├── PostgresEventStore.java       (FOR UPDATE SKIP LOCKED + RETURNING claim)
-    ├── JdbcEventStores.java          (ServiceLoader registry + detect())
-    ├── AbstractJdbcEventPurger.java   (base: subquery-based DELETE purge)
-    ├── H2EventPurger.java             (inherits default purge)
-    ├── MySqlEventPurger.java          (DELETE...ORDER BY...LIMIT purge)
-    ├── PostgresEventPurger.java       (inherits default purge)
+    │  # Shared JDBC utilities (root package)
     ├── JdbcTemplate.java
-    ├── EventStoreException.java
+    ├── OutboxStoreException.java
     ├── DataSourceConnectionProvider.java
-    ├── JdbcTransactionManager.java
-    └── ThreadLocalTxContext.java
+    │
+    │  # OutboxStore hierarchy
+    ├── store/
+    │   ├── AbstractJdbcOutboxStore.java
+    │   ├── H2OutboxStore.java
+    │   ├── MySqlOutboxStore.java
+    │   ├── PostgresOutboxStore.java
+    │   └── JdbcOutboxStores.java
+    │
+    │  # EventPurger hierarchy
+    ├── purge/
+    │   ├── AbstractJdbcEventPurger.java
+    │   ├── H2EventPurger.java
+    │   ├── MySqlEventPurger.java
+    │   └── PostgresEventPurger.java
+    │
+    │  # Transaction management
+    └── tx/
+        ├── ThreadLocalTxContext.java
+        └── JdbcTransactionManager.java
 ```
 
 ### Key Abstractions
 
-- **TxContext**: Abstracts transaction lifecycle (`isTransactionActive()`, `currentConnection()`, `afterCommit()`, `afterRollback()`). Implementations: `ThreadLocalTxContext` (JDBC), `SpringTxContext` (Spring).
-- **EventStore**: Persistence contract (`insertNew`, `markDone`, `markRetry`, `markDead`, `pollPending`, `claimPending`). Implemented by `AbstractJdbcEventStore` hierarchy.
-- **AbstractJdbcEventStore**: Base JDBC event store with shared SQL, row mapper, and H2-compatible default `claimPending`. Subclasses: `H2EventStore`, `MySqlEventStore` (UPDATE...ORDER BY...LIMIT), `PostgresEventStore` (FOR UPDATE SKIP LOCKED + RETURNING).
-- **JdbcEventStores**: Static utility with ServiceLoader registry and `detect(DataSource)` auto-detection.
+- **TxContext**: Abstracts transaction lifecycle (`isTransactionActive()`, `currentConnection()`, `afterCommit()`, `afterRollback()`). Implementations: `ThreadLocalTxContext` (`outbox.jdbc.tx`, JDBC), `SpringTxContext` (Spring).
+- **OutboxStore**: Persistence contract (`insertNew`, `markDone`, `markRetry`, `markDead`, `pollPending`, `claimPending`). Implemented by `AbstractJdbcOutboxStore` hierarchy in `outbox.jdbc.store`.
+- **AbstractJdbcOutboxStore** (`outbox.jdbc.store`): Base JDBC outbox store with shared SQL, row mapper, and H2-compatible default `claimPending`. Subclasses: `H2OutboxStore`, `MySqlOutboxStore` (UPDATE...ORDER BY...LIMIT), `PostgresOutboxStore` (FOR UPDATE SKIP LOCKED + RETURNING).
+- **JdbcOutboxStores** (`outbox.jdbc.store`): Static utility with ServiceLoader registry (`META-INF/services/outbox.jdbc.store.AbstractJdbcOutboxStore`) and `detect(DataSource)` auto-detection.
 - **OutboxDispatcher**: Dual-queue event processor with hot queue (afterCommit callbacks) and cold queue (poller fallback). Created via `OutboxDispatcher.builder()`. Uses `InFlightTracker` for deduplication, `RetryPolicy` for exponential backoff, `EventInterceptor` for cross-cutting hooks, fair 2:1 hot/cold queue draining, and graceful shutdown with configurable drain timeout.
 - **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails. Created via `OutboxPoller.builder()`. Uses an `OutboxPollerHandler` to forward events. Supports claim-based locking via `ownerId`/`lockTimeout` for multi-instance deployments.
 - **AfterCommitHook**: Optional post-commit hook used by OutboxWriter to trigger hot-path processing (e.g., DispatcherCommitHook).
-- **JdbcTemplate**: Lightweight JDBC helper (`update`, `query`, `updateReturning`) used by `AbstractJdbcEventStore` subclasses.
+- **JdbcTemplate**: Lightweight JDBC helper (`update`, `query`, `updateReturning`) used by `AbstractJdbcOutboxStore` subclasses.
 - **ListenerRegistry**: Maps `(aggregateType, eventType)` pairs to a single `EventListener`. Uses `AggregateType.GLOBAL` as default. Unroutable events (no listener) are immediately marked DEAD.
 - **EventInterceptor**: Cross-cutting before/after hooks for audit, logging, metrics. `beforeDispatch` runs in registration order; `afterDispatch` in reverse. Replaces the old wildcard `registerAll()` pattern.
-- **EventPurger**: SPI for deleting terminal events (DONE + DEAD) older than a cutoff. Implementations in `outbox-jdbc`: `AbstractJdbcEventPurger` (base with subquery-based `DELETE`), `MySqlEventPurger` (`DELETE...ORDER BY...LIMIT`).
+- **EventPurger**: SPI for deleting terminal events (DONE + DEAD) older than a cutoff. Implementations in `outbox.jdbc.purge`: `AbstractJdbcEventPurger` (base with subquery-based `DELETE`), `MySqlEventPurger` (`DELETE...ORDER BY...LIMIT`).
 - **OutboxPurgeScheduler**: Scheduled component that purges terminal events on a configurable interval. Builder pattern, `AutoCloseable`, daemon threads (same lifecycle as `OutboxPoller`). Loops batches until `count < batchSize`.
 
 ### Event Flow

@@ -1,6 +1,6 @@
 package outbox;
 
-import outbox.spi.EventStore;
+import outbox.spi.OutboxStore;
 import outbox.spi.TxContext;
 
 import java.sql.Connection;
@@ -19,39 +19,39 @@ import java.util.logging.Logger;
  *
  * @see AfterCommitHook
  * @see outbox.spi.TxContext
- * @see outbox.spi.EventStore
+ * @see outbox.spi.OutboxStore
  */
 public final class OutboxWriter {
   private static final Logger logger = Logger.getLogger(OutboxWriter.class.getName());
 
   private final TxContext txContext;
-  private final EventStore eventStore;
+  private final OutboxStore outboxStore;
   private final AfterCommitHook afterCommitHook;
 
   /**
    * Creates a writer with no after-commit hook (poller-only mode).
    *
    * @param txContext   transaction context for connection and lifecycle management
-   * @param eventStore persistence backend for outbox events
+   * @param outboxStore persistence backend for outbox events
    */
-  public OutboxWriter(TxContext txContext, EventStore eventStore) {
-    this(txContext, eventStore, AfterCommitHook.NOOP);
+  public OutboxWriter(TxContext txContext, OutboxStore outboxStore) {
+    this(txContext, outboxStore, AfterCommitHook.NOOP);
   }
 
   /**
    * Creates a writer with an after-commit hook for hot-path dispatch.
    *
    * @param txContext       transaction context for connection and lifecycle management
-   * @param eventStore     persistence backend for outbox events
+   * @param outboxStore     persistence backend for outbox events
    * @param afterCommitHook callback invoked after commit; {@code null} defaults to {@link AfterCommitHook#NOOP}
    */
   public OutboxWriter(
       TxContext txContext,
-      EventStore eventStore,
+      OutboxStore outboxStore,
       AfterCommitHook afterCommitHook
   ) {
     this.txContext = Objects.requireNonNull(txContext, "txContext");
-    this.eventStore = Objects.requireNonNull(eventStore, "eventStore");
+    this.outboxStore = Objects.requireNonNull(outboxStore, "outboxStore");
     this.afterCommitHook = afterCommitHook == null ? AfterCommitHook.NOOP : afterCommitHook;
   }
 
@@ -69,7 +69,7 @@ public final class OutboxWriter {
     Objects.requireNonNull(event, "event");
 
     Connection conn = txContext.currentConnection();
-    eventStore.insertNew(conn, event);
+    outboxStore.insertNew(conn, event);
 
     if (afterCommitHook != AfterCommitHook.NOOP) {
       txContext.afterCommit(() -> runAfterCommitHook(event));

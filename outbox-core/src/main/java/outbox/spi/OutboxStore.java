@@ -15,9 +15,9 @@ import java.util.List;
  * <p>All methods receive an explicit {@link Connection} so the caller controls
  * transaction boundaries. Implementations live in the {@code outbox-jdbc} module.
  *
- * @see outbox.jdbc.AbstractJdbcEventStore
+ * @see outbox.jdbc.store.AbstractJdbcOutboxStore
  */
-public interface EventStore {
+public interface OutboxStore {
 
   /**
    * Inserts a new event with status NEW.

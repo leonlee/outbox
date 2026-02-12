@@ -16,7 +16,7 @@ API 契约、数据模型、行为规则、配置与可观测性的完整技术�
 5. [Event Envelope](#5-event-envelope)
 6. [类型安全的 EventType 与 AggregateType](#6-类型安全的-eventtype-与-aggregatetype)
 7. [公开 API](#7-公开-api)
-8. [JDBC Event Store](#8-jdbc-event-store)
+8. [JDBC Outbox Store](#8-jdbc-outbox-store)
 9. [OutboxDispatcher](#9-outboxdispatcher)
 10. [OutboxPoller](#10-outboxpoller)
 11. [注册中心](#11-注册中心)
@@ -25,6 +25,7 @@ API 契约、数据模型、行为规则、配置与可观测性的完整技术�
 14. [配置](#14-配置)
 15. [可观测性](#15-可观测性)
 16. [线程安全](#16-线程安全)
+17. [事件清理](#17-事件清理)
 
 ---
 
@@ -36,10 +37,11 @@ API 契约、数据模型、行为规则、配置与可观测性的完整技术�
 |------|------|
 | **OutboxWriter** | 业务代码在事务中调用的写入 API |
 | **TxContext** | 事务生命周期抽象（afterCommit / afterRollback） |
-| **EventStore** | 通过 `java.sql.Connection` 完成事件的增删改查 |
+| **OutboxStore** | 通过 `java.sql.Connection` 完成事件的增删改查 |
 | **OutboxDispatcher** | 热/冷双队列 + Worker 线程池，执行 Listener 并更新状态 |
 | **ListenerRegistry** | 事件类型到 Listener 的映射 |
 | **OutboxPoller** | 低频扫表兜底，将未处理事件交给 Handler |
+| **OutboxPurgeScheduler** | 定期清理超过保留期的终态事件（DONE/DEAD） |
 | **InFlightTracker** | 内存级去重，防止同一事件并发处理 |
 
 ### 1.2 事件流转
@@ -47,21 +49,21 @@ API 契约、数据模型、行为规则、配置与可观测性的完整技术�
 ```
 热路径（快速）
 Business TX -> OutboxWriter.write()
-  -> EventStore.insertNew()       // 在事务内
+  -> OutboxStore.insertNew()       // 在事务内
   -> TxContext.afterCommit(...)    // 注册提交后回调
 Commit
   -> AfterCommitHook.onCommit(event)
   -> OutboxDispatcher.enqueueHot(...)
   -> OutboxDispatcher.process()
-  -> EventStore.markDone/Retry/Dead()
+  -> OutboxStore.markDone/Retry/Dead()
 
 冷路径（兜底）
 OutboxPoller.poll()
-  -> EventStore.pollPending()/claimPending()
+  -> OutboxStore.pollPending()/claimPending()
   -> OutboxPollerHandler.handle(event, attempts)
   -> OutboxDispatcher.enqueueCold(...)
   -> OutboxDispatcher.process()
-  -> EventStore.markDone/Retry/Dead()
+  -> OutboxStore.markDone/Retry/Dead()
 ```
 
 ### 1.3 队列优先级
@@ -80,25 +82,46 @@ OutboxDispatcher 的优先级策略：
 
 包结构：
 - `outbox` — 主 API：OutboxWriter、EventEnvelope、EventType、AggregateType、EventListener、AfterCommitHook
-- `outbox.spi` — 扩展点接口：TxContext、ConnectionProvider、EventStore、MetricsExporter
+- `outbox.spi` — 扩展点接口：TxContext、ConnectionProvider、OutboxStore、EventPurger、MetricsExporter
 - `outbox.model` — 领域对象：OutboxEvent、EventStatus
 - `outbox.dispatch` — OutboxDispatcher、重试策略、InFlight 追踪
 - `outbox.poller` — OutboxPoller、OutboxPollerHandler
 - `outbox.registry` — Listener 注册中心
+- `outbox.purge` — OutboxPurgeScheduler（定时清理终态事件）
 - `outbox.util` — JsonCodec（无外部 JSON 依赖）
 
 ### 2.2 outbox-jdbc
 
-JDBC EventStore 继承体系与手动事务管理工具。
+JDBC OutboxStore 继承体系、EventPurger 继承体系与手动事务管理工具。
 
-类：
-- `AbstractJdbcEventStore` — 基类，共享 SQL、行映射器，默认使用 H2 兼容的 claim 实现
-- `H2EventStore` — H2（继承默认的子查询式 claim）
-- `MySqlEventStore` — MySQL / TiDB（`UPDATE...ORDER BY...LIMIT` claim）
-- `PostgresEventStore` — PostgreSQL（`FOR UPDATE SKIP LOCKED` + `RETURNING` claim）
-- `JdbcEventStores` — ServiceLoader 注册表 + `detect(DataSource)` 自动探测
+包结构：
+- `outbox.jdbc` — 共享工具：JdbcTemplate、OutboxStoreException、DataSourceConnectionProvider
+- `outbox.jdbc.store` — OutboxStore 继承体系（通过 ServiceLoader 注册）
+- `outbox.jdbc.purge` — EventPurger 继承体系
+- `outbox.jdbc.tx` — 事务管理
+
+按包分类：
+
+**`outbox.jdbc.store`**
+- `AbstractJdbcOutboxStore` — 基类，共享 SQL、行映射器，默认使用 H2 兼容的 claim 实现
+- `H2OutboxStore` — H2（继承默认的子查询式 claim）
+- `MySqlOutboxStore` — MySQL / TiDB（`UPDATE...ORDER BY...LIMIT` claim）
+- `PostgresOutboxStore` — PostgreSQL（`FOR UPDATE SKIP LOCKED` + `RETURNING` claim）
+- `JdbcOutboxStores` — ServiceLoader 注册表 + `detect(DataSource)` 自动探测
+
+**`outbox.jdbc.purge`**
+- `AbstractJdbcEventPurger` — 基类清理器，默认使用子查询式 DELETE（H2/PostgreSQL）
+- `H2EventPurger` — H2（继承默认实现）
+- `MySqlEventPurger` — MySQL / TiDB（`DELETE...ORDER BY...LIMIT`）
+- `PostgresEventPurger` — PostgreSQL（继承默认实现）
+
+**`outbox.jdbc.tx`**
 - `ThreadLocalTxContext` — 基于 ThreadLocal 的 TxContext，用于手动事务管理
 - `JdbcTransactionManager` — 手动 JDBC 事务辅助类
+
+**`outbox.jdbc`**（根包）
+- `JdbcTemplate` — 轻量级 JDBC 辅助类（update、query、updateReturning）
+- `OutboxStoreException` — JDBC 层异常
 - `DataSourceConnectionProvider` — 从 DataSource 获取连接的 ConnectionProvider
 
 ### 2.3 outbox-spring-adapter
@@ -343,8 +366,8 @@ EventEnvelope.builder(eventType)
 
 ```java
 public final class OutboxWriter {
-  public OutboxWriter(TxContext txContext, EventStore eventStore);
-  public OutboxWriter(TxContext txContext, EventStore eventStore, AfterCommitHook afterCommitHook);
+  public OutboxWriter(TxContext txContext, OutboxStore outboxStore);
+  public OutboxWriter(TxContext txContext, OutboxStore outboxStore, AfterCommitHook afterCommitHook);
 
   public String write(EventEnvelope event);
   public String write(String eventType, String payloadJson);
@@ -376,12 +399,12 @@ public interface AfterCommitHook {
 
 ---
 
-## 8. JDBC Event Store
+## 8. JDBC Outbox Store
 
 ### 8.1 接口
 
 ```java
-public interface EventStore {
+public interface OutboxStore {
   void insertNew(Connection conn, EventEnvelope event);
   int markDone(Connection conn, String eventId);
   int markRetry(Connection conn, String eventId, Instant nextAt, String error);
@@ -453,7 +476,7 @@ LIMIT ?
 ```java
 OutboxDispatcher dispatcher = OutboxDispatcher.builder()
     .connectionProvider(connectionProvider)  // 必填
-    .eventStore(eventStore)                  // 必填
+    .outboxStore(outboxStore)                  // 必填
     .listenerRegistry(listenerRegistry)      // 必填
     .inFlightTracker(tracker)                // 默认: DefaultInFlightTracker
     .retryPolicy(policy)                     // 默认: ExponentialBackoffRetryPolicy(200, 60_000)
@@ -574,7 +597,7 @@ new DefaultInFlightTracker(long ttlMs) // 带 TTL，用于回收卡住的条目
 ```java
 OutboxPoller poller = OutboxPoller.builder()
     .connectionProvider(connectionProvider)  // 必填
-    .eventStore(eventStore)                  // 必填
+    .outboxStore(outboxStore)                  // 必填
     .handler(handler)                        // 必填
     .skipRecent(Duration.ofSeconds(1))       // 默认: Duration.ZERO
     .batchSize(50)                           // 默认: 50
@@ -805,7 +828,7 @@ Worker 同步（阻塞）执行 Listener，天然实现限流：
 ```java
 OutboxDispatcher dispatcher = OutboxDispatcher.builder()
     .connectionProvider(connectionProvider)
-    .eventStore(eventStore)
+    .outboxStore(outboxStore)
     .listenerRegistry(registry)
     .workerCount(8)
     .hotQueueCapacity(2000)
@@ -860,4 +883,93 @@ public interface MetricsExporter {
 | 注册中心 | ConcurrentHashMap |
 | InFlightTracker | ConcurrentHashMap + CAS 操作 |
 | OutboxPoller | 单线程 ScheduledExecutorService |
+| OutboxPurgeScheduler | 单线程 ScheduledExecutorService |
 | ThreadLocalTxContext | ThreadLocal 存储 |
+
+---
+
+## 17. 事件清理
+
+### 17.1 概述
+
+Outbox 表是临时缓冲区而非 outbox 存储。终态事件（DONE 和 DEAD）应在保留期后被清理，以防表膨胀并维持 Poller 查询性能。如需归档事件用于审计，应在 `EventListener` 中完成。
+
+### 17.2 EventPurger 接口
+
+```java
+public interface EventPurger {
+  int purge(Connection conn, Instant before, int limit);
+}
+```
+
+- 删除终态事件（DONE + DEAD），条件为 `COALESCE(done_at, created_at) < before`
+- 接收显式 `Connection`（调用方控制事务），与 `OutboxStore` 模式一致
+- 返回实际删除的行数
+- `limit` 限制单次批量大小，控制锁持续时间
+
+### 17.3 JDBC 清理器继承体系
+
+| 类 | 数据库 | 策略 |
+|----|--------|------|
+| `AbstractJdbcEventPurger` | 基类 | 子查询式 DELETE（默认） |
+| `H2EventPurger` | H2 | 继承默认 |
+| `MySqlEventPurger` | MySQL/TiDB | `DELETE...ORDER BY...LIMIT` |
+| `PostgresEventPurger` | PostgreSQL | 继承默认 |
+
+**默认清理 SQL（H2、PostgreSQL）：**
+```sql
+DELETE FROM outbox_event WHERE event_id IN (
+  SELECT event_id FROM outbox_event
+  WHERE status IN (1, 3) AND COALESCE(done_at, created_at) < ?
+  ORDER BY created_at LIMIT ?
+)
+```
+
+**MySQL 清理 SQL：**
+```sql
+DELETE FROM outbox_event
+WHERE status IN (1, 3) AND COALESCE(done_at, created_at) < ?
+ORDER BY created_at LIMIT ?
+```
+
+所有清理器类均支持通过构造函数自定义表名（使用与 `AbstractJdbcOutboxStore` 相同的正则校验）。
+
+### 17.4 OutboxPurgeScheduler
+
+定时组件，参照 `OutboxPoller` 设计：Builder 模式、`AutoCloseable`、守护线程、同步生命周期。
+
+#### Builder
+
+```java
+OutboxPurgeScheduler scheduler = OutboxPurgeScheduler.builder()
+    .connectionProvider(connectionProvider)  // 必填
+    .purger(purger)                          // 必填
+    .retention(Duration.ofDays(7))           // 默认: 7 天
+    .batchSize(500)                          // 默认: 500
+    .intervalSeconds(3600)                   // 默认: 3600（1 小时）
+    .build();
+```
+
+| 参数 | 类型 | 默认值 | 必填 |
+|------|------|--------|------|
+| `connectionProvider` | `ConnectionProvider` | - | 是 |
+| `purger` | `EventPurger` | - | 是 |
+| `retention` | `Duration` | 7 天 | 否 |
+| `batchSize` | `int` | 500 | 否 |
+| `intervalSeconds` | `long` | 3600 | 否 |
+
+#### 方法
+
+```java
+void start()    // 启动定时清理
+void runOnce()  // 执行单次清理（循环批量删除直到 count < batchSize）
+void close()    // 停止清理并关闭调度线程
+```
+
+#### 行为
+
+- 每个清理周期计算截止时间为 `Instant.now().minus(retention)`
+- 循环分批：每批使用独立的自动提交连接
+- 当某批删除行数小于 `batchSize` 时停止（积压清空）
+- 以 INFO 级别记录本次清理总数
+- 异常被捕获并以 SEVERE 级别记录（不向上传播）

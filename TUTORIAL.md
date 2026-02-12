@@ -25,6 +25,7 @@ For the full technical specification, see [SPEC.md](SPEC.md).
 6. [Poller Event Locking](#6-poller-event-locking)
 7. [CDC Consumption (High QPS)](#7-cdc-consumption-high-qps)
 8. [Multi-Datasource](#8-multi-datasource)
+9. [Event Purge](#9-event-purge)
 
 ---
 
@@ -107,22 +108,22 @@ import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcEventStores;
-import outbox.jdbc.JdbcTransactionManager;
-import outbox.jdbc.ThreadLocalTxContext;
+import outbox.jdbc.store.JdbcOutboxStores;
+import outbox.jdbc.tx.JdbcTransactionManager;
+import outbox.jdbc.tx.ThreadLocalTxContext;
 
 import javax.sql.DataSource;
 import java.time.Duration;
 
 DataSource dataSource = /* your DataSource */;
 
-var eventStore = JdbcEventStores.detect(dataSource);
+var outboxStore = JdbcOutboxStores.detect(dataSource);
 DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
 ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 
 OutboxDispatcher dispatcher = OutboxDispatcher.builder()
     .connectionProvider(connectionProvider)
-    .eventStore(eventStore)
+    .outboxStore(outboxStore)
     .listenerRegistry(new DefaultListenerRegistry()
         .register("UserCreated", event -> {
           // publish to MQ; include event.eventId() for dedupe
@@ -133,7 +134,7 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
 
 OutboxPoller poller = OutboxPoller.builder()
     .connectionProvider(connectionProvider)
-    .eventStore(eventStore)
+    .outboxStore(outboxStore)
     .handler(new DispatcherPollerHandler(dispatcher))
     .skipRecent(Duration.ofMillis(1000))
     .batchSize(200)
@@ -143,7 +144,7 @@ OutboxPoller poller = OutboxPoller.builder()
 poller.start();
 
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
-OutboxWriter writer = new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
+OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
 
 try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
   writer.write("UserCreated", "{\"id\":123}");
@@ -165,9 +166,9 @@ import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.H2EventStore;
-import outbox.jdbc.JdbcTransactionManager;
-import outbox.jdbc.ThreadLocalTxContext;
+import outbox.jdbc.store.H2OutboxStore;
+import outbox.jdbc.tx.JdbcTransactionManager;
+import outbox.jdbc.tx.ThreadLocalTxContext;
 
 import org.h2.jdbcx.JdbcDataSource;
 
@@ -204,14 +205,14 @@ public final class OutboxExample {
       );
     }
 
-    var eventStore = new H2EventStore();
+    var outboxStore = new H2OutboxStore();
     DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
     ThreadLocalTxContext txContext = new ThreadLocalTxContext();
     JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
 
     OutboxDispatcher dispatcher = OutboxDispatcher.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .listenerRegistry(new DefaultListenerRegistry()
             .register("UserCreated", event ->
                 System.out.println("Published to MQ: " + event.eventId())))
@@ -222,7 +223,7 @@ public final class OutboxExample {
 
     OutboxPoller poller = OutboxPoller.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .handler(new DispatcherPollerHandler(dispatcher))
         .skipRecent(Duration.ofMillis(500))
         .batchSize(50)
@@ -230,7 +231,7 @@ public final class OutboxExample {
         .build();
     poller.start();
 
-    OutboxWriter writer = new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
+    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
 
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
       writer.write("UserCreated", "{\"id\":123}");
@@ -301,9 +302,9 @@ import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.spi.TxContext;
 import outbox.spring.SpringTxContext;
-import outbox.jdbc.AbstractJdbcEventStore;
+import outbox.jdbc.store.AbstractJdbcOutboxStore;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcEventStores;
+import outbox.jdbc.store.JdbcOutboxStores;
 
 import javax.sql.DataSource;
 import java.time.Duration;
@@ -312,8 +313,8 @@ import java.time.Duration;
 public class OutboxConfiguration {
 
   @Bean
-  public AbstractJdbcEventStore eventStore(DataSource dataSource) {
-    return JdbcEventStores.detect(dataSource);
+  public AbstractJdbcOutboxStore outboxStore(DataSource dataSource) {
+    return JdbcOutboxStores.detect(dataSource);
   }
 
   @Bean
@@ -340,11 +341,11 @@ public class OutboxConfiguration {
   @Bean(destroyMethod = "close")
   public OutboxDispatcher dispatcher(
       DataSourceConnectionProvider connectionProvider,
-      AbstractJdbcEventStore eventStore,
+      AbstractJdbcOutboxStore outboxStore,
       DefaultListenerRegistry listenerRegistry) {
     return OutboxDispatcher.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .listenerRegistry(listenerRegistry)
         .inFlightTracker(new DefaultInFlightTracker(30_000))
         .workerCount(2)
@@ -357,11 +358,11 @@ public class OutboxConfiguration {
   @Bean(destroyMethod = "close")
   public OutboxPoller poller(
       DataSourceConnectionProvider connectionProvider,
-      AbstractJdbcEventStore eventStore,
+      AbstractJdbcOutboxStore outboxStore,
       OutboxDispatcher dispatcher) {
     OutboxPoller poller = OutboxPoller.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .handler(new DispatcherPollerHandler(dispatcher))
         .skipRecent(Duration.ofMillis(500))
         .batchSize(100)
@@ -374,9 +375,9 @@ public class OutboxConfiguration {
   @Bean
   public OutboxWriter outboxWriter(
       TxContext txContext,
-      AbstractJdbcEventStore eventStore,
+      AbstractJdbcOutboxStore outboxStore,
       OutboxDispatcher dispatcher) {
-    return new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
+    return new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
   }
 }
 ```
@@ -435,7 +436,7 @@ For multi-instance deployments, enable claim-based locking so pollers don't comp
 ```java
 OutboxPoller poller = OutboxPoller.builder()
     .connectionProvider(connectionProvider)
-    .eventStore(eventStore)
+    .outboxStore(outboxStore)
     .handler(new DispatcherPollerHandler(dispatcher))
     .skipRecent(Duration.ofMillis(1000))
     .batchSize(200)
@@ -465,8 +466,8 @@ For high-throughput workloads, you can disable the in-process poller and use CDC
 import outbox.OutboxWriter;
 import outbox.AfterCommitHook;
 
-OutboxWriter writer = new OutboxWriter(txContext, eventStore);
-// or: new OutboxWriter(txContext, eventStore, AfterCommitHook.NOOP)
+OutboxWriter writer = new OutboxWriter(txContext, outboxStore);
+// or: new OutboxWriter(txContext, outboxStore, AfterCommitHook.NOOP)
 ```
 
 If you enable both `DispatcherCommitHook` and CDC, you must dedupe downstream or choose one primary delivery path.
@@ -485,7 +486,7 @@ Each datasource needs all of these, completely independent of other stacks:
 |-----------|---------|
 | `DataSource` | Database connection pool |
 | `DataSourceConnectionProvider` | Wraps DataSource for outbox components |
-| `EventStore` | Auto-detected via `JdbcEventStores.detect()` |
+| `OutboxStore` | Auto-detected via `JdbcOutboxStores.detect()` |
 | `ThreadLocalTxContext` | Transaction lifecycle hooks |
 | `JdbcTransactionManager` | Manages JDBC transactions |
 | `DefaultListenerRegistry` | Per-stack event routing table |
@@ -504,13 +505,13 @@ EventListener sharedListener = event ->
 
 // --- Orders stack ---
 DataSource ordersDs = createDataSource("orders");
-var ordersEventStore = JdbcEventStores.detect(ordersDs);
+var ordersOutboxStore = JdbcOutboxStores.detect(ordersDs);
 var ordersConn = new DataSourceConnectionProvider(ordersDs);
 var ordersTx = new ThreadLocalTxContext();
 
 OutboxDispatcher ordersDispatcher = OutboxDispatcher.builder()
     .connectionProvider(ordersConn)
-    .eventStore(ordersEventStore)
+    .outboxStore(ordersOutboxStore)
     .listenerRegistry(new DefaultListenerRegistry()
         .register("Order", "OrderPlaced", sharedListener)
         .register("Order", "OrderShipped", sharedListener))
@@ -518,7 +519,7 @@ OutboxDispatcher ordersDispatcher = OutboxDispatcher.builder()
 
 OutboxPoller ordersPoller = OutboxPoller.builder()
     .connectionProvider(ordersConn)
-    .eventStore(ordersEventStore)
+    .outboxStore(ordersOutboxStore)
     .handler(new DispatcherPollerHandler(ordersDispatcher))
     .skipRecent(Duration.ofMillis(500))
     .batchSize(50)
@@ -527,18 +528,18 @@ OutboxPoller ordersPoller = OutboxPoller.builder()
 ordersPoller.start();
 
 var ordersTxManager = new JdbcTransactionManager(ordersConn, ordersTx);
-var ordersWriter = new OutboxWriter(ordersTx, ordersEventStore,
+var ordersWriter = new OutboxWriter(ordersTx, ordersOutboxStore,
     new DispatcherCommitHook(ordersDispatcher));
 
 // --- Inventory stack (same pattern, different datasource) ---
 DataSource inventoryDs = createDataSource("inventory");
-var invEventStore = JdbcEventStores.detect(inventoryDs);
+var invOutboxStore = JdbcOutboxStores.detect(inventoryDs);
 var invConn = new DataSourceConnectionProvider(inventoryDs);
 var invTx = new ThreadLocalTxContext();
 
 OutboxDispatcher invDispatcher = OutboxDispatcher.builder()
     .connectionProvider(invConn)
-    .eventStore(invEventStore)
+    .outboxStore(invOutboxStore)
     .listenerRegistry(new DefaultListenerRegistry()
         .register("Inventory", "StockReserved", sharedListener)
         .register("Inventory", "StockDepleted", sharedListener))
@@ -546,7 +547,7 @@ OutboxDispatcher invDispatcher = OutboxDispatcher.builder()
 
 OutboxPoller invPoller = OutboxPoller.builder()
     .connectionProvider(invConn)
-    .eventStore(invEventStore)
+    .outboxStore(invOutboxStore)
     .handler(new DispatcherPollerHandler(invDispatcher))
     .skipRecent(Duration.ofMillis(500))
     .batchSize(50)
@@ -555,7 +556,7 @@ OutboxPoller invPoller = OutboxPoller.builder()
 invPoller.start();
 
 var invTxManager = new JdbcTransactionManager(invConn, invTx);
-var invWriter = new OutboxWriter(invTx, invEventStore,
+var invWriter = new OutboxWriter(invTx, invOutboxStore,
     new DispatcherCommitHook(invDispatcher));
 
 // --- Publish to each stack independently ---
@@ -583,3 +584,99 @@ Each stack is completely independent -- separate worker threads, separate poller
 ```bash
 mvn install -DskipTests && mvn -pl samples/outbox-multi-ds-demo exec:java
 ```
+
+---
+
+## 9. Event Purge
+
+The outbox table is a transient buffer, not an outbox store. Over time, terminal events (DONE, DEAD) accumulate and degrade poller query performance. `OutboxPurgeScheduler` periodically deletes these old events.
+
+### Basic Setup
+
+```java
+import outbox.purge.OutboxPurgeScheduler;
+import outbox.jdbc.purge.H2EventPurger;   // or MySqlEventPurger, PostgresEventPurger
+import outbox.jdbc.DataSourceConnectionProvider;
+
+import java.time.Duration;
+
+DataSource dataSource = /* your DataSource */;
+DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
+
+OutboxPurgeScheduler purgeScheduler = OutboxPurgeScheduler.builder()
+    .connectionProvider(connectionProvider)
+    .purger(new H2EventPurger())       // match your database
+    .retention(Duration.ofDays(7))     // delete DONE/DEAD events older than 7 days
+    .batchSize(500)                    // rows per batch (limits lock duration)
+    .intervalSeconds(3600)             // run every hour
+    .build();
+
+purgeScheduler.start();
+
+// ... application runs ...
+
+purgeScheduler.close();  // clean shutdown
+```
+
+### Choosing the Right Purger
+
+| Database   | Purger Class         |
+|------------|----------------------|
+| H2         | `H2EventPurger`      |
+| MySQL/TiDB | `MySqlEventPurger`   |
+| PostgreSQL | `PostgresEventPurger`|
+
+All purger classes support a custom table name: `new H2EventPurger("custom_outbox")`.
+
+### One-Off Purge
+
+You can trigger a single purge cycle without starting the scheduler:
+
+```java
+OutboxPurgeScheduler purgeScheduler = OutboxPurgeScheduler.builder()
+    .connectionProvider(connectionProvider)
+    .purger(new H2EventPurger())
+    .retention(Duration.ofDays(30))
+    .build();
+
+purgeScheduler.runOnce();  // purge now, then discard
+purgeScheduler.close();
+```
+
+### Spring Integration
+
+Add the purge scheduler as a Spring bean alongside your existing outbox configuration:
+
+```java
+@Bean(destroyMethod = "close")
+public OutboxPurgeScheduler purgeScheduler(
+    DataSourceConnectionProvider connectionProvider,
+    AbstractJdbcOutboxStore outboxStore) {
+  // Pick the purger matching your database
+  var purger = new MySqlEventPurger();
+
+  OutboxPurgeScheduler scheduler = OutboxPurgeScheduler.builder()
+      .connectionProvider(connectionProvider)
+      .purger(purger)
+      .retention(Duration.ofDays(14))
+      .batchSize(1000)
+      .intervalSeconds(1800)  // every 30 minutes
+      .build();
+  scheduler.start();
+  return scheduler;
+}
+```
+
+### How It Works
+
+1. Every `intervalSeconds`, the scheduler calculates `cutoff = now - retention`
+2. It deletes terminal events (status DONE or DEAD) where `COALESCE(done_at, created_at) < cutoff`
+3. Deletion happens in batches of `batchSize`, each on its own auto-committed connection
+4. Batching continues until a batch deletes fewer than `batchSize` rows (backlog drained)
+5. Active events (NEW, RETRY) are never touched
+
+### Important Notes
+
+- **Archive first**: If you need audit trails, archive events in your `EventListener` before they age past the retention period
+- **No schema changes**: The purger works with the existing `outbox_event` table -- no new tables or columns needed
+- **Safe**: Only terminal events (DONE=1, DEAD=3) are deleted; active events (NEW=0, RETRY=2) are never affected

@@ -1,15 +1,18 @@
 /**
- * JDBC-based {@link outbox.spi.EventStore} implementations.
+ * JDBC infrastructure shared across sub-packages.
  *
- * <p>{@link outbox.jdbc.AbstractJdbcEventStore} provides shared SQL and row mapping;
- * subclasses supply database-specific claim strategies: H2 (subquery),
- * MySQL ({@code UPDATE...ORDER BY...LIMIT}), and PostgreSQL
- * ({@code FOR UPDATE SKIP LOCKED}).
+ * <p>{@link outbox.jdbc.JdbcTemplate} provides lightweight JDBC helpers.
+ * {@link outbox.jdbc.DataSourceConnectionProvider} adapts a {@link javax.sql.DataSource}
+ * to the {@link outbox.spi.ConnectionProvider} SPI.
  *
- * @see outbox.jdbc.AbstractJdbcEventStore
- * @see outbox.jdbc.H2EventStore
- * @see outbox.jdbc.MySqlEventStore
- * @see outbox.jdbc.PostgresEventStore
- * @see outbox.jdbc.JdbcEventStores
+ * <p>Sub-packages:
+ * <ul>
+ *   <li>{@code outbox.jdbc.store} — {@link outbox.spi.OutboxStore} implementations</li>
+ *   <li>{@code outbox.jdbc.purge} — {@link outbox.spi.EventPurger} implementations</li>
+ *   <li>{@code outbox.jdbc.tx} — manual transaction management</li>
+ * </ul>
+ *
+ * @see outbox.jdbc.JdbcTemplate
+ * @see outbox.jdbc.DataSourceConnectionProvider
  */
 package outbox.jdbc;

@@ -1,3 +1,0 @@
-outbox.jdbc.MySqlEventStore
-outbox.jdbc.PostgresEventStore
-outbox.jdbc.H2EventStore

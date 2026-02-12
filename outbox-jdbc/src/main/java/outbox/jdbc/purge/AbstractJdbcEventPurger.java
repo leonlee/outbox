@@ -1,5 +1,6 @@
-package outbox.jdbc;
+package outbox.jdbc.purge;
 
+import outbox.jdbc.JdbcTemplate;
 import outbox.model.EventStatus;
 import outbox.spi.EventPurger;
 

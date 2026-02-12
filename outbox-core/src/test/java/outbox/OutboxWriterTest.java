@@ -1,6 +1,6 @@
 package outbox;
 
-import outbox.spi.EventStore;
+import outbox.spi.OutboxStore;
 import outbox.spi.TxContext;
 
 import org.junit.jupiter.api.Test;
@@ -22,7 +22,7 @@ class OutboxWriterTest {
   @Test
   void writeThrowsWhenNoActiveTransaction() {
     StubTxContext txContext = new StubTxContext(false);
-    RecordingEventStore store = new RecordingEventStore();
+    RecordingOutboxStore store = new RecordingOutboxStore();
 
     OutboxWriter writer = new OutboxWriter(txContext, store);
 
@@ -33,7 +33,7 @@ class OutboxWriterTest {
   @Test
   void afterCommitHookRuns() {
     StubTxContext txContext = new StubTxContext(true);
-    RecordingEventStore store = new RecordingEventStore();
+    RecordingOutboxStore store = new RecordingOutboxStore();
     RecordingHook hook = new RecordingHook();
 
     OutboxWriter writer = new OutboxWriter(txContext, store, hook);
@@ -48,7 +48,7 @@ class OutboxWriterTest {
   @Test
   void afterCommitHookSwallowsExceptions() {
     StubTxContext txContext = new StubTxContext(true);
-    RecordingEventStore store = new RecordingEventStore();
+    RecordingOutboxStore store = new RecordingOutboxStore();
     AfterCommitHook hook = event -> { throw new RuntimeException("boom"); };
 
     OutboxWriter writer = new OutboxWriter(txContext, store, hook);
@@ -62,7 +62,7 @@ class OutboxWriterTest {
   @Test
   void writeWithStringEventTypeAndPayload() {
     StubTxContext txContext = new StubTxContext(true);
-    RecordingEventStore store = new RecordingEventStore();
+    RecordingOutboxStore store = new RecordingOutboxStore();
 
     OutboxWriter writer = new OutboxWriter(txContext, store);
 
@@ -74,7 +74,7 @@ class OutboxWriterTest {
   @Test
   void writeWithTypedEventTypeAndPayload() {
     StubTxContext txContext = new StubTxContext(true);
-    RecordingEventStore store = new RecordingEventStore();
+    RecordingOutboxStore store = new RecordingOutboxStore();
 
     OutboxWriter writer = new OutboxWriter(txContext, store);
 
@@ -87,7 +87,7 @@ class OutboxWriterTest {
   @Test
   void writeAllInsertsMultipleEvents() {
     StubTxContext txContext = new StubTxContext(true);
-    RecordingEventStore store = new RecordingEventStore();
+    RecordingOutboxStore store = new RecordingOutboxStore();
 
     OutboxWriter writer = new OutboxWriter(txContext, store);
 
@@ -104,7 +104,7 @@ class OutboxWriterTest {
   @Test
   void writeAllThrowsWhenNoActiveTransaction() {
     StubTxContext txContext = new StubTxContext(false);
-    RecordingEventStore store = new RecordingEventStore();
+    RecordingOutboxStore store = new RecordingOutboxStore();
 
     OutboxWriter writer = new OutboxWriter(txContext, store);
 
@@ -148,7 +148,7 @@ class OutboxWriterTest {
     }
   }
 
-  private static final class RecordingEventStore implements EventStore {
+  private static final class RecordingOutboxStore implements OutboxStore {
     private final AtomicInteger insertCount = new AtomicInteger();
 
     @Override

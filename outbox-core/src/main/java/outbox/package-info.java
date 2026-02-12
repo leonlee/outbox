@@ -27,7 +27,7 @@
  * <h2>Quick Start (plain JDBC, no Spring)</h2>
  * <pre>{@code
  * // 1. Create core components
- * var eventStore   = JdbcEventStores.detect(dataSource);
+ * var outboxStore  = JdbcOutboxStores.detect(dataSource);
  * var connProvider = new DataSourceConnectionProvider(dataSource);
  * var txContext     = new ThreadLocalTxContext();
  *
@@ -38,7 +38,7 @@
  *
  * var dispatcher = OutboxDispatcher.builder()
  *     .connectionProvider(connProvider)
- *     .eventStore(eventStore)
+ *     .outboxStore(outboxStore)
  *     .listenerRegistry(registry)
  *     .inFlightTracker(new DefaultInFlightTracker(30_000))
  *     .build();
@@ -46,14 +46,14 @@
  * // 3. Start poller fallback
  * var poller = OutboxPoller.builder()
  *     .connectionProvider(connProvider)
- *     .eventStore(eventStore)
+ *     .outboxStore(outboxStore)
  *     .handler(new DispatcherPollerHandler(dispatcher))
  *     .build();
  * poller.start();
  *
  * // 4. Write events inside a transaction
  * var txManager = new JdbcTransactionManager(connProvider, txContext);
- * var writer    = new OutboxWriter(txContext, eventStore,
+ * var writer    = new OutboxWriter(txContext, outboxStore,
  *                     new DispatcherCommitHook(dispatcher));
  *
  * try (var tx = txManager.begin()) {

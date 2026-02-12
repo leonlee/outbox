@@ -4,6 +4,7 @@ import outbox.registry.DefaultListenerRegistry;
 import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.dispatch.ExponentialBackoffRetryPolicy;
+import outbox.jdbc.store.H2OutboxStore;
 import outbox.poller.OutboxPoller;
 import outbox.model.EventStatus;
 
@@ -27,7 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class OutboxEdgeCaseTest {
   private DataSource dataSource;
-  private H2EventStore eventStore;
+  private H2OutboxStore outboxStore;
   private DataSourceConnectionProvider connectionProvider;
 
   @BeforeEach
@@ -35,7 +36,7 @@ class OutboxEdgeCaseTest {
     JdbcDataSource ds = new JdbcDataSource();
     ds.setURL("jdbc:h2:mem:outbox_edge_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
     this.dataSource = ds;
-    this.eventStore = new H2EventStore();
+    this.outboxStore = new H2OutboxStore();
     this.connectionProvider = new DataSourceConnectionProvider(ds);
 
     try (Connection conn = ds.getConnection()) {
@@ -65,7 +66,7 @@ class OutboxEdgeCaseTest {
 
     OutboxDispatcher dispatcher = OutboxDispatcher.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .listenerRegistry(new DefaultListenerRegistry())
         .retryPolicy(new ExponentialBackoffRetryPolicy(10, 50))
         .workerCount(1)
@@ -73,7 +74,7 @@ class OutboxEdgeCaseTest {
 
     try (OutboxPoller poller = OutboxPoller.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .handler(new DispatcherPollerHandler(dispatcher))
         .skipRecent(Duration.ofMillis(0))
         .batchSize(10)
@@ -93,7 +94,7 @@ class OutboxEdgeCaseTest {
     assertThrows(IllegalArgumentException.class, () ->
         OutboxDispatcher.builder()
             .connectionProvider(connectionProvider)
-            .eventStore(eventStore)
+            .outboxStore(outboxStore)
             .listenerRegistry(new DefaultListenerRegistry())
             .maxAttempts(0)
             .build());
@@ -101,7 +102,7 @@ class OutboxEdgeCaseTest {
     assertThrows(IllegalArgumentException.class, () ->
         OutboxDispatcher.builder()
             .connectionProvider(connectionProvider)
-            .eventStore(eventStore)
+            .outboxStore(outboxStore)
             .listenerRegistry(new DefaultListenerRegistry())
             .workerCount(-1)
             .build());
@@ -109,7 +110,7 @@ class OutboxEdgeCaseTest {
     assertThrows(IllegalArgumentException.class, () ->
         OutboxDispatcher.builder()
             .connectionProvider(connectionProvider)
-            .eventStore(eventStore)
+            .outboxStore(outboxStore)
             .listenerRegistry(new DefaultListenerRegistry())
             .hotQueueCapacity(0)
             .build());
@@ -119,7 +120,7 @@ class OutboxEdgeCaseTest {
   void pollerRejectsInvalidArgs() {
     OutboxDispatcher dispatcher = OutboxDispatcher.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .listenerRegistry(new DefaultListenerRegistry())
         .retryPolicy(new ExponentialBackoffRetryPolicy(10, 50))
         .workerCount(1)
@@ -127,7 +128,7 @@ class OutboxEdgeCaseTest {
 
     assertThrows(IllegalArgumentException.class, () -> OutboxPoller.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .handler(new DispatcherPollerHandler(dispatcher))
         .batchSize(0)
         .intervalMs(10)
@@ -135,7 +136,7 @@ class OutboxEdgeCaseTest {
 
     assertThrows(IllegalArgumentException.class, () -> OutboxPoller.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .handler(new DispatcherPollerHandler(dispatcher))
         .batchSize(10)
         .intervalMs(0)
@@ -143,7 +144,7 @@ class OutboxEdgeCaseTest {
 
     assertThrows(IllegalArgumentException.class, () -> OutboxPoller.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .handler(new DispatcherPollerHandler(dispatcher))
         .skipRecent(Duration.ofMillis(-1))
         .batchSize(10)

@@ -4,7 +4,7 @@ import outbox.EventEnvelope;
 import outbox.EventListener;
 import outbox.registry.ListenerRegistry;
 import outbox.spi.ConnectionProvider;
-import outbox.spi.EventStore;
+import outbox.spi.OutboxStore;
 import outbox.spi.MetricsExporter;
 import outbox.util.DaemonThreadFactory;
 
@@ -53,7 +53,7 @@ public final class OutboxDispatcher implements AutoCloseable {
   private final AtomicInteger pollCounter = new AtomicInteger(0);
 
   private final ConnectionProvider connectionProvider;
-  private final EventStore eventStore;
+  private final OutboxStore outboxStore;
   private final ListenerRegistry listenerRegistry;
   private final InFlightTracker inFlightTracker;
   private final RetryPolicy retryPolicy;
@@ -64,7 +64,7 @@ public final class OutboxDispatcher implements AutoCloseable {
 
   private OutboxDispatcher(Builder builder) {
     this.connectionProvider = Objects.requireNonNull(builder.connectionProvider, "connectionProvider");
-    this.eventStore = Objects.requireNonNull(builder.eventStore, "eventStore");
+    this.outboxStore = Objects.requireNonNull(builder.outboxStore, "outboxStore");
     this.listenerRegistry = Objects.requireNonNull(builder.listenerRegistry, "listenerRegistry");
     this.inFlightTracker = builder.inFlightTracker != null
         ? builder.inFlightTracker : new DefaultInFlightTracker();
@@ -250,17 +250,17 @@ public final class OutboxDispatcher implements AutoCloseable {
 
   private void markDone(String eventId) {
     withConnection("mark DONE", eventId,
-        conn -> eventStore.markDone(conn, eventId));
+        conn -> outboxStore.markDone(conn, eventId));
   }
 
   private void markRetry(String eventId, Instant nextAt, Exception failure) {
     withConnection("mark RETRY", eventId,
-        conn -> eventStore.markRetry(conn, eventId, nextAt, failure == null ? null : failure.getMessage()));
+        conn -> outboxStore.markRetry(conn, eventId, nextAt, failure == null ? null : failure.getMessage()));
   }
 
   private void markDead(String eventId, Exception failure) {
     withConnection("mark DEAD", eventId,
-        conn -> eventStore.markDead(conn, eventId, failure == null ? null : failure.getMessage()));
+        conn -> outboxStore.markDead(conn, eventId, failure == null ? null : failure.getMessage()));
   }
 
   private void withConnection(String action, String eventId, SqlAction op) {
@@ -301,7 +301,7 @@ public final class OutboxDispatcher implements AutoCloseable {
 
   public static final class Builder {
     private ConnectionProvider connectionProvider;
-    private EventStore eventStore;
+    private OutboxStore outboxStore;
     private ListenerRegistry listenerRegistry;
     private InFlightTracker inFlightTracker;
     private RetryPolicy retryPolicy;
@@ -320,8 +320,8 @@ public final class OutboxDispatcher implements AutoCloseable {
       return this;
     }
 
-    public Builder eventStore(EventStore eventStore) {
-      this.eventStore = eventStore;
+    public Builder outboxStore(OutboxStore outboxStore) {
+      this.outboxStore = outboxStore;
       return this;
     }
 

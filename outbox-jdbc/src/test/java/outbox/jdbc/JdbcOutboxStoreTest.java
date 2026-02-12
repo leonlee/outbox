@@ -4,6 +4,7 @@ import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import outbox.EventEnvelope;
+import outbox.jdbc.store.H2OutboxStore;
 import outbox.model.EventStatus;
 import outbox.model.OutboxEvent;
 
@@ -20,10 +21,10 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-class JdbcEventStoreTest {
+class JdbcOutboxStoreTest {
 
   private JdbcDataSource dataSource;
-  private H2EventStore eventStore;
+  private H2OutboxStore outboxStore;
 
   @BeforeEach
   void setUp() throws SQLException {
@@ -52,7 +53,7 @@ class JdbcEventStoreTest {
       );
     }
 
-    eventStore = new H2EventStore();
+    outboxStore = new H2OutboxStore();
   }
 
   @Test
@@ -64,7 +65,7 @@ class JdbcEventStoreTest {
         .build();
 
     try (Connection conn = dataSource.getConnection()) {
-      eventStore.insertNew(conn, event);
+      outboxStore.insertNew(conn, event);
 
       try (PreparedStatement ps = conn.prepareStatement(
           "SELECT status, attempts FROM outbox_event WHERE event_id = ?")) {
@@ -89,7 +90,7 @@ class JdbcEventStoreTest {
         .build();
 
     try (Connection conn = dataSource.getConnection()) {
-      eventStore.insertNew(conn, event);
+      outboxStore.insertNew(conn, event);
 
       try (PreparedStatement ps = conn.prepareStatement(
           "SELECT * FROM outbox_event WHERE event_id = ?")) {
@@ -111,7 +112,7 @@ class JdbcEventStoreTest {
     String eventId = insertTestEvent();
 
     try (Connection conn = dataSource.getConnection()) {
-      int updated = eventStore.markDone(conn, eventId);
+      int updated = outboxStore.markDone(conn, eventId);
 
       assertEquals(1, updated);
 
@@ -131,8 +132,8 @@ class JdbcEventStoreTest {
     String eventId = insertTestEvent();
 
     try (Connection conn = dataSource.getConnection()) {
-      int first = eventStore.markDone(conn, eventId);
-      int second = eventStore.markDone(conn, eventId);
+      int first = outboxStore.markDone(conn, eventId);
+      int second = outboxStore.markDone(conn, eventId);
 
       assertEquals(1, first);
       assertEquals(0, second); // Already DONE, no update
@@ -145,7 +146,7 @@ class JdbcEventStoreTest {
     Instant nextAt = Instant.now().plusSeconds(60);
 
     try (Connection conn = dataSource.getConnection()) {
-      int updated = eventStore.markRetry(conn, eventId, nextAt, "Connection failed");
+      int updated = outboxStore.markRetry(conn, eventId, nextAt, "Connection failed");
 
       assertEquals(1, updated);
 
@@ -170,7 +171,7 @@ class JdbcEventStoreTest {
     }
 
     try (Connection conn = dataSource.getConnection()) {
-      eventStore.markRetry(conn, eventId, Instant.now(), longError.toString());
+      outboxStore.markRetry(conn, eventId, Instant.now(), longError.toString());
 
       try (PreparedStatement ps = conn.prepareStatement(
           "SELECT last_error FROM outbox_event WHERE event_id = ?")) {
@@ -189,7 +190,7 @@ class JdbcEventStoreTest {
     String eventId = insertTestEvent();
 
     try (Connection conn = dataSource.getConnection()) {
-      int updated = eventStore.markDead(conn, eventId, "Max retries exceeded");
+      int updated = outboxStore.markDead(conn, eventId, "Max retries exceeded");
 
       assertEquals(1, updated);
 
@@ -209,7 +210,7 @@ class JdbcEventStoreTest {
     String eventId = insertTestEvent();
 
     try (Connection conn = dataSource.getConnection()) {
-      List<OutboxEvent> rows = eventStore.pollPending(conn, Instant.now().plusSeconds(1),
+      List<OutboxEvent> rows = outboxStore.pollPending(conn, Instant.now().plusSeconds(1),
           Duration.ZERO, 10);
 
       assertEquals(1, rows.size());
@@ -222,9 +223,9 @@ class JdbcEventStoreTest {
     String eventId = insertTestEvent();
 
     try (Connection conn = dataSource.getConnection()) {
-      eventStore.markRetry(conn, eventId, Instant.now().minusSeconds(10), "error");
+      outboxStore.markRetry(conn, eventId, Instant.now().minusSeconds(10), "error");
 
-      List<OutboxEvent> rows = eventStore.pollPending(conn, Instant.now(),
+      List<OutboxEvent> rows = outboxStore.pollPending(conn, Instant.now(),
           Duration.ZERO, 10);
 
       assertEquals(1, rows.size());
@@ -237,9 +238,9 @@ class JdbcEventStoreTest {
     String eventId = insertTestEvent();
 
     try (Connection conn = dataSource.getConnection()) {
-      eventStore.markDone(conn, eventId);
+      outboxStore.markDone(conn, eventId);
 
-      List<OutboxEvent> rows = eventStore.pollPending(conn, Instant.now().plusSeconds(1),
+      List<OutboxEvent> rows = outboxStore.pollPending(conn, Instant.now().plusSeconds(1),
           Duration.ZERO, 10);
 
       assertTrue(rows.isEmpty());
@@ -251,9 +252,9 @@ class JdbcEventStoreTest {
     String eventId = insertTestEvent();
 
     try (Connection conn = dataSource.getConnection()) {
-      eventStore.markDead(conn, eventId, "dead");
+      outboxStore.markDead(conn, eventId, "dead");
 
-      List<OutboxEvent> rows = eventStore.pollPending(conn, Instant.now().plusSeconds(1),
+      List<OutboxEvent> rows = outboxStore.pollPending(conn, Instant.now().plusSeconds(1),
           Duration.ZERO, 10);
 
       assertTrue(rows.isEmpty());
@@ -266,7 +267,7 @@ class JdbcEventStoreTest {
 
     try (Connection conn = dataSource.getConnection()) {
       // Skip events created in the last hour
-      List<OutboxEvent> rows = eventStore.pollPending(conn, Instant.now(),
+      List<OutboxEvent> rows = outboxStore.pollPending(conn, Instant.now(),
           Duration.ofHours(1), 10);
 
       assertTrue(rows.isEmpty());
@@ -280,7 +281,7 @@ class JdbcEventStoreTest {
     }
 
     try (Connection conn = dataSource.getConnection()) {
-      List<OutboxEvent> rows = eventStore.pollPending(conn, Instant.now().plusSeconds(1),
+      List<OutboxEvent> rows = outboxStore.pollPending(conn, Instant.now().plusSeconds(1),
           Duration.ZERO, 3);
 
       assertEquals(3, rows.size());
@@ -293,9 +294,9 @@ class JdbcEventStoreTest {
 
     try (Connection conn = dataSource.getConnection()) {
       // Set available_at to future
-      eventStore.markRetry(conn, eventId, Instant.now().plus(Duration.ofHours(1)), "delayed");
+      outboxStore.markRetry(conn, eventId, Instant.now().plus(Duration.ofHours(1)), "delayed");
 
-      List<OutboxEvent> rows = eventStore.pollPending(conn, Instant.now(),
+      List<OutboxEvent> rows = outboxStore.pollPending(conn, Instant.now(),
           Duration.ZERO, 10);
 
       assertTrue(rows.isEmpty());
@@ -312,7 +313,7 @@ class JdbcEventStoreTest {
     Instant lockExpiry = now.minus(Duration.ofMinutes(5));
 
     try (Connection conn = dataSource.getConnection()) {
-      List<OutboxEvent> claimed = eventStore.claimPending(
+      List<OutboxEvent> claimed = outboxStore.claimPending(
           conn, "owner-A", now, lockExpiry, Duration.ZERO, 2);
 
       assertEquals(2, claimed.size());
@@ -341,12 +342,12 @@ class JdbcEventStoreTest {
     Instant lockExpiry = now.minus(Duration.ofMinutes(5));
 
     try (Connection conn = dataSource.getConnection()) {
-      List<OutboxEvent> claimedA = eventStore.claimPending(
+      List<OutboxEvent> claimedA = outboxStore.claimPending(
           conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
       assertEquals(2, claimedA.size());
 
       // owner-B should get 0 because all are locked by owner-A with non-expired locks
-      List<OutboxEvent> claimedB = eventStore.claimPending(
+      List<OutboxEvent> claimedB = outboxStore.claimPending(
           conn, "owner-B", now, lockExpiry, Duration.ZERO, 10);
       assertEquals(0, claimedB.size());
     }
@@ -361,7 +362,7 @@ class JdbcEventStoreTest {
 
     try (Connection conn = dataSource.getConnection()) {
       // owner-A claims the event
-      List<OutboxEvent> claimedA = eventStore.claimPending(
+      List<OutboxEvent> claimedA = outboxStore.claimPending(
           conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
       assertEquals(1, claimedA.size());
 
@@ -370,7 +371,7 @@ class JdbcEventStoreTest {
           "UPDATE outbox_event SET locked_at = TIMESTAMP '2020-01-01 00:00:00'");
 
       // owner-B should reclaim the expired lock
-      List<OutboxEvent> claimedB = eventStore.claimPending(
+      List<OutboxEvent> claimedB = outboxStore.claimPending(
           conn, "owner-B", now, lockExpiry, Duration.ZERO, 10);
       assertEquals(1, claimedB.size());
 
@@ -392,9 +393,9 @@ class JdbcEventStoreTest {
     try (Connection conn = dataSource.getConnection()) {
       Instant now = Instant.now().plusSeconds(1);
       Instant lockExpiry = now.minus(Duration.ofMinutes(5));
-      eventStore.claimPending(conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
+      outboxStore.claimPending(conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
 
-      eventStore.markDone(conn, eventId);
+      outboxStore.markDone(conn, eventId);
 
       try (PreparedStatement ps = conn.prepareStatement(
           "SELECT locked_by, locked_at FROM outbox_event WHERE event_id = ?")) {
@@ -414,9 +415,9 @@ class JdbcEventStoreTest {
     try (Connection conn = dataSource.getConnection()) {
       Instant now = Instant.now().plusSeconds(1);
       Instant lockExpiry = now.minus(Duration.ofMinutes(5));
-      eventStore.claimPending(conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
+      outboxStore.claimPending(conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
 
-      eventStore.markRetry(conn, eventId, Instant.now().plusSeconds(60), "retry error");
+      outboxStore.markRetry(conn, eventId, Instant.now().plusSeconds(60), "retry error");
 
       try (PreparedStatement ps = conn.prepareStatement(
           "SELECT locked_by, locked_at FROM outbox_event WHERE event_id = ?")) {
@@ -436,9 +437,9 @@ class JdbcEventStoreTest {
     try (Connection conn = dataSource.getConnection()) {
       Instant now = Instant.now().plusSeconds(1);
       Instant lockExpiry = now.minus(Duration.ofMinutes(5));
-      eventStore.claimPending(conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
+      outboxStore.claimPending(conn, "owner-A", now, lockExpiry, Duration.ZERO, 10);
 
-      eventStore.markDead(conn, eventId, "dead");
+      outboxStore.markDead(conn, eventId, "dead");
 
       try (PreparedStatement ps = conn.prepareStatement(
           "SELECT locked_by, locked_at FROM outbox_event WHERE event_id = ?")) {
@@ -457,7 +458,7 @@ class JdbcEventStoreTest {
         .build();
 
     try (Connection conn = dataSource.getConnection()) {
-      eventStore.insertNew(conn, event);
+      outboxStore.insertNew(conn, event);
     }
 
     return event.eventId();

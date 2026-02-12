@@ -16,7 +16,7 @@ For tutorials and code examples, see [TUTORIAL.md](TUTORIAL.md).
 5. [Event Envelope](#5-event-envelope)
 6. [Type-Safe Event and Aggregate Types](#6-type-safe-event-and-aggregate-types)
 7. [Public API](#7-public-api)
-8. [JDBC Event Store](#8-jdbc-event-store)
+8. [JDBC Outbox Store](#8-jdbc-outbox-store)
 9. [OutboxDispatcher](#9-outboxdispatcher)
 10. [OutboxPoller](#10-outboxpoller)
 11. [Registries](#11-registries)
@@ -25,6 +25,7 @@ For tutorials and code examples, see [TUTORIAL.md](TUTORIAL.md).
 14. [Configuration](#14-configuration)
 15. [Observability](#15-observability)
 16. [Thread Safety](#16-thread-safety)
+17. [Event Purge](#17-event-purge)
 
 ---
 
@@ -36,10 +37,11 @@ For tutorials and code examples, see [TUTORIAL.md](TUTORIAL.md).
 |-----------|----------------|
 | **OutboxWriter** | API used by business code inside a transaction context |
 | **TxContext** | Abstraction for transaction lifecycle hooks (afterCommit/afterRollback) |
-| **EventStore** | Insert/update/query via `java.sql.Connection` |
+| **OutboxStore** | Insert/update/query via `java.sql.Connection` |
 | **OutboxDispatcher** | Hot/cold queues + worker pool; executes listeners; updates status |
 | **ListenerRegistry** | Maps event types to event listeners |
 | **OutboxPoller** | Low-frequency fallback DB scan; forwards events to handler |
+| **OutboxPurgeScheduler** | Scheduled purge of terminal events (DONE/DEAD) older than retention |
 | **InFlightTracker** | In-memory deduplication |
 
 ### 1.2 Event Flow
@@ -47,21 +49,21 @@ For tutorials and code examples, see [TUTORIAL.md](TUTORIAL.md).
 ```
 HOT PATH (Fast)
 Business TX -> OutboxWriter.write()
-  -> EventStore.insertNew()  (inside TX)
+  -> OutboxStore.insertNew()  (inside TX)
   -> TxContext.afterCommit(...) registers hook
 Commit
   -> AfterCommitHook.onCommit(event)
   -> OutboxDispatcher.enqueueHot(...)
   -> OutboxDispatcher.process()
-  -> EventStore.markDone/Retry/Dead()
+  -> OutboxStore.markDone/Retry/Dead()
 
 COLD PATH (Fallback)
 OutboxPoller.poll()
-  -> EventStore.pollPending()/claimPending()
+  -> OutboxStore.pollPending()/claimPending()
   -> OutboxPollerHandler.handle(event, attempts)
   -> OutboxDispatcher.enqueueCold(...)
   -> OutboxDispatcher.process()
-  -> EventStore.markDone/Retry/Dead()
+  -> OutboxStore.markDone/Retry/Dead()
 ```
 
 ### 1.3 Queue Priority
@@ -80,25 +82,46 @@ Core interfaces, hooks, dispatcher, poller, and registries. **Zero external depe
 
 Packages:
 - `outbox` - Main API: OutboxWriter, EventEnvelope, EventType, AggregateType, EventListener, AfterCommitHook
-- `outbox.spi` - Extension point interfaces: TxContext, ConnectionProvider, EventStore, MetricsExporter
+- `outbox.spi` - Extension point interfaces: TxContext, ConnectionProvider, OutboxStore, EventPurger, MetricsExporter
 - `outbox.model` - Domain objects: OutboxEvent, EventStatus
 - `outbox.dispatch` - OutboxDispatcher, retry policy, inflight tracking
 - `outbox.poller` - OutboxPoller, OutboxPollerHandler
 - `outbox.registry` - Listener registry
+- `outbox.purge` - OutboxPurgeScheduler (scheduled purge of terminal events)
 - `outbox.util` - JsonCodec (no external JSON library)
 
 ### 2.2 outbox-jdbc
 
-JDBC event store hierarchy and manual transaction helpers.
+JDBC outbox store hierarchy, event purger hierarchy, and manual transaction helpers.
 
-Classes:
-- `AbstractJdbcEventStore` - Base event store with shared SQL, row mapper, and H2-compatible default claim
-- `H2EventStore` - H2 (inherits default subquery-based claim)
-- `MySqlEventStore` - MySQL/TiDB (UPDATE...ORDER BY...LIMIT claim)
-- `PostgresEventStore` - PostgreSQL (FOR UPDATE SKIP LOCKED + RETURNING claim)
-- `JdbcEventStores` - ServiceLoader registry with `detect(DataSource)` auto-detection
+Packages:
+- `outbox.jdbc` — Shared utilities: JdbcTemplate, OutboxStoreException, DataSourceConnectionProvider
+- `outbox.jdbc.store` — OutboxStore hierarchy (ServiceLoader-registered)
+- `outbox.jdbc.purge` — EventPurger hierarchy
+- `outbox.jdbc.tx` — Transaction management
+
+Classes by package:
+
+**`outbox.jdbc.store`**
+- `AbstractJdbcOutboxStore` - Base outbox store with shared SQL, row mapper, and H2-compatible default claim
+- `H2OutboxStore` - H2 (inherits default subquery-based claim)
+- `MySqlOutboxStore` - MySQL/TiDB (UPDATE...ORDER BY...LIMIT claim)
+- `PostgresOutboxStore` - PostgreSQL (FOR UPDATE SKIP LOCKED + RETURNING claim)
+- `JdbcOutboxStores` - ServiceLoader registry with `detect(DataSource)` auto-detection
+
+**`outbox.jdbc.purge`**
+- `AbstractJdbcEventPurger` - Base event purger with subquery-based DELETE (H2/PostgreSQL default)
+- `H2EventPurger` - H2 (inherits default)
+- `MySqlEventPurger` - MySQL/TiDB (DELETE...ORDER BY...LIMIT)
+- `PostgresEventPurger` - PostgreSQL (inherits default)
+
+**`outbox.jdbc.tx`**
 - `ThreadLocalTxContext` - ThreadLocal-based TxContext for manual transactions
 - `JdbcTransactionManager` - Helper for manual JDBC transactions
+
+**`outbox.jdbc`** (root)
+- `JdbcTemplate` - Lightweight JDBC helper (update, query, updateReturning)
+- `OutboxStoreException` - JDBC-layer exception
 - `DataSourceConnectionProvider` - ConnectionProvider from DataSource
 
 ### 2.3 outbox-spring-adapter
@@ -343,8 +366,8 @@ EventEnvelope.builder(eventType)
 
 ```java
 public final class OutboxWriter {
-  public OutboxWriter(TxContext txContext, EventStore eventStore);
-  public OutboxWriter(TxContext txContext, EventStore eventStore, AfterCommitHook afterCommitHook);
+  public OutboxWriter(TxContext txContext, OutboxStore outboxStore);
+  public OutboxWriter(TxContext txContext, OutboxStore outboxStore, AfterCommitHook afterCommitHook);
 
   public String write(EventEnvelope event);
   public String write(String eventType, String payloadJson);
@@ -376,12 +399,12 @@ public interface AfterCommitHook {
 
 ---
 
-## 8. JDBC Event Store
+## 8. JDBC Outbox Store
 
 ### 8.1 Interface
 
 ```java
-public interface EventStore {
+public interface OutboxStore {
   void insertNew(Connection conn, EventEnvelope event);
   int markDone(Connection conn, String eventId);
   int markRetry(Connection conn, String eventId, Instant nextAt, String error);
@@ -453,7 +476,7 @@ LIMIT ?
 ```java
 OutboxDispatcher dispatcher = OutboxDispatcher.builder()
     .connectionProvider(connectionProvider)  // required
-    .eventStore(eventStore)                  // required
+    .outboxStore(outboxStore)                  // required
     .listenerRegistry(listenerRegistry)      // required
     .inFlightTracker(tracker)                // default: DefaultInFlightTracker
     .retryPolicy(policy)                     // default: ExponentialBackoffRetryPolicy(200, 60_000)
@@ -576,7 +599,7 @@ new DefaultInFlightTracker(long ttlMs) // With TTL for stale entry recovery
 ```java
 OutboxPoller poller = OutboxPoller.builder()
     .connectionProvider(connectionProvider)  // required
-    .eventStore(eventStore)                  // required
+    .outboxStore(outboxStore)                  // required
     .handler(handler)                        // required
     .skipRecent(Duration.ofSeconds(1))       // default: Duration.ZERO
     .batchSize(50)                           // default: 50
@@ -807,7 +830,7 @@ Configuration is embedded in `OutboxDispatcher.Builder` and `OutboxPoller` const
 ```java
 OutboxDispatcher dispatcher = OutboxDispatcher.builder()
     .connectionProvider(connectionProvider)
-    .eventStore(eventStore)
+    .outboxStore(outboxStore)
     .listenerRegistry(registry)
     .workerCount(8)
     .hotQueueCapacity(2000)
@@ -862,4 +885,93 @@ Hot queue drop warnings are emitted by `DispatcherCommitHook`. If no hook is ins
 | Registries | ConcurrentHashMap |
 | InFlightTracker | ConcurrentHashMap with CAS operations |
 | OutboxPoller | Single-thread ScheduledExecutorService |
+| OutboxPurgeScheduler | Single-thread ScheduledExecutorService |
 | ThreadLocalTxContext | ThreadLocal storage |
+
+---
+
+## 17. Event Purge
+
+### 17.1 Overview
+
+The outbox table is a transient buffer, not an outbox store. Terminal events (DONE and DEAD) should be purged after a retention period to prevent table bloat and maintain poller query performance. If clients need to archive events for audit, they should do so in their `EventListener`.
+
+### 17.2 EventPurger Interface
+
+```java
+public interface EventPurger {
+  int purge(Connection conn, Instant before, int limit);
+}
+```
+
+- Deletes terminal events (DONE + DEAD) where `COALESCE(done_at, created_at) < before`
+- Takes explicit `Connection` (caller controls transaction), matching the `OutboxStore` pattern
+- Returns count of rows deleted
+- `limit` caps the batch size per call to limit lock duration
+
+### 17.3 JDBC Purger Hierarchy
+
+| Class | Database | Strategy |
+|-------|----------|----------|
+| `AbstractJdbcEventPurger` | Base | Subquery-based DELETE (default) |
+| `H2EventPurger` | H2 | Inherits default |
+| `MySqlEventPurger` | MySQL/TiDB | `DELETE...ORDER BY...LIMIT` |
+| `PostgresEventPurger` | PostgreSQL | Inherits default |
+
+**Default purge SQL (H2, PostgreSQL):**
+```sql
+DELETE FROM outbox_event WHERE event_id IN (
+  SELECT event_id FROM outbox_event
+  WHERE status IN (1, 3) AND COALESCE(done_at, created_at) < ?
+  ORDER BY created_at LIMIT ?
+)
+```
+
+**MySQL purge SQL:**
+```sql
+DELETE FROM outbox_event
+WHERE status IN (1, 3) AND COALESCE(done_at, created_at) < ?
+ORDER BY created_at LIMIT ?
+```
+
+All purger classes support a custom table name via constructor (validated with the same regex as `AbstractJdbcOutboxStore`).
+
+### 17.4 OutboxPurgeScheduler
+
+Scheduled component modeled after `OutboxPoller`: builder pattern, `AutoCloseable`, daemon threads, synchronized lifecycle.
+
+#### Builder
+
+```java
+OutboxPurgeScheduler scheduler = OutboxPurgeScheduler.builder()
+    .connectionProvider(connectionProvider)  // required
+    .purger(purger)                          // required
+    .retention(Duration.ofDays(7))           // default: 7 days
+    .batchSize(500)                          // default: 500
+    .intervalSeconds(3600)                   // default: 3600 (1 hour)
+    .build();
+```
+
+| Parameter | Type | Default | Required |
+|-----------|------|---------|----------|
+| `connectionProvider` | `ConnectionProvider` | - | yes |
+| `purger` | `EventPurger` | - | yes |
+| `retention` | `Duration` | 7 days | no |
+| `batchSize` | `int` | 500 | no |
+| `intervalSeconds` | `long` | 3600 | no |
+
+#### Methods
+
+```java
+void start()    // Start scheduled purge loop
+void runOnce()  // Execute single purge cycle (loops batches until count < batchSize)
+void close()    // Stop purge and shut down scheduler thread
+```
+
+#### Behavior
+
+- Each purge cycle calculates cutoff as `Instant.now().minus(retention)`
+- Loops batches: each batch gets its own auto-committed connection
+- Stops when a batch deletes fewer than `batchSize` rows (backlog drained)
+- Logs total purged count at INFO level
+- Errors are caught and logged at SEVERE (does not propagate)

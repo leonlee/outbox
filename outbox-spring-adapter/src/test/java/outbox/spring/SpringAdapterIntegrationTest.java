@@ -8,7 +8,7 @@ import outbox.EventEnvelope;
 import outbox.dispatch.ExponentialBackoffRetryPolicy;
 import outbox.model.EventStatus;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.H2EventStore;
+import outbox.jdbc.store.H2OutboxStore;
 
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.AfterEach;
@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SpringAdapterIntegrationTest {
   private DataSource dataSource;
-  private H2EventStore eventStore;
+  private H2OutboxStore outboxStore;
   private DataSourceConnectionProvider connectionProvider;
   private SpringTxContext txContext;
   private DataSourceTransactionManager txManager;
@@ -43,7 +43,7 @@ class SpringAdapterIntegrationTest {
     JdbcDataSource ds = new JdbcDataSource();
     ds.setURL("jdbc:h2:mem:outbox_spring_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
     this.dataSource = ds;
-    this.eventStore = new H2EventStore();
+    this.outboxStore = new H2OutboxStore();
     this.connectionProvider = new DataSourceConnectionProvider(ds);
     this.txContext = new SpringTxContext(ds);
     this.txManager = new DataSourceTransactionManager(ds);
@@ -67,7 +67,7 @@ class SpringAdapterIntegrationTest {
         .register("UserCreated", event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
-    OutboxWriter writer = new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
+    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
 
     TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
     String eventId;
@@ -92,7 +92,7 @@ class SpringAdapterIntegrationTest {
         .register("UserCreated", event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
-    OutboxWriter writer = new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
+    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
 
     TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
     String eventId;
@@ -113,7 +113,7 @@ class SpringAdapterIntegrationTest {
   private OutboxDispatcher dispatcher(int workers, int hotCapacity, int coldCapacity, DefaultListenerRegistry listeners) {
     return OutboxDispatcher.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .listenerRegistry(listeners)
         .retryPolicy(new ExponentialBackoffRetryPolicy(10, 50))
         .workerCount(workers)

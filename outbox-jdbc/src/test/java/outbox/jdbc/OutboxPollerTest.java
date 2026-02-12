@@ -3,6 +3,7 @@ package outbox.jdbc;
 import outbox.EventEnvelope;
 import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.OutboxDispatcher;
+import outbox.jdbc.store.H2OutboxStore;
 import outbox.model.EventStatus;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
@@ -30,7 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class OutboxPollerTest {
   private DataSource dataSource;
-  private H2EventStore eventStore;
+  private H2OutboxStore outboxStore;
   private DataSourceConnectionProvider connectionProvider;
 
   @BeforeEach
@@ -38,7 +39,7 @@ class OutboxPollerTest {
     JdbcDataSource ds = new JdbcDataSource();
     ds.setURL("jdbc:h2:mem:outbox_poller_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
     this.dataSource = ds;
-    this.eventStore = new H2EventStore();
+    this.outboxStore = new H2OutboxStore();
     this.connectionProvider = new DataSourceConnectionProvider(ds);
 
     try (Connection conn = ds.getConnection()) {
@@ -67,7 +68,7 @@ class OutboxPollerTest {
 
     OutboxDispatcher dispatcher = OutboxDispatcher.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .listenerRegistry(listeners)
         .retryPolicy(attempts -> 0L)
         .workerCount(1)
@@ -78,7 +79,7 @@ class OutboxPollerTest {
     RecordingMetrics metrics = new RecordingMetrics();
     try (OutboxPoller poller = OutboxPoller.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .handler(new DispatcherPollerHandler(dispatcher))
         .skipRecent(Duration.ofHours(1))
         .batchSize(10)
@@ -104,7 +105,7 @@ class OutboxPollerTest {
 
     OutboxDispatcher dispatcher = OutboxDispatcher.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .listenerRegistry(new DefaultListenerRegistry())
         .retryPolicy(attempts -> 0L)
         .workerCount(0)
@@ -115,7 +116,7 @@ class OutboxPollerTest {
     RecordingMetrics metrics = new RecordingMetrics();
     try (OutboxPoller poller = OutboxPoller.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .handler(new DispatcherPollerHandler(dispatcher))
         .skipRecent(Duration.ZERO)
         .batchSize(10)
@@ -145,7 +146,7 @@ class OutboxPollerTest {
 
     OutboxDispatcher dispatcher = OutboxDispatcher.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .listenerRegistry(listeners)
         .retryPolicy(attempts -> 0L)
         .workerCount(1)
@@ -156,7 +157,7 @@ class OutboxPollerTest {
     RecordingMetrics metrics = new RecordingMetrics();
     try (OutboxPoller poller = OutboxPoller.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .handler(new DispatcherPollerHandler(dispatcher))
         .skipRecent(Duration.ZERO)
         .batchSize(10)
@@ -183,7 +184,7 @@ class OutboxPollerTest {
 
   private void insertEvent(EventEnvelope event) throws SQLException {
     try (Connection conn = dataSource.getConnection()) {
-      eventStore.insertNew(conn, event);
+      outboxStore.insertNew(conn, event);
     }
   }
 

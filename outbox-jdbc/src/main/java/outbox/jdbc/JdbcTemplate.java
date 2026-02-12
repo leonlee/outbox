@@ -24,7 +24,7 @@ public final class JdbcTemplate {
       bindParams(ps, params);
       return ps.executeUpdate();
     } catch (SQLException e) {
-      throw new EventStoreException("Failed to execute update", e);
+      throw new OutboxStoreException("Failed to execute update", e);
     }
   }
 
@@ -40,7 +40,7 @@ public final class JdbcTemplate {
         return results;
       }
     } catch (SQLException e) {
-      throw new EventStoreException("Failed to execute query", e);
+      throw new OutboxStoreException("Failed to execute query", e);
     }
   }
 
@@ -56,7 +56,7 @@ public final class JdbcTemplate {
         return results;
       }
     } catch (SQLException e) {
-      throw new EventStoreException("Failed to execute updateReturning", e);
+      throw new OutboxStoreException("Failed to execute updateReturning", e);
     }
   }
 

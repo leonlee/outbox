@@ -1,9 +1,10 @@
-package outbox.jdbc;
+package outbox.jdbc.store;
 
 import outbox.EventEnvelope;
+import outbox.jdbc.JdbcTemplate;
 import outbox.model.EventStatus;
 import outbox.model.OutboxEvent;
-import outbox.spi.EventStore;
+import outbox.spi.OutboxStore;
 import outbox.util.JsonCodec;
 
 import java.sql.Connection;
@@ -15,15 +16,15 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Base JDBC event store with standard SQL implementations.
+ * Base JDBC outbox store with standard SQL implementations.
  *
  * <p>Subclasses override {@link #claimPending} to provide database-specific
  * claim strategies. Register custom implementations via
- * {@code META-INF/services/outbox.jdbc.AbstractJdbcEventStore}.
+ * {@code META-INF/services/outbox.jdbc.store.AbstractJdbcOutboxStore}.
  *
- * @see JdbcEventStores
+ * @see JdbcOutboxStores
  */
-public abstract class AbstractJdbcEventStore implements EventStore {
+public abstract class AbstractJdbcOutboxStore implements OutboxStore {
   protected static final String DEFAULT_TABLE = "outbox_event";
   private static final int MAX_ERROR_LENGTH = 4000;
 
@@ -43,11 +44,11 @@ public abstract class AbstractJdbcEventStore implements EventStore {
 
   private final String tableName;
 
-  protected AbstractJdbcEventStore() {
+  protected AbstractJdbcOutboxStore() {
     this(DEFAULT_TABLE);
   }
 
-  protected AbstractJdbcEventStore(String tableName) {
+  protected AbstractJdbcOutboxStore(String tableName) {
     Objects.requireNonNull(tableName, "tableName");
     if (!tableName.matches("[a-zA-Z_][a-zA-Z0-9_]*")) {
       throw new IllegalArgumentException("Invalid table name: " + tableName);
@@ -56,12 +57,12 @@ public abstract class AbstractJdbcEventStore implements EventStore {
   }
 
   /**
-   * Unique identifier for this event store (e.g., "mysql", "postgresql", "h2").
+   * Unique identifier for this outbox store (e.g., "mysql", "postgresql", "h2").
    */
   public abstract String name();
 
   /**
-   * JDBC URL prefixes this event store handles (e.g., "jdbc:mysql:", "jdbc:tidb:").
+   * JDBC URL prefixes this outbox store handles (e.g., "jdbc:mysql:", "jdbc:tidb:").
    */
   public abstract List<String> jdbcUrlPrefixes();
 

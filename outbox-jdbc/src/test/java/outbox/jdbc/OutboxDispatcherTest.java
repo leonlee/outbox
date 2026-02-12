@@ -5,6 +5,7 @@ import outbox.dispatch.DefaultInFlightTracker;
 import outbox.dispatch.InFlightTracker;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.dispatch.QueuedEvent;
+import outbox.jdbc.store.H2OutboxStore;
 import outbox.model.EventStatus;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.spi.MetricsExporter;
@@ -33,7 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class OutboxDispatcherTest {
   private DataSource dataSource;
-  private H2EventStore eventStore;
+  private H2OutboxStore outboxStore;
   private DataSourceConnectionProvider connectionProvider;
 
   @BeforeEach
@@ -41,7 +42,7 @@ class OutboxDispatcherTest {
     JdbcDataSource ds = new JdbcDataSource();
     ds.setURL("jdbc:h2:mem:outbox_dispatcher_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
     this.dataSource = ds;
-    this.eventStore = new H2EventStore();
+    this.outboxStore = new H2OutboxStore();
     this.connectionProvider = new DataSourceConnectionProvider(ds);
 
     try (Connection conn = ds.getConnection()) {
@@ -69,7 +70,7 @@ class OutboxDispatcherTest {
 
     OutboxDispatcher dispatcher = OutboxDispatcher.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .listenerRegistry(listeners)
         .workerCount(0)
         .hotQueueCapacity(10)
@@ -105,7 +106,7 @@ class OutboxDispatcherTest {
 
     OutboxDispatcher dispatcher = OutboxDispatcher.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .listenerRegistry(listeners)
         .retryPolicy(attempts -> 0L)
         .maxAttempts(3)
@@ -131,7 +132,7 @@ class OutboxDispatcherTest {
 
     OutboxDispatcher dispatcher = OutboxDispatcher.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .listenerRegistry(listeners)
         .retryPolicy(attempts -> 0L)
         .maxAttempts(1)
@@ -168,7 +169,7 @@ class OutboxDispatcherTest {
 
     OutboxDispatcher dispatcher = OutboxDispatcher.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .listenerRegistry(listeners)
         .inFlightTracker(inFlightTracker)
         .retryPolicy(attempts -> 0L)
@@ -225,7 +226,7 @@ class OutboxDispatcherTest {
 
   private void insertEvent(EventEnvelope event) throws SQLException {
     try (Connection conn = dataSource.getConnection()) {
-      eventStore.insertNew(conn, event);
+      outboxStore.insertNew(conn, event);
     }
   }
 

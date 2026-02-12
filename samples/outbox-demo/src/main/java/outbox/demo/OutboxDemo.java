@@ -10,9 +10,9 @@ import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.JdbcEventStores;
-import outbox.jdbc.JdbcTransactionManager;
-import outbox.jdbc.ThreadLocalTxContext;
+import outbox.jdbc.store.JdbcOutboxStores;
+import outbox.jdbc.tx.JdbcTransactionManager;
+import outbox.jdbc.tx.ThreadLocalTxContext;
 
 import org.h2.jdbcx.JdbcDataSource;
 
@@ -40,7 +40,7 @@ public final class OutboxDemo {
     createSchema(dataSource);
 
     // 2. Create core components
-    var eventStore = JdbcEventStores.detect(dataSource);
+    var outboxStore = JdbcOutboxStores.detect(dataSource);
     DataSourceConnectionProvider connectionProvider = new DataSourceConnectionProvider(dataSource);
     ThreadLocalTxContext txContext = new ThreadLocalTxContext();
 
@@ -51,7 +51,7 @@ public final class OutboxDemo {
     // 3. Create dispatcher with listeners and audit interceptor
     OutboxDispatcher dispatcher = OutboxDispatcher.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .listenerRegistry(new DefaultListenerRegistry()
             .register("UserCreated", event -> {
               System.out.println("[Listener] UserCreated: " + event.payloadJson());
@@ -80,7 +80,7 @@ public final class OutboxDemo {
     // 4. Create poller (fallback for missed events)
     OutboxPoller poller = OutboxPoller.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .handler(new DispatcherPollerHandler(dispatcher))
         .skipRecent(Duration.ofMillis(500))
         .batchSize(50)
@@ -90,7 +90,7 @@ public final class OutboxDemo {
 
     // 5. Create transaction manager and writer
     JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
-    OutboxWriter writer = new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
+    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
 
     System.out.println("=== Outbox Demo ===\n");
 

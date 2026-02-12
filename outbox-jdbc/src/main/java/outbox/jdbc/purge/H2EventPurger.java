@@ -1,4 +1,4 @@
-package outbox.jdbc;
+package outbox.jdbc.purge;
 
 /**
  * H2 event purger. Uses the default {@code DELETE ... ORDER BY ... LIMIT}

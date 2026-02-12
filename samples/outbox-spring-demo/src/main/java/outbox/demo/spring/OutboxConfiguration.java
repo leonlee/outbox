@@ -11,8 +11,8 @@ import outbox.poller.OutboxPoller;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.registry.ListenerRegistry;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.AbstractJdbcEventStore;
-import outbox.jdbc.JdbcEventStores;
+import outbox.jdbc.store.AbstractJdbcOutboxStore;
+import outbox.jdbc.store.JdbcOutboxStores;
 import outbox.spring.SpringTxContext;
 
 import org.slf4j.Logger;
@@ -29,8 +29,8 @@ public class OutboxConfiguration {
   private static final Logger log = LoggerFactory.getLogger(OutboxConfiguration.class);
 
   @Bean
-  public AbstractJdbcEventStore eventStore(DataSource dataSource) {
-    return JdbcEventStores.detect(dataSource);
+  public AbstractJdbcOutboxStore outboxStore(DataSource dataSource) {
+    return JdbcOutboxStores.detect(dataSource);
   }
 
   @Bean
@@ -59,12 +59,12 @@ public class OutboxConfiguration {
   @Bean(destroyMethod = "close")
   public OutboxDispatcher dispatcher(
       DataSourceConnectionProvider connectionProvider,
-      AbstractJdbcEventStore eventStore,
+      AbstractJdbcOutboxStore outboxStore,
       ListenerRegistry listenerRegistry
   ) {
     return OutboxDispatcher.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .listenerRegistry(listenerRegistry)
         .inFlightTracker(new DefaultInFlightTracker(30_000))
         .workerCount(2)
@@ -77,12 +77,12 @@ public class OutboxConfiguration {
   @Bean(destroyMethod = "close")
   public OutboxPoller outboxPoller(
       DataSourceConnectionProvider connectionProvider,
-      AbstractJdbcEventStore eventStore,
+      AbstractJdbcOutboxStore outboxStore,
       OutboxDispatcher dispatcher
   ) {
     OutboxPoller poller = OutboxPoller.builder()
         .connectionProvider(connectionProvider)
-        .eventStore(eventStore)
+        .outboxStore(outboxStore)
         .handler(new DispatcherPollerHandler(dispatcher))
         .skipRecent(Duration.ofMillis(500))
         .batchSize(100)
@@ -96,9 +96,9 @@ public class OutboxConfiguration {
   @Bean
   public OutboxWriter outboxWriter(
       TxContext txContext,
-      AbstractJdbcEventStore eventStore,
+      AbstractJdbcOutboxStore outboxStore,
       OutboxDispatcher dispatcher
   ) {
-    return new OutboxWriter(txContext, eventStore, new DispatcherCommitHook(dispatcher));
+    return new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
   }
 }

@@ -3,6 +3,7 @@ package outbox.jdbc;
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import outbox.jdbc.purge.H2EventPurger;
 import outbox.model.EventStatus;
 
 import java.sql.Connection;

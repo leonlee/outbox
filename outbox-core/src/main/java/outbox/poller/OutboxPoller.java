@@ -3,7 +3,7 @@ package outbox.poller;
 import outbox.EventEnvelope;
 import outbox.model.OutboxEvent;
 import outbox.spi.ConnectionProvider;
-import outbox.spi.EventStore;
+import outbox.spi.OutboxStore;
 import outbox.spi.MetricsExporter;
 import outbox.util.DaemonThreadFactory;
 import outbox.util.JsonCodec;
@@ -41,7 +41,7 @@ public final class OutboxPoller implements AutoCloseable {
   private static final Duration DEFAULT_LOCK_TIMEOUT = Duration.ofMinutes(5);
 
   private final ConnectionProvider connectionProvider;
-  private final EventStore eventStore;
+  private final OutboxStore outboxStore;
   private final OutboxPollerHandler handler;
   private final Duration skipRecent;
   private final int batchSize;
@@ -55,7 +55,7 @@ public final class OutboxPoller implements AutoCloseable {
 
   private OutboxPoller(Builder builder) {
     this.connectionProvider = Objects.requireNonNull(builder.connectionProvider, "connectionProvider");
-    this.eventStore = Objects.requireNonNull(builder.eventStore, "eventStore");
+    this.outboxStore = Objects.requireNonNull(builder.outboxStore, "outboxStore");
     this.handler = Objects.requireNonNull(builder.handler, "handler");
 
     int batchSize = builder.batchSize;
@@ -125,9 +125,9 @@ public final class OutboxPoller implements AutoCloseable {
       conn.setAutoCommit(true);
       if (ownerId != null) {
         Instant lockExpiry = now.minus(lockTimeout);
-        return eventStore.claimPending(conn, ownerId, now, lockExpiry, skipRecent, batchSize);
+        return outboxStore.claimPending(conn, ownerId, now, lockExpiry, skipRecent, batchSize);
       }
-      return eventStore.pollPending(conn, now, skipRecent, batchSize);
+      return outboxStore.pollPending(conn, now, skipRecent, batchSize);
     } catch (SQLException e) {
       logger.log(Level.SEVERE, "Failed to fetch pending outbox rows", e);
       return List.of();
@@ -180,7 +180,7 @@ public final class OutboxPoller implements AutoCloseable {
   private void markDead(String eventId, Exception failure) {
     try (Connection conn = connectionProvider.getConnection()) {
       conn.setAutoCommit(true);
-      eventStore.markDead(conn, eventId, failure == null ? null : failure.getMessage());
+      outboxStore.markDead(conn, eventId, failure == null ? null : failure.getMessage());
     } catch (SQLException e) {
       logger.log(Level.SEVERE, "Failed to mark DEAD for eventId=" + eventId, e);
     }
@@ -202,7 +202,7 @@ public final class OutboxPoller implements AutoCloseable {
 
   public static final class Builder {
     private ConnectionProvider connectionProvider;
-    private EventStore eventStore;
+    private OutboxStore outboxStore;
     private OutboxPollerHandler handler;
     private Duration skipRecent;
     private int batchSize = 50;
@@ -218,8 +218,8 @@ public final class OutboxPoller implements AutoCloseable {
       return this;
     }
 
-    public Builder eventStore(EventStore eventStore) {
-      this.eventStore = eventStore;
+    public Builder outboxStore(OutboxStore outboxStore) {
+      this.outboxStore = outboxStore;
       return this;
     }
 

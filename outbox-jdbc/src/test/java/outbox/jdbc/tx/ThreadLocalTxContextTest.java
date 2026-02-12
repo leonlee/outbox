@@ -1,4 +1,4 @@
-package outbox.jdbc;
+package outbox.jdbc.tx;
 
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;

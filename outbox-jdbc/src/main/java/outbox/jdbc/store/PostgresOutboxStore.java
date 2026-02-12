@@ -1,5 +1,6 @@
-package outbox.jdbc;
+package outbox.jdbc.store;
 
+import outbox.jdbc.JdbcTemplate;
 import outbox.model.OutboxEvent;
 
 import java.sql.Connection;
@@ -9,18 +10,18 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * PostgreSQL event store.
+ * PostgreSQL outbox store.
  *
  * <p>Uses {@code FOR UPDATE SKIP LOCKED} with {@code RETURNING} for
  * single-round-trip claim.
  */
-public final class PostgresEventStore extends AbstractJdbcEventStore {
+public final class PostgresOutboxStore extends AbstractJdbcOutboxStore {
 
-  public PostgresEventStore() {
+  public PostgresOutboxStore() {
     super();
   }
 
-  public PostgresEventStore(String tableName) {
+  public PostgresOutboxStore(String tableName) {
     super(tableName);
   }
 

@@ -1,4 +1,4 @@
-package outbox.jdbc;
+package outbox.jdbc.tx;
 
 import outbox.spi.ConnectionProvider;
 

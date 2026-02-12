@@ -11,7 +11,7 @@
 
 ## 安装
 
-构件托管在 [GitHub Packages](https://github.com/leonlee/outbox/packages)，当前版本 **0.3.0**。
+构件托管在 [GitHub Packages](https://github.com/leonlee/outbox/packages)，当前版本 **0.4.1**。
 
 先在 `pom.xml` 中添加仓库地址：
 
@@ -31,21 +31,21 @@
 <dependency>
   <groupId>outbox</groupId>
   <artifactId>outbox-core</artifactId>
-  <version>0.3.0</version>
+  <version>0.4.1</version>
 </dependency>
 
 <!-- JDBC 实现：OutboxStore 及事务管理（持久化必选） -->
 <dependency>
   <groupId>outbox</groupId>
   <artifactId>outbox-jdbc</artifactId>
-  <version>0.3.0</version>
+  <version>0.4.1</version>
 </dependency>
 
 <!-- Spring 适配器（可选，仅 Spring 项目使用） -->
 <dependency>
   <groupId>outbox</groupId>
   <artifactId>outbox-spring-adapter</artifactId>
-  <version>0.3.0</version>
+  <version>0.4.1</version>
 </dependency>
 ```
 

@@ -180,6 +180,6 @@ Only library modules are published: `outbox-core`, `outbox-jdbc`, `outbox-spring
 
 - `README.md`: Project introduction, architecture diagram, and doc links
 - `OBJECTIVE.md`: Project goals, constraints, non-goals, and acceptance criteria
-- `SPEC.md`: Technical specification (16 sections: API contracts, data model, behavioral rules)
+- `SPEC.md`: Technical specification (17 sections: API contracts, data model, behavioral rules)
 - `TUTORIAL.md`: Step-by-step guides with runnable code examples
 - `CODE_REVIEW.md`: Prior review findings and fixes

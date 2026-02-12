@@ -88,7 +88,7 @@ OutboxDispatcher 的优先级策略：
 - `outbox.poller` — OutboxPoller、OutboxPollerHandler
 - `outbox.registry` — Listener 注册中心
 - `outbox.purge` — OutboxPurgeScheduler（定时清理终态事件）
-- `outbox.util` — JsonCodec（无外部 JSON 依赖）
+- `outbox.util` — JsonCodec（接口）、DefaultJsonCodec（内置零依赖实现）
 
 ### 2.2 outbox-jdbc
 
@@ -161,6 +161,7 @@ public interface TxContext {
 规则：
 - `currentConnection()` 必须返回业务操作所用的同一连接。
 - `afterCommit()` 回调仅在事务成功提交后执行。
+- 注册 `afterCommit()`/`afterRollback()` 时，必须处于 transaction synchronization active 状态。
 - 若 `isTransactionActive()` 为 `false` 时调用 `write()`，必须立即抛异常（fail-fast）。
 
 ### 3.2 ConnectionProvider
@@ -242,6 +243,7 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 - Payload 最大 **1MB**（1,048,576 字节）
 - Payload 序列化一次，DB 写入和投递共用同一份
 - EventEnvelope 不可变（bytes 和 headers 均做防御性拷贝）
+- `headers` 不能包含 `null` key。
 
 ### 5.3 Builder 模式
 
@@ -973,3 +975,4 @@ void close()    // 停止清理并关闭调度线程
 - 当某批删除行数小于 `batchSize` 时停止（积压清空）
 - 以 INFO 级别记录本次清理总数
 - 异常被捕获并以 SEVERE 级别记录（不向上传播）
+- 调用 `close()` 后再次调用 `start()` 必须抛出 `IllegalStateException`。

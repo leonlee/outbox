@@ -88,7 +88,7 @@ Packages:
 - `outbox.poller` - OutboxPoller, OutboxPollerHandler
 - `outbox.registry` - Listener registry
 - `outbox.purge` - OutboxPurgeScheduler (scheduled purge of terminal events)
-- `outbox.util` - JsonCodec (no external JSON library)
+- `outbox.util` - JsonCodec (interface), DefaultJsonCodec (built-in zero-dependency implementation)
 
 ### 2.2 outbox-jdbc
 
@@ -161,6 +161,7 @@ public interface TxContext {
 Rules:
 - `currentConnection()` MUST return the same connection used by business operations.
 - `afterCommit()` callback MUST run only if the transaction commits successfully.
+- `afterCommit()`/`afterRollback()` registration requires transaction synchronization to be active.
 - Core MUST fail-fast if `write()` called when `isTransactionActive() == false`.
 
 ### 3.2 ConnectionProvider
@@ -242,6 +243,7 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 - Maximum payload size: **1MB** (1,048,576 bytes)
 - Payload MUST be serialized once and reused for DB insert and dispatch
 - EventEnvelope is immutable (defensive copies for bytes and headers)
+- Header map MUST NOT contain null keys.
 
 ### 5.3 Builder Pattern
 
@@ -975,3 +977,4 @@ void close()    // Stop purge and shut down scheduler thread
 - Stops when a batch deletes fewer than `batchSize` rows (backlog drained)
 - Logs total purged count at INFO level
 - Errors are caught and logged at SEVERE (does not propagate)
+- Calling `start()` after `close()` MUST throw `IllegalStateException`.

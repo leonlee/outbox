@@ -8,6 +8,8 @@ import outbox.jdbc.store.H2OutboxStore;
 import outbox.model.EventStatus;
 import outbox.model.OutboxEvent;
 
+import outbox.util.JsonCodec;
+
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -15,6 +17,7 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -448,6 +451,39 @@ class JdbcOutboxStoreTest {
         assertTrue(rs.next());
         assertNull(rs.getString("locked_by"));
         assertNull(rs.getTimestamp("locked_at"));
+      }
+    }
+  }
+
+  @Test
+  void insertNewUsesCustomJsonCodec() throws SQLException {
+    JsonCodec customCodec = new JsonCodec() {
+      @Override
+      public String toJson(Map<String, String> headers) {
+        return "CUSTOM_JSON";
+      }
+
+      @Override
+      public Map<String, String> parseObject(String json) {
+        return Collections.emptyMap();
+      }
+    };
+    H2OutboxStore customStore = new H2OutboxStore("outbox_event", customCodec);
+
+    EventEnvelope event = EventEnvelope.builder("TestEvent")
+        .headers(Map.of("key", "value"))
+        .payloadJson("{}")
+        .build();
+
+    try (Connection conn = dataSource.getConnection()) {
+      customStore.insertNew(conn, event);
+
+      try (PreparedStatement ps = conn.prepareStatement(
+          "SELECT headers FROM outbox_event WHERE event_id = ?")) {
+        ps.setString(1, event.eventId());
+        ResultSet rs = ps.executeQuery();
+        assertTrue(rs.next());
+        assertEquals("CUSTOM_JSON", rs.getString("headers"));
       }
     }
   }

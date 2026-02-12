@@ -2,6 +2,7 @@ package outbox.jdbc.store;
 
 import outbox.jdbc.JdbcTemplate;
 import outbox.model.OutboxEvent;
+import outbox.util.JsonCodec;
 
 import java.sql.Connection;
 import java.sql.Timestamp;
@@ -23,6 +24,10 @@ public final class MySqlOutboxStore extends AbstractJdbcOutboxStore {
 
   public MySqlOutboxStore(String tableName) {
     super(tableName);
+  }
+
+  public MySqlOutboxStore(String tableName, JsonCodec jsonCodec) {
+    super(tableName, jsonCodec);
   }
 
   @Override

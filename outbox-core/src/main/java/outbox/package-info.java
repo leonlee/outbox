@@ -76,7 +76,7 @@
  * outboxWriter.write(EventEnvelope.builder("UserCreated")
  *     .aggregateType("User")
  *     .aggregateId(userId)
- *     .payloadJson(JsonCodec.toJson(Map.of("userId", userId, "name", name)))
+ *     .payloadJson(JsonCodec.getDefault().toJson(Map.of("userId", userId, "name", name)))
  *     .build());
  * }</pre>
  *

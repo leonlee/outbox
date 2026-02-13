@@ -91,4 +91,42 @@ public interface OutboxStore {
       Instant lockExpiry, Duration skipRecent, int limit) {
     return pollPending(conn, now, skipRecent, limit);
   }
+
+  /**
+   * Queries events in DEAD status with optional filters.
+   *
+   * @param conn          the JDBC connection
+   * @param eventType     optional event type filter ({@code null} for all)
+   * @param aggregateType optional aggregate type filter ({@code null} for all)
+   * @param limit         maximum number of events to return
+   * @return list of dead events, oldest first
+   */
+  default List<OutboxEvent> queryDead(Connection conn, String eventType, String aggregateType, int limit) {
+    return List.of();
+  }
+
+  /**
+   * Replays a DEAD event by resetting it to NEW status with zero attempts.
+   *
+   * <p>Only events currently in DEAD status are affected. Returns 0 if the event
+   * does not exist or is not DEAD (idempotent).
+   *
+   * @param conn    the JDBC connection
+   * @param eventId the event ID to replay
+   * @return the number of rows updated (0 or 1)
+   */
+  default int replayDead(Connection conn, String eventId) {
+    return 0;
+  }
+
+  /**
+   * Counts events in DEAD status, optionally filtered by event type.
+   *
+   * @param conn      the JDBC connection
+   * @param eventType optional event type filter ({@code null} for all)
+   * @return the number of dead events matching the filter
+   */
+  default int countDead(Connection conn, String eventType) {
+    return 0;
+  }
 }

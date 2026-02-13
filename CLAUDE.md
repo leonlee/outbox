@@ -25,6 +25,8 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 - **outbox-core**: Core interfaces, dispatcher, poller, registries. Zero external dependencies.
 - **outbox-jdbc**: JDBC outbox store hierarchy (`AbstractJdbcOutboxStore` with H2/MySQL/PostgreSQL subclasses), `JdbcTemplate` utility, manual transaction helpers (`JdbcTransactionManager`, `ThreadLocalTxContext`).
 - **outbox-spring-adapter**: Optional `SpringTxContext` for Spring transaction integration.
+- **outbox-micrometer**: Micrometer metrics bridge (`MicrometerMetricsExporter`) for Prometheus/Grafana.
+- **benchmarks**: JMH benchmarks for write throughput, dispatch latency, and poller throughput (not published).
 - **samples/outbox-demo**: Simple runnable demo with H2 (no Spring).
 - **samples/outbox-spring-demo**: Spring Boot demo with REST API (standalone).
 - **samples/outbox-multi-ds-demo**: Multi-datasource demo with two H2 databases (Orders + Inventory).
@@ -72,6 +74,9 @@ outbox-core/src/main/java/
     │   ├── OutboxPoller.java
     │   └── OutboxPollerHandler.java (interface)
     │
+    ├── dead/
+    │   └── DeadEventManager.java
+    │
     ├── purge/
     │   └── OutboxPurgeScheduler.java
     │
@@ -116,7 +121,7 @@ outbox-jdbc/src/main/java/
 ### Key Abstractions
 
 - **TxContext**: Abstracts transaction lifecycle (`isTransactionActive()`, `currentConnection()`, `afterCommit()`, `afterRollback()`). Implementations: `ThreadLocalTxContext` (`outbox.jdbc.tx`, JDBC), `SpringTxContext` (Spring).
-- **OutboxStore**: Persistence contract (`insertNew`, `markDone`, `markRetry`, `markDead`, `pollPending`, `claimPending`). Implemented by `AbstractJdbcOutboxStore` hierarchy in `outbox.jdbc.store`.
+- **OutboxStore**: Persistence contract (`insertNew`, `markDone`, `markRetry`, `markDead`, `pollPending`, `claimPending`, `queryDead`, `replayDead`, `countDead`). Implemented by `AbstractJdbcOutboxStore` hierarchy in `outbox.jdbc.store`.
 - **AbstractJdbcOutboxStore** (`outbox.jdbc.store`): Base JDBC outbox store with shared SQL, row mapper, and H2-compatible default `claimPending`. Subclasses: `H2OutboxStore`, `MySqlOutboxStore` (UPDATE...ORDER BY...LIMIT), `PostgresOutboxStore` (FOR UPDATE SKIP LOCKED + RETURNING).
 - **JdbcOutboxStores** (`outbox.jdbc.store`): Static utility with ServiceLoader registry (`META-INF/services/outbox.jdbc.store.AbstractJdbcOutboxStore`) and `detect(DataSource)` auto-detection. Overloaded `detect(DataSource, JsonCodec)` creates new instances with a custom codec.
 - **OutboxDispatcher**: Dual-queue event processor with hot queue (afterCommit callbacks) and cold queue (poller fallback). Created via `OutboxDispatcher.builder()`. Uses `InFlightTracker` for deduplication, `RetryPolicy` for exponential backoff, `EventInterceptor` for cross-cutting hooks, fair 2:1 hot/cold queue draining, and graceful shutdown with configurable drain timeout.
@@ -129,6 +134,8 @@ outbox-jdbc/src/main/java/
 - **EventInterceptor**: Cross-cutting before/after hooks for audit, logging, metrics. `beforeDispatch` runs in registration order; `afterDispatch` in reverse. Replaces the old wildcard `registerAll()` pattern.
 - **EventPurger**: SPI for deleting terminal events (DONE + DEAD) older than a cutoff. Implementations in `outbox.jdbc.purge`: `AbstractJdbcEventPurger` (base with subquery-based `DELETE`), `MySqlEventPurger` (`DELETE...ORDER BY...LIMIT`).
 - **OutboxPurgeScheduler**: Scheduled component that purges terminal events on a configurable interval. Builder pattern, `AutoCloseable`, daemon threads (same lifecycle as `OutboxPoller`). Loops batches until `count < batchSize`.
+- **DeadEventManager** (`outbox.dead`): Connection-managed facade for querying, counting, and replaying DEAD events. Constructor takes `ConnectionProvider` + `OutboxStore`.
+- **MicrometerMetricsExporter** (`outbox.micrometer`): Micrometer-based `MetricsExporter` implementation with counters and gauges. Supports custom `namePrefix` for multi-instance use.
 
 ### Event Flow
 
@@ -149,7 +156,7 @@ outbox-jdbc/src/main/java/
 
 - JUnit Jupiter with `*Test` suffix (integration tests use `*IntegrationTest`)
 - H2 in-memory database for tests
-- Tests in `outbox-core/src/test`, `outbox-jdbc/src/test`, and `outbox-spring-adapter/src/test`
+- Tests in `outbox-core/src/test`, `outbox-jdbc/src/test`, `outbox-spring-adapter/src/test`, and `outbox-micrometer/src/test`
 
 ## Release Process
 
@@ -174,7 +181,7 @@ git commit -am "chore: bump version to Y-SNAPSHOT"
 git push && git push origin vX
 ```
 
-Only library modules are published: `outbox-core`, `outbox-jdbc`, `outbox-spring-adapter` (not samples).
+Only library modules are published: `outbox-core`, `outbox-jdbc`, `outbox-spring-adapter`, `outbox-micrometer` (not samples or benchmarks).
 
 ## Documentation
 

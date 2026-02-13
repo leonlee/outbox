@@ -25,6 +25,7 @@
 7. [CDC 消费（高 QPS 场景）](#7-cdc-消费高-qps-场景)
 8. [多数据源](#8-多数据源)
 9. [事件清理](#9-事件清理)
+10. [分布式追踪（OpenTelemetry）](#10-分布式追踪opentelemetry)
 
 ---
 
@@ -280,11 +281,14 @@ EventEnvelope envelope = EventEnvelope.builder(UserEvents.USER_CREATED)
     .build();
 ```
 
+通过 `headers(...)` 传入的 Header key 不能为 `null`。
+
 ---
 
 ## 5. Spring 集成
 
 `outbox-spring-adapter` 模块提供了 `SpringTxContext`，接入 Spring 事务生命周期，使 `afterCommit` 回调在 `@Transactional` 方法提交后自动触发。
+`SpringTxContext` 在注册 `afterCommit`/`afterRollback` 回调时要求 Spring transaction synchronization 处于 active 状态。
 
 ### Bean 配置
 
@@ -617,6 +621,8 @@ purgeScheduler.start();
 purgeScheduler.close();  // 优雅关闭
 ```
 
+调用 `close()` 后不能再次调用 `start()`；否则会抛出 `IllegalStateException`。
+
 ### 选择合适的清理器
 
 | 数据库     | 清理器类              |
@@ -679,3 +685,115 @@ public OutboxPurgeScheduler purgeScheduler(
 - **先归档**：如需审计记录，应在 `EventListener` 中归档事件，趁它们超过保留期被清理之前
 - **无需改表**：清理器使用现有的 `outbox_event` 表，无需新表或新列
 - **安全**：仅删除终态事件（DONE=1、DEAD=3），活跃事件（NEW=0、RETRY=2）永远不受影响
+
+---
+
+## 10. 分布式追踪（OpenTelemetry）
+
+Outbox 框架不捆绑 OpenTelemetry 依赖，但现有的 `EventEnvelope.headers` 和 `EventInterceptor` 钩子足以在异步边界传播追踪上下文。
+
+### 写入侧：注入追踪上下文
+
+写入事件时，将当前 Span 的 W3C `traceparent` 头注入到 headers 中：
+
+```java
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.propagation.TextMapSetter;
+
+import java.util.HashMap;
+import java.util.Map;
+
+// 将当前追踪上下文捕获到 headers
+Map<String, String> headers = new HashMap<>();
+GlobalOpenTelemetry.getPropagators().getTextMapPropagator()
+    .inject(Context.current(), headers, (carrier, key, value) -> carrier.put(key, value));
+
+EventEnvelope envelope = EventEnvelope.builder("OrderPlaced")
+    .aggregateType("Order")
+    .aggregateId("order-123")
+    .headers(headers)  // 包含 traceparent、tracestate
+    .payloadJson("{\"item\":\"widget\"}")
+    .build();
+
+writer.write(envelope);
+```
+
+### 调度侧：提取并关联
+
+注册一个 `EventInterceptor`，从事件 headers 中提取追踪上下文并创建关联 Span：
+
+```java
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.propagation.TextMapGetter;
+
+import outbox.dispatch.EventInterceptor;
+import outbox.model.OutboxEvent;
+import outbox.util.JsonCodec;
+
+Tracer tracer = GlobalOpenTelemetry.getTracer("outbox-dispatcher");
+
+EventInterceptor tracingInterceptor = new EventInterceptor() {
+  @Override
+  public void beforeDispatch(OutboxEvent event) {
+    // 从 JSON 解析 headers
+    Map<String, String> headers = JsonCodec.getDefault().parseObject(event.headersJson());
+
+    // 提取上游追踪上下文
+    Context extracted = GlobalOpenTelemetry.getPropagators().getTextMapPropagator()
+        .extract(Context.current(), headers, new TextMapGetter<>() {
+          @Override
+          public Iterable<String> keys(Map<String, String> carrier) {
+            return carrier.keySet();
+          }
+
+          @Override
+          public String get(Map<String, String> carrier, String key) {
+            return carrier.get(key);
+          }
+        });
+
+    // 启动新 Span 并关联生产者追踪
+    Span span = tracer.spanBuilder("outbox.dispatch " + event.eventType())
+        .setParent(extracted)
+        .setSpanKind(SpanKind.CONSUMER)
+        .setAttribute("outbox.event_id", event.eventId())
+        .setAttribute("outbox.event_type", event.eventType())
+        .setAttribute("outbox.aggregate_type", event.aggregateType())
+        .startSpan();
+
+    // 存储 Span 以便 afterDispatch 清理（使用 ThreadLocal 或 Context）
+    span.makeCurrent();
+  }
+
+  @Override
+  public void afterDispatch(OutboxEvent event, Throwable error) {
+    Span span = Span.current();
+    if (error != null) {
+      span.recordException(error);
+    }
+    span.end();
+  }
+};
+```
+
+### 接线
+
+在 dispatcher builder 上**最先**注册追踪拦截器，使其包裹所有其他拦截器：
+
+```java
+OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+    .connectionProvider(connectionProvider)
+    .outboxStore(outboxStore)
+    .listenerRegistry(registry)
+    .interceptor(tracingInterceptor)          // 追踪优先
+    .interceptor(EventInterceptor.before(e -> // 然后日志、审计等
+        log.info("Dispatching: {}", e.eventType())))
+    .build();
+```
+
+这样无需框架级 OTel 依赖，即可实现从写入到异步调度的端到端追踪。

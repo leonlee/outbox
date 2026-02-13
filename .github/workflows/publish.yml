@@ -35,7 +35,7 @@ jobs:
         run: mvn -B verify
 
       - name: Publish to GitHub Packages
-        run: mvn -B -pl outbox-core,outbox-jdbc,outbox-spring-adapter -am deploy -DskipTests
+        run: mvn -B -pl outbox-core,outbox-jdbc,outbox-spring-adapter,outbox-micrometer -am deploy -DskipTests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

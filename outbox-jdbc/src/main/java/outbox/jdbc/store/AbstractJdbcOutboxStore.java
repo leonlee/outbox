@@ -166,6 +166,49 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     return JdbcTemplate.query(conn, sql, EVENT_ROW_MAPPER, ownerId, Timestamp.from(lockedAt));
   }
 
+  @Override
+  public List<OutboxEvent> queryDead(Connection conn, String eventType, String aggregateType, int limit) {
+    StringBuilder sql = new StringBuilder(
+        "SELECT event_id, event_type, aggregate_type, aggregate_id, tenant_id, " +
+        "payload, headers, attempts, created_at FROM " + tableName() +
+        " WHERE status=" + EventStatus.DEAD.code());
+    List<Object> params = new java.util.ArrayList<>();
+    if (eventType != null) {
+      sql.append(" AND event_type=?");
+      params.add(eventType);
+    }
+    if (aggregateType != null) {
+      sql.append(" AND aggregate_type=?");
+      params.add(aggregateType);
+    }
+    sql.append(" ORDER BY created_at LIMIT ?");
+    params.add(limit);
+    return JdbcTemplate.query(conn, sql.toString(), EVENT_ROW_MAPPER, params.toArray());
+  }
+
+  @Override
+  public int replayDead(Connection conn, String eventId) {
+    String sql = "UPDATE " + tableName() +
+        " SET status=" + EventStatus.NEW.code() +
+        ", attempts=0, available_at=?, last_error=NULL, locked_by=NULL, locked_at=NULL" +
+        " WHERE event_id=? AND status=" + EventStatus.DEAD.code();
+    return JdbcTemplate.update(conn, sql, Timestamp.from(Instant.now()), eventId);
+  }
+
+  @Override
+  public int countDead(Connection conn, String eventType) {
+    StringBuilder sql = new StringBuilder(
+        "SELECT COUNT(*) FROM " + tableName() + " WHERE status=" + EventStatus.DEAD.code());
+    List<Object> params = new java.util.ArrayList<>();
+    if (eventType != null) {
+      sql.append(" AND event_type=?");
+      params.add(eventType);
+    }
+    List<Integer> result = JdbcTemplate.query(conn, sql.toString(),
+        rs -> rs.getInt(1), params.toArray());
+    return result.isEmpty() ? 0 : result.get(0);
+  }
+
   protected Instant recentCutoff(Instant now, Duration skipRecent) {
     return skipRecent == null ? now : now.minus(skipRecent);
   }

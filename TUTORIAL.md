@@ -26,6 +26,7 @@ For the full technical specification, see [SPEC.md](SPEC.md).
 7. [CDC Consumption (High QPS)](#7-cdc-consumption-high-qps)
 8. [Multi-Datasource](#8-multi-datasource)
 9. [Event Purge](#9-event-purge)
+10. [Distributed Tracing (OpenTelemetry)](#10-distributed-tracing-opentelemetry)
 
 ---
 
@@ -281,11 +282,14 @@ EventEnvelope envelope = EventEnvelope.builder(UserEvents.USER_CREATED)
     .build();
 ```
 
+Header keys must be non-null when setting `headers(...)`.
+
 ---
 
 ## 5. Spring Integration
 
 The `outbox-spring-adapter` module provides `SpringTxContext`, which hooks into Spring's transaction lifecycle so that `afterCommit` callbacks fire naturally after `@Transactional` methods complete.
+`SpringTxContext` requires Spring transaction synchronization to be active when registering `afterCommit`/`afterRollback` callbacks.
 
 ### Configuration
 
@@ -618,6 +622,8 @@ purgeScheduler.start();
 purgeScheduler.close();  // clean shutdown
 ```
 
+After calling `close()`, `start()` cannot be called again and throws `IllegalStateException`.
+
 ### Choosing the Right Purger
 
 | Database   | Purger Class         |
@@ -680,3 +686,115 @@ public OutboxPurgeScheduler purgeScheduler(
 - **Archive first**: If you need audit trails, archive events in your `EventListener` before they age past the retention period
 - **No schema changes**: The purger works with the existing `outbox_event` table -- no new tables or columns needed
 - **Safe**: Only terminal events (DONE=1, DEAD=3) are deleted; active events (NEW=0, RETRY=2) are never affected
+
+---
+
+## 10. Distributed Tracing (OpenTelemetry)
+
+The outbox framework does not bundle OpenTelemetry dependencies, but the existing `EventEnvelope.headers` map and `EventInterceptor` hook provide everything needed to propagate trace context across the async boundary.
+
+### Writer Side: Inject Trace Context
+
+When writing an event, inject the W3C `traceparent` header from the current span:
+
+```java
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.propagation.TextMapSetter;
+
+import java.util.HashMap;
+import java.util.Map;
+
+// Capture current trace context into headers
+Map<String, String> headers = new HashMap<>();
+GlobalOpenTelemetry.getPropagators().getTextMapPropagator()
+    .inject(Context.current(), headers, (carrier, key, value) -> carrier.put(key, value));
+
+EventEnvelope envelope = EventEnvelope.builder("OrderPlaced")
+    .aggregateType("Order")
+    .aggregateId("order-123")
+    .headers(headers)  // includes traceparent, tracestate
+    .payloadJson("{\"item\":\"widget\"}")
+    .build();
+
+writer.write(envelope);
+```
+
+### Dispatcher Side: Extract and Link
+
+Register an `EventInterceptor` that extracts the trace context from event headers and creates a linked span:
+
+```java
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.propagation.TextMapGetter;
+
+import outbox.dispatch.EventInterceptor;
+import outbox.model.OutboxEvent;
+import outbox.util.JsonCodec;
+
+Tracer tracer = GlobalOpenTelemetry.getTracer("outbox-dispatcher");
+
+EventInterceptor tracingInterceptor = new EventInterceptor() {
+  @Override
+  public void beforeDispatch(OutboxEvent event) {
+    // Parse headers from JSON
+    Map<String, String> headers = JsonCodec.getDefault().parseObject(event.headersJson());
+
+    // Extract upstream trace context
+    Context extracted = GlobalOpenTelemetry.getPropagators().getTextMapPropagator()
+        .extract(Context.current(), headers, new TextMapGetter<>() {
+          @Override
+          public Iterable<String> keys(Map<String, String> carrier) {
+            return carrier.keySet();
+          }
+
+          @Override
+          public String get(Map<String, String> carrier, String key) {
+            return carrier.get(key);
+          }
+        });
+
+    // Start a new span linked to the producer trace
+    Span span = tracer.spanBuilder("outbox.dispatch " + event.eventType())
+        .setParent(extracted)
+        .setSpanKind(SpanKind.CONSUMER)
+        .setAttribute("outbox.event_id", event.eventId())
+        .setAttribute("outbox.event_type", event.eventType())
+        .setAttribute("outbox.aggregate_type", event.aggregateType())
+        .startSpan();
+
+    // Store span for afterDispatch cleanup (use thread-local or Context)
+    span.makeCurrent();
+  }
+
+  @Override
+  public void afterDispatch(OutboxEvent event, Throwable error) {
+    Span span = Span.current();
+    if (error != null) {
+      span.recordException(error);
+    }
+    span.end();
+  }
+};
+```
+
+### Wiring
+
+Register the tracing interceptor **first** on the dispatcher builder so it wraps all other interceptors:
+
+```java
+OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+    .connectionProvider(connectionProvider)
+    .outboxStore(outboxStore)
+    .listenerRegistry(registry)
+    .interceptor(tracingInterceptor)          // tracing first
+    .interceptor(EventInterceptor.before(e -> // then logging, audit, etc.
+        log.info("Dispatching: {}", e.eventType())))
+    .build();
+```
+
+This gives you end-to-end traces from the writer through the async outbox dispatch, with no framework-level OTel dependency.

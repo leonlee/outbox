@@ -12,6 +12,8 @@
     <module>outbox-core</module>
     <module>outbox-jdbc</module>
     <module>outbox-spring-adapter</module>
+    <module>outbox-micrometer</module>
+    <module>benchmarks</module>
     <module>samples</module>
   </modules>
 
@@ -23,6 +25,7 @@
     <h2.version>2.2.224</h2.version>
     <spring.version>6.2.15</spring.version>
     <ulid-creator.version>5.2.3</ulid-creator.version>
+    <micrometer.version>1.14.5</micrometer.version>
   </properties>
 
   <dependencyManagement>
@@ -42,6 +45,11 @@
         <groupId>com.h2database</groupId>
         <artifactId>h2</artifactId>
         <version>${h2.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.micrometer</groupId>
+        <artifactId>micrometer-core</artifactId>
+        <version>${micrometer.version}</version>
       </dependency>
       <dependency>
         <groupId>org.springframework</groupId>

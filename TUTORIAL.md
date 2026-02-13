@@ -730,6 +730,7 @@ import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanKind;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 import io.opentelemetry.context.propagation.TextMapGetter;
 
 import outbox.dispatch.EventInterceptor;
@@ -737,6 +738,9 @@ import outbox.model.OutboxEvent;
 import outbox.util.JsonCodec;
 
 Tracer tracer = GlobalOpenTelemetry.getTracer("outbox-dispatcher");
+
+// Thread-local to pass Scope from beforeDispatch to afterDispatch
+ThreadLocal<Scope> scopeHolder = new ThreadLocal<>();
 
 EventInterceptor tracingInterceptor = new EventInterceptor() {
   @Override
@@ -767,8 +771,8 @@ EventInterceptor tracingInterceptor = new EventInterceptor() {
         .setAttribute("outbox.aggregate_type", event.aggregateType())
         .startSpan();
 
-    // Store span for afterDispatch cleanup (use thread-local or Context)
-    span.makeCurrent();
+    // makeCurrent() returns a Scope that must be closed to restore the previous context
+    scopeHolder.set(span.makeCurrent());
   }
 
   @Override
@@ -778,6 +782,11 @@ EventInterceptor tracingInterceptor = new EventInterceptor() {
       span.recordException(error);
     }
     span.end();
+    Scope scope = scopeHolder.get();
+    if (scope != null) {
+      scope.close();
+      scopeHolder.remove();
+    }
   }
 };
 ```

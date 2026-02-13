@@ -60,6 +60,7 @@ public class OutboxPollerBenchmark {
 
   @Setup(Level.Invocation)
   public void seedEvents() throws Exception {
+    BenchmarkDataSourceFactory.truncate(dataSource);
     List<EventEnvelope> events = new ArrayList<>(batchSize);
     for (int i = 0; i < batchSize; i++) {
       events.add(EventEnvelope.ofJson("BenchEvent", "{\"i\":" + i + "}"));

@@ -7,6 +7,7 @@ import outbox.jdbc.DataSourceConnectionProvider;
 import outbox.jdbc.tx.JdbcTransactionManager;
 import outbox.jdbc.tx.ThreadLocalTxContext;
 
+import javax.sql.DataSource;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -23,7 +24,7 @@ import java.util.concurrent.TimeUnit;
 @Fork(1)
 public class OutboxWriteBenchmark {
 
-  private javax.sql.DataSource dataSource;
+  private DataSource dataSource;
   private DataSourceConnectionProvider connectionProvider;
   private ThreadLocalTxContext txContext;
   private JdbcTransactionManager txManager;

@@ -10,6 +10,7 @@ import outbox.jdbc.tx.JdbcTransactionManager;
 import outbox.jdbc.tx.ThreadLocalTxContext;
 import outbox.registry.DefaultListenerRegistry;
 
+import javax.sql.DataSource;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -28,7 +29,7 @@ import java.util.concurrent.atomic.AtomicReference;
 @Fork(1)
 public class OutboxDispatchBenchmark {
 
-  private javax.sql.DataSource dataSource;
+  private DataSource dataSource;
   private DataSourceConnectionProvider connectionProvider;
   private ThreadLocalTxContext txContext;
   private JdbcTransactionManager txManager;

@@ -729,6 +729,7 @@ import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanKind;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 import io.opentelemetry.context.propagation.TextMapGetter;
 
 import outbox.dispatch.EventInterceptor;
@@ -736,6 +737,9 @@ import outbox.model.OutboxEvent;
 import outbox.util.JsonCodec;
 
 Tracer tracer = GlobalOpenTelemetry.getTracer("outbox-dispatcher");
+
+// ThreadLocal 用于在 beforeDispatch 和 afterDispatch 之间传递 Scope
+ThreadLocal<Scope> scopeHolder = new ThreadLocal<>();
 
 EventInterceptor tracingInterceptor = new EventInterceptor() {
   @Override
@@ -766,8 +770,8 @@ EventInterceptor tracingInterceptor = new EventInterceptor() {
         .setAttribute("outbox.aggregate_type", event.aggregateType())
         .startSpan();
 
-    // 存储 Span 以便 afterDispatch 清理（使用 ThreadLocal 或 Context）
-    span.makeCurrent();
+    // makeCurrent() 返回的 Scope 必须关闭以恢复之前的上下文
+    scopeHolder.set(span.makeCurrent());
   }
 
   @Override
@@ -777,6 +781,11 @@ EventInterceptor tracingInterceptor = new EventInterceptor() {
       span.recordException(error);
     }
     span.end();
+    Scope scope = scopeHolder.get();
+    if (scope != null) {
+      scope.close();
+      scopeHolder.remove();
+    }
   }
 };
 ```

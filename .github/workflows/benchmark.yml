@@ -77,7 +77,10 @@ jobs:
 
       - name: Run JMH benchmarks
         run: |
-          java -jar benchmarks/target/benchmarks.jar \
+          java \
+            -Dbench.mysql.password=root \
+            -Dbench.pg.password=postgres \
+            -jar benchmarks/target/benchmarks.jar \
             -p database=${{ steps.params.outputs.database }} \
             -wi 2 -i 3 -f 1 \
             -rf json -rff benchmarks/target/jmh-result.json \

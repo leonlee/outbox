@@ -72,6 +72,11 @@ public class OutboxDispatchBenchmark {
     payload = "{\"data\":\"" + "x".repeat(Math.max(0, payloadSize - 11)) + "\"}";
   }
 
+  @Setup(Level.Iteration)
+  public void truncate() {
+    BenchmarkDataSourceFactory.truncate(dataSource);
+  }
+
   @TearDown(Level.Trial)
   public void tearDown() throws Exception {
     dispatcher.close();

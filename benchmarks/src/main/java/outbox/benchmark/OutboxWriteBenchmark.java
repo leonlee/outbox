@@ -51,6 +51,11 @@ public class OutboxWriteBenchmark {
     payload = "{\"data\":\"" + "x".repeat(Math.max(0, payloadSize - 11)) + "\"}";
   }
 
+  @Setup(Level.Iteration)
+  public void truncate() {
+    BenchmarkDataSourceFactory.truncate(dataSource);
+  }
+
   @Benchmark
   public String writeEvent() throws Exception {
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {

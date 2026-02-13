@@ -134,6 +134,7 @@ public final class OutboxPurgeScheduler implements AutoCloseable {
     }
   }
 
+  /** Builder for {@link OutboxPurgeScheduler}. */
   public static final class Builder {
     private ConnectionProvider connectionProvider;
     private EventPurger purger;
@@ -143,31 +144,80 @@ public final class OutboxPurgeScheduler implements AutoCloseable {
 
     private Builder() {}
 
+    /**
+     * Sets the connection provider for obtaining JDBC connections during purge operations.
+     *
+     * <p><b>Required.</b>
+     *
+     * @param connectionProvider the connection provider
+     * @return this builder
+     */
     public Builder connectionProvider(ConnectionProvider connectionProvider) {
       this.connectionProvider = connectionProvider;
       return this;
     }
 
+    /**
+     * Sets the purge strategy implementation that deletes terminal events.
+     *
+     * <p><b>Required.</b>
+     *
+     * @param purger the event purger
+     * @return this builder
+     */
     public Builder purger(EventPurger purger) {
       this.purger = purger;
       return this;
     }
 
+    /**
+     * Sets the retention period. Events in terminal state (DONE/DEAD) older than
+     * this duration are eligible for purging.
+     *
+     * <p>Optional. Defaults to {@code 7 days}. Must be &ge; 0.
+     *
+     * @param retention the retention duration
+     * @return this builder
+     */
     public Builder retention(Duration retention) {
       this.retention = retention;
       return this;
     }
 
+    /**
+     * Sets the maximum number of events deleted per batch within a purge cycle.
+     *
+     * <p>Optional. Defaults to {@code 500}. Must be &gt; 0.
+     *
+     * @param batchSize max events per batch
+     * @return this builder
+     */
     public Builder batchSize(int batchSize) {
       this.batchSize = batchSize;
       return this;
     }
 
+    /**
+     * Sets the interval in seconds between purge cycles.
+     *
+     * <p>Optional. Defaults to {@code 3600} (1 hour). Must be &gt; 0.
+     *
+     * @param intervalSeconds purge interval in seconds
+     * @return this builder
+     */
     public Builder intervalSeconds(long intervalSeconds) {
       this.intervalSeconds = intervalSeconds;
       return this;
     }
 
+    /**
+     * Builds the purge scheduler. Call {@link OutboxPurgeScheduler#start()} to begin.
+     *
+     * @return a new {@link OutboxPurgeScheduler} instance
+     * @throws NullPointerException if {@code connectionProvider} or {@code purger} is null
+     * @throws IllegalArgumentException if {@code retention} is negative,
+     *     {@code batchSize <= 0}, or {@code intervalSeconds <= 0}
+     */
     public OutboxPurgeScheduler build() {
       return new OutboxPurgeScheduler(this);
     }

@@ -208,6 +208,7 @@ public final class OutboxPoller implements AutoCloseable {
     }
   }
 
+  /** Builder for {@link OutboxPoller}. */
   public static final class Builder {
     private ConnectionProvider connectionProvider;
     private OutboxStore outboxStore;
@@ -222,56 +223,148 @@ public final class OutboxPoller implements AutoCloseable {
 
     private Builder() {}
 
+    /**
+     * Sets the connection provider for obtaining JDBC connections when polling.
+     *
+     * <p><b>Required.</b>
+     *
+     * @param connectionProvider the connection provider
+     * @return this builder
+     */
     public Builder connectionProvider(ConnectionProvider connectionProvider) {
       this.connectionProvider = connectionProvider;
       return this;
     }
 
+    /**
+     * Sets the outbox store used to query and claim pending events.
+     *
+     * <p><b>Required.</b>
+     *
+     * @param outboxStore the persistence backend
+     * @return this builder
+     */
     public Builder outboxStore(OutboxStore outboxStore) {
       this.outboxStore = outboxStore;
       return this;
     }
 
+    /**
+     * Sets the handler that receives polled events (typically a {@link outbox.dispatch.DispatcherPollerHandler}).
+     *
+     * <p><b>Required.</b>
+     *
+     * @param handler the callback for processing polled events
+     * @return this builder
+     */
     public Builder handler(OutboxPollerHandler handler) {
       this.handler = handler;
       return this;
     }
 
+    /**
+     * Sets a grace period to skip recently created events during polling.
+     *
+     * <p>Optional. Defaults to {@link Duration#ZERO}. Must be &ge; 0.
+     *
+     * @param skipRecent duration to skip recent events
+     * @return this builder
+     */
     public Builder skipRecent(Duration skipRecent) {
       this.skipRecent = skipRecent;
       return this;
     }
 
+    /**
+     * Sets the maximum number of events fetched per poll cycle.
+     *
+     * <p>Optional. Defaults to {@code 50}. Must be &gt; 0.
+     *
+     * @param batchSize max events per poll
+     * @return this builder
+     */
     public Builder batchSize(int batchSize) {
       this.batchSize = batchSize;
       return this;
     }
 
+    /**
+     * Sets the polling interval in milliseconds.
+     *
+     * <p>Optional. Defaults to {@code 5000} ms. Must be &gt; 0.
+     *
+     * @param intervalMs polling interval in milliseconds
+     * @return this builder
+     */
     public Builder intervalMs(long intervalMs) {
       this.intervalMs = intervalMs;
       return this;
     }
 
+    /**
+     * Sets the metrics exporter for recording poll lag and cold-enqueue counters.
+     *
+     * <p>Optional. Defaults to {@link MetricsExporter#NOOP}.
+     *
+     * @param metrics the metrics exporter
+     * @return this builder
+     */
     public Builder metrics(MetricsExporter metrics) {
       this.metrics = metrics;
       return this;
     }
 
+    /**
+     * Sets the owner identifier for claim-based locking in multi-instance deployments.
+     *
+     * <p>Optional. If not set but {@code lockTimeout} is configured, a random
+     * {@code "poller-<uuid>"} prefix is auto-generated.
+     *
+     * @param ownerId unique identifier for this poller instance
+     * @return this builder
+     */
     public Builder ownerId(String ownerId) {
       this.ownerId = ownerId;
       return this;
     }
 
+    /**
+     * Sets the lock timeout for claim-based locking. Events claimed longer than this
+     * duration are considered expired and available for re-claiming.
+     *
+     * <p>Optional. Defaults to {@code 5 minutes}. Setting this (or {@code ownerId})
+     * enables claim-based locking via {@link OutboxStore#claimPending}.
+     *
+     * @param lockTimeout the lock expiry duration
+     * @return this builder
+     */
     public Builder lockTimeout(Duration lockTimeout) {
       this.lockTimeout = lockTimeout;
       return this;
     }
 
+    /**
+     * Sets a custom JSON codec for decoding event headers from the database.
+     *
+     * <p>Optional. Defaults to {@link JsonCodec#getDefault()}.
+     *
+     * @param jsonCodec the JSON codec
+     * @return this builder
+     */
     public Builder jsonCodec(JsonCodec jsonCodec) {
       this.jsonCodec = jsonCodec;
       return this;
     }
 
+    /**
+     * Builds the poller. Call {@link OutboxPoller#start()} to begin the polling schedule.
+     *
+     * @return a new {@link OutboxPoller} instance
+     * @throws NullPointerException if {@code connectionProvider}, {@code outboxStore},
+     *     or {@code handler} is null
+     * @throws IllegalArgumentException if {@code batchSize <= 0}, {@code intervalMs <= 0},
+     *     or {@code skipRecent} is negative
+     */
     public OutboxPoller build() {
       return new OutboxPoller(this);
     }

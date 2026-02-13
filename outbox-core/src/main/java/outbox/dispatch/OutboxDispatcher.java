@@ -300,6 +300,7 @@ public final class OutboxDispatcher implements AutoCloseable {
     }
   }
 
+  /** Builder for {@link OutboxDispatcher}. */
   public static final class Builder {
     private ConnectionProvider connectionProvider;
     private OutboxStore outboxStore;
@@ -316,71 +317,188 @@ public final class OutboxDispatcher implements AutoCloseable {
 
     private Builder() {}
 
+    /**
+     * Sets the connection provider for obtaining JDBC connections when marking events.
+     *
+     * <p><b>Required.</b>
+     *
+     * @param connectionProvider the connection provider
+     * @return this builder
+     */
     public Builder connectionProvider(ConnectionProvider connectionProvider) {
       this.connectionProvider = connectionProvider;
       return this;
     }
 
+    /**
+     * Sets the outbox store used to update event status (DONE, RETRY, DEAD).
+     *
+     * <p><b>Required.</b>
+     *
+     * @param outboxStore the persistence backend
+     * @return this builder
+     */
     public Builder outboxStore(OutboxStore outboxStore) {
       this.outboxStore = outboxStore;
       return this;
     }
 
+    /**
+     * Sets the listener registry that maps {@code (aggregateType, eventType)} pairs to listeners.
+     *
+     * <p><b>Required.</b>
+     *
+     * @param listenerRegistry the listener registry
+     * @return this builder
+     */
     public Builder listenerRegistry(ListenerRegistry listenerRegistry) {
       this.listenerRegistry = listenerRegistry;
       return this;
     }
 
+    /**
+     * Sets a custom in-flight tracker for deduplicating concurrent event processing.
+     *
+     * <p>Optional. Defaults to {@link DefaultInFlightTracker}.
+     *
+     * @param inFlightTracker the tracker implementation
+     * @return this builder
+     */
     public Builder inFlightTracker(InFlightTracker inFlightTracker) {
       this.inFlightTracker = inFlightTracker;
       return this;
     }
 
+    /**
+     * Sets the retry policy that computes delay between attempts on failure.
+     *
+     * <p>Optional. Defaults to {@link ExponentialBackoffRetryPolicy} with
+     * {@code baseDelayMs=200} and {@code maxDelayMs=60000}.
+     *
+     * @param retryPolicy the retry policy
+     * @return this builder
+     */
     public Builder retryPolicy(RetryPolicy retryPolicy) {
       this.retryPolicy = retryPolicy;
       return this;
     }
 
+    /**
+     * Sets the maximum number of delivery attempts before an event is marked DEAD.
+     *
+     * <p>Optional. Defaults to {@code 10}. Must be &ge; 1.
+     *
+     * @param maxAttempts maximum attempts per event
+     * @return this builder
+     */
     public Builder maxAttempts(int maxAttempts) {
       this.maxAttempts = maxAttempts;
       return this;
     }
 
+    /**
+     * Sets the number of worker threads that drain and dispatch events.
+     *
+     * <p>Optional. Defaults to {@code 4}. Must be &ge; 0. Setting to {@code 0}
+     * disables processing (useful for testing only).
+     *
+     * @param workerCount number of dispatch worker threads
+     * @return this builder
+     */
     public Builder workerCount(int workerCount) {
       this.workerCount = workerCount;
       return this;
     }
 
+    /**
+     * Sets the bounded capacity of the hot queue (after-commit events).
+     *
+     * <p>Optional. Defaults to {@code 1000}. Must be &gt; 0.
+     *
+     * @param hotQueueCapacity maximum number of events in the hot queue
+     * @return this builder
+     */
     public Builder hotQueueCapacity(int hotQueueCapacity) {
       this.hotQueueCapacity = hotQueueCapacity;
       return this;
     }
 
+    /**
+     * Sets the bounded capacity of the cold queue (poller-sourced events).
+     *
+     * <p>Optional. Defaults to {@code 1000}. Must be &gt; 0.
+     *
+     * @param coldQueueCapacity maximum number of events in the cold queue
+     * @return this builder
+     */
     public Builder coldQueueCapacity(int coldQueueCapacity) {
       this.coldQueueCapacity = coldQueueCapacity;
       return this;
     }
 
+    /**
+     * Sets the metrics exporter for recording dispatch counters and queue depths.
+     *
+     * <p>Optional. Defaults to {@link MetricsExporter#NOOP}.
+     *
+     * @param metrics the metrics exporter
+     * @return this builder
+     */
     public Builder metrics(MetricsExporter metrics) {
       this.metrics = metrics;
       return this;
     }
 
+    /**
+     * Appends a single event interceptor for before/after dispatch hooks.
+     *
+     * <p>Optional. Interceptors are invoked in registration order before dispatch,
+     * and in reverse order after dispatch.
+     *
+     * @param interceptor the interceptor to add
+     * @return this builder
+     */
     public Builder interceptor(EventInterceptor interceptor) {
       this.interceptors.add(interceptor);
       return this;
     }
 
+    /**
+     * Appends multiple event interceptors for before/after dispatch hooks.
+     *
+     * <p>Optional. Interceptors are invoked in registration order before dispatch,
+     * and in reverse order after dispatch.
+     *
+     * @param interceptors the interceptors to add
+     * @return this builder
+     */
     public Builder interceptors(List<EventInterceptor> interceptors) {
       this.interceptors.addAll(interceptors);
       return this;
     }
 
+    /**
+     * Sets the maximum time in milliseconds to wait for in-flight events during shutdown.
+     *
+     * <p>Optional. Defaults to {@code 5000} ms.
+     *
+     * @param drainTimeoutMs drain timeout in milliseconds
+     * @return this builder
+     */
     public Builder drainTimeoutMs(long drainTimeoutMs) {
       this.drainTimeoutMs = drainTimeoutMs;
       return this;
     }
 
+    /**
+     * Builds and starts the dispatcher. Worker threads begin draining queues immediately.
+     *
+     * @return a new {@link OutboxDispatcher} instance
+     * @throws NullPointerException if {@code connectionProvider}, {@code outboxStore},
+     *     or {@code listenerRegistry} is null
+     * @throws IllegalArgumentException if {@code maxAttempts < 1}, {@code workerCount < 0},
+     *     or any queue capacity is &le; 0
+     */
     public OutboxDispatcher build() {
       return new OutboxDispatcher(this);
     }

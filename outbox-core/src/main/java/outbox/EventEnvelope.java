@@ -164,6 +164,7 @@ public final class EventEnvelope {
         + "}";
   }
 
+  /** Builder for {@link EventEnvelope}. */
   public static final class Builder {
     private final String eventType;
     private String eventId;
@@ -179,51 +180,133 @@ public final class EventEnvelope {
       this.eventType = eventType;
     }
 
+    /**
+     * Sets a custom event identifier.
+     *
+     * <p>Optional. Defaults to a monotonic ULID.
+     *
+     * @param eventId the event identifier
+     * @return this builder
+     */
     public Builder eventId(String eventId) {
       this.eventId = eventId;
       return this;
     }
 
+    /**
+     * Sets the event timestamp.
+     *
+     * <p>Optional. Defaults to {@link Instant#now()}.
+     *
+     * @param occurredAt the event timestamp
+     * @return this builder
+     */
     public Builder occurredAt(Instant occurredAt) {
       this.occurredAt = occurredAt;
       return this;
     }
 
+    /**
+     * Sets the aggregate type as a string for listener routing.
+     *
+     * <p>Optional. Defaults to {@link AggregateType#GLOBAL} ({@code "__GLOBAL__"}).
+     *
+     * @param aggregateType the aggregate type name
+     * @return this builder
+     */
     public Builder aggregateType(String aggregateType) {
       this.aggregateType = aggregateType;
       return this;
     }
 
+    /**
+     * Sets the aggregate type using a type-safe {@link AggregateType} for listener routing.
+     *
+     * <p>Optional. Defaults to {@link AggregateType#GLOBAL} ({@code "__GLOBAL__"}).
+     *
+     * @param aggregateType the aggregate type
+     * @return this builder
+     */
     public Builder aggregateType(AggregateType aggregateType) {
       this.aggregateType = aggregateType.name();
       return this;
     }
 
+    /**
+     * Sets the business identifier of the aggregate instance.
+     *
+     * <p>Optional. Defaults to {@code null}.
+     *
+     * @param aggregateId the aggregate identifier
+     * @return this builder
+     */
     public Builder aggregateId(String aggregateId) {
       this.aggregateId = aggregateId;
       return this;
     }
 
+    /**
+     * Sets the tenant identifier for multi-tenant systems.
+     *
+     * <p>Optional. Defaults to {@code null}.
+     *
+     * @param tenantId the tenant identifier
+     * @return this builder
+     */
     public Builder tenantId(String tenantId) {
       this.tenantId = tenantId;
       return this;
     }
 
+    /**
+     * Sets custom key-value metadata headers. The map is defensively copied at build time.
+     *
+     * <p>Optional. Defaults to an empty map. Null keys are rejected at build time.
+     *
+     * @param headers the metadata headers
+     * @return this builder
+     */
     public Builder headers(Map<String, String> headers) {
       this.headers = headers;
       return this;
     }
 
+    /**
+     * Sets the event payload as a JSON string. Mutually exclusive with {@link #payloadBytes}.
+     *
+     * <p><b>One of {@code payloadJson} or {@code payloadBytes} is required.</b>
+     * Maximum size: {@value EventEnvelope#MAX_PAYLOAD_BYTES} bytes (UTF-8).
+     *
+     * @param payloadJson the JSON payload
+     * @return this builder
+     */
     public Builder payloadJson(String payloadJson) {
       this.payloadJson = payloadJson;
       return this;
     }
 
+    /**
+     * Sets the event payload as raw bytes. Mutually exclusive with {@link #payloadJson}.
+     *
+     * <p><b>One of {@code payloadJson} or {@code payloadBytes} is required.</b>
+     * Maximum size: {@value EventEnvelope#MAX_PAYLOAD_BYTES} bytes.
+     *
+     * @param payloadBytes the raw byte payload
+     * @return this builder
+     */
     public Builder payloadBytes(byte[] payloadBytes) {
       this.payloadBytes = payloadBytes;
       return this;
     }
 
+    /**
+     * Builds an immutable {@link EventEnvelope}.
+     *
+     * @return a new event envelope
+     * @throws IllegalArgumentException if neither payload is set, both payloads are set,
+     *     payload exceeds {@value EventEnvelope#MAX_PAYLOAD_BYTES} bytes,
+     *     {@code eventType} is empty, or headers contain null keys
+     */
     public EventEnvelope build() {
       return new EventEnvelope(this);
     }

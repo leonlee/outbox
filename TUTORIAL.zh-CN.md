@@ -444,15 +444,14 @@ OutboxPoller poller = OutboxPoller.builder()
     .skipRecent(Duration.ofMillis(1000))
     .batchSize(200)
     .intervalMs(5000)
-    .ownerId("poller-node-1")
-    .lockTimeout(Duration.ofMinutes(5))
+    .claimLocking("poller-node-1", Duration.ofMinutes(5))
     .build();
 ```
 
 - 每个 Poller 通过设置 `locked_by`/`locked_at` 列来 claim 事件
-- 超过 `lockTimeout` 的锁会被自动回收
+- 超过配置的超时时间的锁会被自动回收
 - 事件到达 DONE、RETRY 或 DEAD 状态时锁自动释放
-- 单实例部署不需要锁，省略 `ownerId`/`lockTimeout` 即可
+- 单节点部署不需要锁，省略 `claimLocking` 即可
 
 ---
 

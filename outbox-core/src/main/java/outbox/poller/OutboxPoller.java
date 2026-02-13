@@ -27,8 +27,14 @@ import java.util.logging.Logger;
  * Scheduled database scanner that polls for pending outbox events as a fallback
  * when the hot path is unavailable or events are dropped.
  *
- * <p>Supports claim-based locking via {@code ownerId}/{@code lockTimeout} for safe
- * multi-instance deployments. Create instances via {@link #builder()}.
+ * <p>Operates in two modes:
+ * <ul>
+ *   <li><b>Single-node</b> (default) — uses {@link OutboxStore#pollPending} with no locking.
+ *   <li><b>Multi-node</b> — uses {@link OutboxStore#claimPending} with row-level locking.
+ *       Enabled via {@link Builder#claimLocking}.
+ * </ul>
+ *
+ * <p>Create instances via {@link #builder()}.
  *
  * <p>This class is thread-safe. The {@link #start()} and {@link #close()} methods are
  * synchronized to prevent concurrent lifecycle transitions.
@@ -38,7 +44,6 @@ import java.util.logging.Logger;
  */
 public final class OutboxPoller implements AutoCloseable {
   private static final Logger logger = Logger.getLogger(OutboxPoller.class.getName());
-  private static final Duration DEFAULT_LOCK_TIMEOUT = Duration.ofMinutes(5);
 
   private final ConnectionProvider connectionProvider;
   private final OutboxStore outboxStore;
@@ -78,10 +83,8 @@ public final class OutboxPoller implements AutoCloseable {
     this.batchSize = batchSize;
     this.intervalMs = intervalMs;
     this.metrics = builder.metrics != null ? builder.metrics : MetricsExporter.NOOP;
-    this.ownerId = builder.ownerId != null
-        ? builder.ownerId
-        : (builder.lockTimeout != null ? "poller-" + UUID.randomUUID().toString().substring(0, 8) : null);
-    this.lockTimeout = builder.lockTimeout != null ? builder.lockTimeout : DEFAULT_LOCK_TIMEOUT;
+    this.ownerId = builder.ownerId;
+    this.lockTimeout = builder.lockTimeout;
     this.jsonCodec = builder.jsonCodec != null ? builder.jsonCodec : JsonCodec.getDefault();
     this.scheduler = Executors.newSingleThreadScheduledExecutor(new DaemonThreadFactory("outbox-poller-"));
   }
@@ -315,31 +318,35 @@ public final class OutboxPoller implements AutoCloseable {
     }
 
     /**
-     * Sets the owner identifier for claim-based locking in multi-instance deployments.
+     * Enables claim-based locking for multi-node deployments with an auto-generated owner ID.
      *
-     * <p>Optional. If not set but {@code lockTimeout} is configured, a random
-     * {@code "poller-<uuid>"} prefix is auto-generated.
+     * <p>When enabled, the poller uses {@link OutboxStore#claimPending} instead of
+     * {@link OutboxStore#pollPending}, acquiring row-level locks so multiple poller
+     * instances can safely share the same database.
      *
-     * @param ownerId unique identifier for this poller instance
+     * @param lockTimeout how long a claimed event stays locked before it becomes
+     *     eligible for re-claiming by another instance
      * @return this builder
      */
-    public Builder ownerId(String ownerId) {
-      this.ownerId = ownerId;
-      return this;
+    public Builder claimLocking(Duration lockTimeout) {
+      return claimLocking("poller-" + UUID.randomUUID().toString().substring(0, 8), lockTimeout);
     }
 
     /**
-     * Sets the lock timeout for claim-based locking. Events claimed longer than this
-     * duration are considered expired and available for re-claiming.
+     * Enables claim-based locking for multi-node deployments with an explicit owner ID.
      *
-     * <p>Optional. Defaults to {@code 5 minutes}. Setting this (or {@code ownerId})
-     * enables claim-based locking via {@link OutboxStore#claimPending}.
+     * <p>When enabled, the poller uses {@link OutboxStore#claimPending} instead of
+     * {@link OutboxStore#pollPending}, acquiring row-level locks so multiple poller
+     * instances can safely share the same database.
      *
-     * @param lockTimeout the lock expiry duration
+     * @param ownerId unique identifier for this poller instance (e.g. hostname or pod name)
+     * @param lockTimeout how long a claimed event stays locked before it becomes
+     *     eligible for re-claiming by another instance
      * @return this builder
      */
-    public Builder lockTimeout(Duration lockTimeout) {
-      this.lockTimeout = lockTimeout;
+    public Builder claimLocking(String ownerId, Duration lockTimeout) {
+      this.ownerId = Objects.requireNonNull(ownerId, "ownerId");
+      this.lockTimeout = Objects.requireNonNull(lockTimeout, "lockTimeout");
       return this;
     }
 

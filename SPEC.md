@@ -607,8 +607,7 @@ OutboxPoller poller = OutboxPoller.builder()
     .batchSize(50)                           // default: 50
     .intervalMs(5000)                        // default: 5000
     .metrics(metricsExporter)                // default: MetricsExporter.NOOP
-    .ownerId("poller-1")                     // default: auto-generated if lockTimeout set
-    .lockTimeout(Duration.ofMinutes(5))      // default: 5 minutes
+    .claimLocking("poller-1", Duration.ofMinutes(5))  // optional: enables multi-node claim locking
     .build();
 ```
 
@@ -632,10 +631,10 @@ void close()    // Stop polling
 
 ### 10.4 Event Locking
 
-When `ownerId` is provided, the poller uses claim-based locking:
+When `claimLocking` is configured, the poller uses claim-based locking:
 
 - **Claim**: Sets `locked_by` and `locked_at` on pending events atomically
-- **Expiry**: Locks older than `lockTimeout` are considered expired and can be reclaimed
+- **Expiry**: Locks older than the configured timeout are considered expired and can be reclaimed
 - **Release**: `markDone`/`markRetry`/`markDead` clear `locked_by` and `locked_at`
 - **Database-specific**: PostgreSQL uses `FOR UPDATE SKIP LOCKED` + `RETURNING`; MySQL uses `UPDATE...ORDER BY...LIMIT`; H2 uses subquery-based two-phase claim
 

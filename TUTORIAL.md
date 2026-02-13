@@ -445,15 +445,14 @@ OutboxPoller poller = OutboxPoller.builder()
     .skipRecent(Duration.ofMillis(1000))
     .batchSize(200)
     .intervalMs(5000)
-    .ownerId("poller-node-1")
-    .lockTimeout(Duration.ofMinutes(5))
+    .claimLocking("poller-node-1", Duration.ofMinutes(5))
     .build();
 ```
 
 - Each poller claims events by setting `locked_by`/`locked_at` columns
-- Expired locks (older than `lockTimeout`) are automatically reclaimed
+- Expired locks (older than the configured timeout) are automatically reclaimed
 - Locks are cleared when events reach DONE, RETRY, or DEAD status
-- Omit `ownerId`/`lockTimeout` from the builder for single-instance mode (no locking)
+- Omit `claimLocking` from the builder for single-node mode (no locking)
 
 ---
 

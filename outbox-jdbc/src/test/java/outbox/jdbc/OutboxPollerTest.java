@@ -167,8 +167,7 @@ class OutboxPollerTest {
         .batchSize(10)
         .intervalMs(10)
         .metrics(metrics)
-        .ownerId("test-poller")
-        .lockTimeout(Duration.ofMinutes(5))
+        .claimLocking("test-poller", Duration.ofMinutes(5))
         .build()) {
       poller.poll();
     }

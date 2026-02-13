@@ -605,8 +605,7 @@ OutboxPoller poller = OutboxPoller.builder()
     .batchSize(50)                           // 默认: 50
     .intervalMs(5000)                        // 默认: 5000
     .metrics(metricsExporter)                // 默认: MetricsExporter.NOOP
-    .ownerId("poller-1")                     // 默认: 设置 lockTimeout 时自动生成
-    .lockTimeout(Duration.ofMinutes(5))      // 默认: 5 分钟
+    .claimLocking("poller-1", Duration.ofMinutes(5))  // 可选: 启用多节点 claim 锁定
     .build();
 ```
 
@@ -630,10 +629,10 @@ void close()    // 停止轮询
 
 ### 10.4 事件锁定
 
-提供 `ownerId` 时，Poller 使用 claim 锁定机制：
+配置 `claimLocking` 后，Poller 使用 claim 锁定机制：
 
 - **加锁**：原子设置 `locked_by` 和 `locked_at`
-- **过期**：超过 `lockTimeout` 的锁视为已过期，可被重新 claim
+- **过期**：超过配置的超时时间的锁视为已过期，可被重新 claim
 - **释放**：`markDone` / `markRetry` / `markDead` 清除 `locked_by` 和 `locked_at`
 - **数据库差异**：PostgreSQL 用 `FOR UPDATE SKIP LOCKED` + `RETURNING`；MySQL 用 `UPDATE...ORDER BY...LIMIT`；H2 用子查询式两阶段 claim
 

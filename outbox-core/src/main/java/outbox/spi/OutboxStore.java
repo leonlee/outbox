@@ -6,6 +6,7 @@ import outbox.model.OutboxEvent;
 import java.sql.Connection;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -117,6 +118,25 @@ public interface OutboxStore {
    */
   default int replayDead(Connection conn, String eventId) {
     return 0;
+  }
+
+  /**
+   * Marks multiple events as DONE in a single operation.
+   *
+   * <p>Default implementation loops through individual {@link #markDone} calls.
+   * JDBC implementations override with a single {@code UPDATE ... WHERE event_id IN (...)}
+   * for better throughput.
+   *
+   * @param conn     the JDBC connection
+   * @param eventIds the event IDs to update
+   * @return the total number of rows updated
+   */
+  default int markDoneBatch(Connection conn, Collection<String> eventIds) {
+    int total = 0;
+    for (String id : eventIds) {
+      total += markDone(conn, id);
+    }
+    return total;
   }
 
   /**

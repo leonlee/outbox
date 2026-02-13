@@ -488,6 +488,58 @@ class JdbcOutboxStoreTest {
     }
   }
 
+  @Test
+  void markDoneBatchUpdatesAllEvents() throws SQLException {
+    String id1 = insertTestEvent();
+    String id2 = insertTestEvent();
+    String id3 = insertTestEvent();
+
+    try (Connection conn = dataSource.getConnection()) {
+      int updated = outboxStore.markDoneBatch(conn, List.of(id1, id2, id3));
+
+      assertEquals(3, updated);
+
+      try (PreparedStatement ps = conn.prepareStatement(
+          "SELECT status, done_at FROM outbox_event WHERE event_id IN (?,?,?)")) {
+        ps.setString(1, id1);
+        ps.setString(2, id2);
+        ps.setString(3, id3);
+        ResultSet rs = ps.executeQuery();
+        int count = 0;
+        while (rs.next()) {
+          assertEquals(EventStatus.DONE.code(), rs.getInt("status"));
+          assertNotNull(rs.getTimestamp("done_at"));
+          count++;
+        }
+        assertEquals(3, count);
+      }
+    }
+  }
+
+  @Test
+  void markDoneBatchSkipsAlreadyDone() throws SQLException {
+    String id1 = insertTestEvent();
+    String id2 = insertTestEvent();
+    String id3 = insertTestEvent();
+
+    try (Connection conn = dataSource.getConnection()) {
+      outboxStore.markDone(conn, id1);
+
+      int updated = outboxStore.markDoneBatch(conn, List.of(id1, id2, id3));
+
+      assertEquals(2, updated);
+    }
+  }
+
+  @Test
+  void markDoneBatchWithEmptyList() throws SQLException {
+    try (Connection conn = dataSource.getConnection()) {
+      int updated = outboxStore.markDoneBatch(conn, List.of());
+
+      assertEquals(0, updated);
+    }
+  }
+
   private String insertTestEvent() throws SQLException {
     EventEnvelope event = EventEnvelope.builder("TestEvent")
         .payloadJson("{}")

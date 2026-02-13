@@ -1,11 +1,10 @@
 package outbox.benchmark;
 
-import org.h2.jdbcx.JdbcDataSource;
+import outbox.benchmark.BenchmarkDataSourceFactory.DatabaseSetup;
 import org.openjdk.jmh.annotations.*;
-import outbox.EventEnvelope;
 import outbox.OutboxWriter;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.store.H2OutboxStore;
+import outbox.jdbc.store.AbstractJdbcOutboxStore;
 import outbox.jdbc.tx.JdbcTransactionManager;
 import outbox.jdbc.tx.ThreadLocalTxContext;
 import outbox.model.OutboxEvent;
@@ -14,12 +13,14 @@ import java.sql.Connection;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import javax.sql.DataSource;
 import java.util.concurrent.TimeUnit;
 
 /**
  * Measures poller throughput: pollPending + markDone per batch.
  *
  * <p>Run: {@code java -jar benchmarks/target/benchmarks.jar OutboxPollerBenchmark}
+ * <p>MySQL: {@code java -jar benchmarks/target/benchmarks.jar -p database=mysql OutboxPollerBenchmark}
  */
 @BenchmarkMode(Mode.Throughput)
 @OutputTimeUnit(TimeUnit.SECONDS)
@@ -29,29 +30,29 @@ import java.util.concurrent.TimeUnit;
 @Fork(1)
 public class OutboxPollerBenchmark {
 
+  private DataSource dataSource;
   private DataSourceConnectionProvider connectionProvider;
   private ThreadLocalTxContext txContext;
   private JdbcTransactionManager txManager;
   private OutboxWriter writer;
-  private H2OutboxStore outboxStore;
+  private AbstractJdbcOutboxStore outboxStore;
+
+  @Param({"h2"})
+  private String database;
 
   @Param({"10", "50", "200"})
   private int batchSize;
 
   @Setup(Level.Trial)
-  public void setup() throws Exception {
-    JdbcDataSource dataSource = new JdbcDataSource();
-    dataSource.setURL("jdbc:h2:mem:bench_poller;MODE=MySQL;DB_CLOSE_DELAY=-1");
+  public void setup() {
+    DatabaseSetup db = BenchmarkDataSourceFactory.create(database, "bench_poller");
+    BenchmarkDataSourceFactory.truncate(db.dataSource());
 
-    try (Connection conn = dataSource.getConnection()) {
-      conn.createStatement().execute(BenchmarkSchema.CREATE_TABLE);
-      conn.createStatement().execute(BenchmarkSchema.CREATE_INDEX);
-    }
-
+    dataSource = db.dataSource();
     connectionProvider = new DataSourceConnectionProvider(dataSource);
     txContext = new ThreadLocalTxContext();
     txManager = new JdbcTransactionManager(connectionProvider, txContext);
-    outboxStore = new H2OutboxStore();
+    outboxStore = db.store();
     writer = new OutboxWriter(txContext, outboxStore);
   }
 
@@ -70,10 +71,18 @@ public class OutboxPollerBenchmark {
     try (Connection conn = connectionProvider.getConnection()) {
       List<OutboxEvent> events = outboxStore.pollPending(
           conn, Instant.now().plusSeconds(1), Duration.ZERO, batchSize);
-      for (OutboxEvent event : events) {
-        outboxStore.markDone(conn, event.eventId());
+      if (!events.isEmpty()) {
+        List<String> ids = events.stream()
+            .map(OutboxEvent::eventId)
+            .toList();
+        outboxStore.markDoneBatch(conn, ids);
       }
       return events.size();
     }
+  }
+
+  @TearDown(Level.Trial)
+  public void tearDown() throws Exception {
+    if (dataSource instanceof AutoCloseable ac) ac.close();
   }
 }

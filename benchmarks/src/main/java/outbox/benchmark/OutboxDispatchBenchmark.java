@@ -1,26 +1,24 @@
 package outbox.benchmark;
 
-import org.h2.jdbcx.JdbcDataSource;
+import outbox.benchmark.BenchmarkDataSourceFactory.DatabaseSetup;
 import org.openjdk.jmh.annotations.*;
-import outbox.EventEnvelope;
 import outbox.OutboxWriter;
 import outbox.dispatch.DispatcherCommitHook;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.store.H2OutboxStore;
 import outbox.jdbc.tx.JdbcTransactionManager;
 import outbox.jdbc.tx.ThreadLocalTxContext;
 import outbox.registry.DefaultListenerRegistry;
 
-import java.sql.Connection;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Measures hot-path end-to-end latency: write → afterCommit → dispatch → listener callback.
+ * Measures hot-path end-to-end latency: write -> afterCommit -> dispatch -> listener callback.
  *
  * <p>Run: {@code java -jar benchmarks/target/benchmarks.jar OutboxDispatchBenchmark}
+ * <p>MySQL: {@code java -jar benchmarks/target/benchmarks.jar -p database=mysql OutboxDispatchBenchmark}
  */
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
@@ -30,11 +28,15 @@ import java.util.concurrent.atomic.AtomicReference;
 @Fork(1)
 public class OutboxDispatchBenchmark {
 
+  private javax.sql.DataSource dataSource;
   private DataSourceConnectionProvider connectionProvider;
   private ThreadLocalTxContext txContext;
   private JdbcTransactionManager txManager;
   private OutboxWriter writer;
   private OutboxDispatcher dispatcher;
+
+  @Param({"h2"})
+  private String database;
 
   @Param({"100", "1000", "10000"})
   private int payloadSize;
@@ -43,22 +45,18 @@ public class OutboxDispatchBenchmark {
   private final AtomicReference<CountDownLatch> latchRef = new AtomicReference<>();
 
   @Setup(Level.Trial)
-  public void setup() throws Exception {
-    JdbcDataSource dataSource = new JdbcDataSource();
-    dataSource.setURL("jdbc:h2:mem:bench_dispatch;MODE=MySQL;DB_CLOSE_DELAY=-1");
+  public void setup() {
+    DatabaseSetup db = BenchmarkDataSourceFactory.create(database, "bench_dispatch");
+    BenchmarkDataSourceFactory.truncate(db.dataSource());
 
-    try (Connection conn = dataSource.getConnection()) {
-      conn.createStatement().execute(BenchmarkSchema.CREATE_TABLE);
-      conn.createStatement().execute(BenchmarkSchema.CREATE_INDEX);
-    }
-
+    dataSource = db.dataSource();
     connectionProvider = new DataSourceConnectionProvider(dataSource);
     txContext = new ThreadLocalTxContext();
     txManager = new JdbcTransactionManager(connectionProvider, txContext);
 
     dispatcher = OutboxDispatcher.builder()
         .connectionProvider(connectionProvider)
-        .outboxStore(new H2OutboxStore())
+        .outboxStore(db.store())
         .listenerRegistry(new DefaultListenerRegistry()
             .register("BenchEvent", event -> {
               CountDownLatch latch = latchRef.get();
@@ -69,13 +67,14 @@ public class OutboxDispatchBenchmark {
         .coldQueueCapacity(100)
         .build();
 
-    writer = new OutboxWriter(txContext, new H2OutboxStore(), new DispatcherCommitHook(dispatcher));
-    payload = "x".repeat(payloadSize);
+    writer = new OutboxWriter(txContext, db.store(), new DispatcherCommitHook(dispatcher));
+    payload = "{\"data\":\"" + "x".repeat(Math.max(0, payloadSize - 11)) + "\"}";
   }
 
   @TearDown(Level.Trial)
   public void tearDown() throws Exception {
     dispatcher.close();
+    if (dataSource instanceof AutoCloseable ac) ac.close();
   }
 
   @Benchmark

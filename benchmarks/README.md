@@ -8,13 +8,13 @@ JMH benchmarks for the outbox framework, measuring write throughput, hot-path di
 |-----------|--------|------------|
 | `OutboxWriteBenchmark` | Throughput (ops/sec) | `payloadSize`: 100, 1000, 10000 bytes |
 | `OutboxDispatchBenchmark` | Average latency (µs) | `payloadSize`: 100, 1000, 10000 bytes |
-| `OutboxPollerBenchmark` | Throughput (ops/sec) | `batchSize`: 10, 50, 200 events |
+| `OutboxPollerBenchmark.pollAndMarkDone` | Throughput (ops/sec) | `batchSize`: 10, 50, 200 events |
+| `OutboxPollerBenchmark.claimAndMarkDone` | Throughput (ops/sec) | `batchSize`: 10, 50, 200 events |
 
 All benchmarks support `database` parameter: `h2` (default), `mysql`, or `postgresql`.
 
 ### Implementation Notes
 
-- **Batch `markDone`**: `OutboxPollerBenchmark` uses `markDoneBatch` (single `UPDATE ... WHERE event_id IN (...)`) instead of per-event `markDone` calls, reducing round-trips from N to 1.
 - **Connection pooling**: MySQL and PostgreSQL benchmarks use HikariCP (max 10, min idle 2). H2 stays unwrapped (in-memory, negligible connection overhead).
 
 ## Sample Results (H2, JDK 21)
@@ -37,13 +37,21 @@ All benchmarks support `database` parameter: `h2` (default), `mysql`, or `postgr
 | 1,000 B      | 9,173               | ± 1,293       |
 | 10,000 B     | 9,152               | ± 149         |
 
-### Poller Throughput (batch markDone)
+### Poller Throughput — `pollAndMarkDone`
 
 | Batch Size | Throughput (ops/s) | Error (99.9%) |
 |-----------:|-------------------:|--------------:|
-| 10         | 428                | ± 1,394       |
-| 50         | 189                | ± 550         |
-| 200        | 83                 | ± 72          |
+| 10         | 434                | ± 1,340       |
+| 50         | 195                | ± 623         |
+| 200        | 99                 | ± 345         |
+
+### Poller Throughput — `claimAndMarkDone`
+
+| Batch Size | Throughput (ops/s) | Error (99.9%) |
+|-----------:|-------------------:|--------------:|
+| 10         | 599                | ± 2,021       |
+| 50         | 272                | ± 801         |
+| 200        | 125                | ± 422         |
 
 ## Running
 

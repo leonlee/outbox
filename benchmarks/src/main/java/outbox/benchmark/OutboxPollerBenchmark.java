@@ -2,6 +2,7 @@ package outbox.benchmark;
 
 import outbox.benchmark.BenchmarkDataSourceFactory.DatabaseSetup;
 import org.openjdk.jmh.annotations.*;
+import outbox.EventEnvelope;
 import outbox.OutboxWriter;
 import outbox.jdbc.DataSourceConnectionProvider;
 import outbox.jdbc.store.AbstractJdbcOutboxStore;
@@ -9,15 +10,16 @@ import outbox.jdbc.tx.JdbcTransactionManager;
 import outbox.jdbc.tx.ThreadLocalTxContext;
 import outbox.model.OutboxEvent;
 
+import javax.sql.DataSource;
 import java.sql.Connection;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
-import javax.sql.DataSource;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Measures poller throughput: pollPending + markDone per batch.
+ * Measures poller throughput: pollPending/claimPending + markDone per batch.
  *
  * <p>Run: {@code java -jar benchmarks/target/benchmarks.jar OutboxPollerBenchmark}
  * <p>MySQL: {@code java -jar benchmarks/target/benchmarks.jar -p database=mysql OutboxPollerBenchmark}
@@ -58,11 +60,13 @@ public class OutboxPollerBenchmark {
 
   @Setup(Level.Invocation)
   public void seedEvents() throws Exception {
+    List<EventEnvelope> events = new ArrayList<>(batchSize);
     for (int i = 0; i < batchSize; i++) {
-      try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-        writer.write("BenchEvent", "{\"i\":" + i + "}");
-        tx.commit();
-      }
+      events.add(EventEnvelope.ofJson("BenchEvent", "{\"i\":" + i + "}"));
+    }
+    try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
+      writer.writeAll(events);
+      tx.commit();
     }
   }
 
@@ -71,11 +75,22 @@ public class OutboxPollerBenchmark {
     try (Connection conn = connectionProvider.getConnection()) {
       List<OutboxEvent> events = outboxStore.pollPending(
           conn, Instant.now().plusSeconds(1), Duration.ZERO, batchSize);
-      if (!events.isEmpty()) {
-        List<String> ids = events.stream()
-            .map(OutboxEvent::eventId)
-            .toList();
-        outboxStore.markDoneBatch(conn, ids);
+      for (OutboxEvent event : events) {
+        outboxStore.markDone(conn, event.eventId());
+      }
+      return events.size();
+    }
+  }
+
+  @Benchmark
+  public int claimAndMarkDone() throws Exception {
+    try (Connection conn = connectionProvider.getConnection()) {
+      Instant now = Instant.now().plusSeconds(1);
+      Instant lockExpiry = now.minus(Duration.ofMinutes(5));
+      List<OutboxEvent> events = outboxStore.claimPending(
+          conn, "bench-owner", now, lockExpiry, Duration.ZERO, batchSize);
+      for (OutboxEvent event : events) {
+        outboxStore.markDone(conn, event.eventId());
       }
       return events.size();
     }

@@ -13,8 +13,6 @@ import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -95,24 +93,6 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
         " SET status=" + EventStatus.DONE.code() + ", done_at=?, locked_by=NULL, locked_at=NULL" +
         " WHERE event_id=? AND status<>" + EventStatus.DONE.code();
     return JdbcTemplate.update(conn, sql, Timestamp.from(Instant.now()), eventId);
-  }
-
-  @Override
-  public int markDoneBatch(Connection conn, Collection<String> eventIds) {
-    if (eventIds == null || eventIds.isEmpty()) {
-      return 0;
-    }
-    String placeholders = String.join(",", Collections.nCopies(eventIds.size(), "?"));
-    String sql = "UPDATE " + tableName() +
-        " SET status=" + EventStatus.DONE.code() + ", done_at=?, locked_by=NULL, locked_at=NULL" +
-        " WHERE event_id IN (" + placeholders + ") AND status<>" + EventStatus.DONE.code();
-    Object[] params = new Object[1 + eventIds.size()];
-    params[0] = Timestamp.from(Instant.now());
-    int i = 1;
-    for (String id : eventIds) {
-      params[i++] = id;
-    }
-    return JdbcTemplate.update(conn, sql, params);
   }
 
   @Override

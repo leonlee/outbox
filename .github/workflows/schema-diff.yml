@@ -81,7 +81,7 @@ jobs:
 
           # --- MySQL ---
           RESULT+="\n### MySQL\n"
-          if [ -f "main/${SCHEMA_DIR}/mysql.sql" ]; then
+          if [ -f "main/${SCHEMA_DIR}/mysql.sql" ] && [ -f "pr/${SCHEMA_DIR}/mysql.sql" ]; then
             MYSQL_PWD=root mysqldef -u root -h 127.0.0.1 --port 3306 outbox < "main/${SCHEMA_DIR}/mysql.sql"
             MYSQL_DIFF=$(MYSQL_PWD=root mysqldef -u root -h 127.0.0.1 --port 3306 outbox --dry-run < "pr/${SCHEMA_DIR}/mysql.sql")
             if echo "$MYSQL_DIFF" | grep -q "^--"; then
@@ -89,14 +89,18 @@ jobs:
             else
               RESULT+="\`\`\`sql\n${MYSQL_DIFF}\n\`\`\`\n"
             fi
-          else
+          elif [ -f "pr/${SCHEMA_DIR}/mysql.sql" ]; then
             MYSQL_DIFF=$(MYSQL_PWD=root mysqldef -u root -h 127.0.0.1 --port 3306 outbox --dry-run < "pr/${SCHEMA_DIR}/mysql.sql")
             RESULT+="\`\`\`sql\n${MYSQL_DIFF}\n\`\`\`\n"
+          elif [ -f "main/${SCHEMA_DIR}/mysql.sql" ]; then
+            RESULT+="File deleted in PR.\n"
+          else
+            RESULT+="No file found.\n"
           fi
 
           # --- PostgreSQL ---
           RESULT+="\n### PostgreSQL\n"
-          if [ -f "main/${SCHEMA_DIR}/postgresql.sql" ]; then
+          if [ -f "main/${SCHEMA_DIR}/postgresql.sql" ] && [ -f "pr/${SCHEMA_DIR}/postgresql.sql" ]; then
             PGPASSWORD=postgres psqldef -U postgres -h 127.0.0.1 --port 5432 outbox < "main/${SCHEMA_DIR}/postgresql.sql"
             PG_DIFF=$(PGPASSWORD=postgres psqldef -U postgres -h 127.0.0.1 --port 5432 outbox --dry-run < "pr/${SCHEMA_DIR}/postgresql.sql")
             if echo "$PG_DIFF" | grep -q "^--"; then
@@ -104,9 +108,13 @@ jobs:
             else
               RESULT+="\`\`\`sql\n${PG_DIFF}\n\`\`\`\n"
             fi
-          else
+          elif [ -f "pr/${SCHEMA_DIR}/postgresql.sql" ]; then
             PG_DIFF=$(PGPASSWORD=postgres psqldef -U postgres -h 127.0.0.1 --port 5432 outbox --dry-run < "pr/${SCHEMA_DIR}/postgresql.sql")
             RESULT+="\`\`\`sql\n${PG_DIFF}\n\`\`\`\n"
+          elif [ -f "main/${SCHEMA_DIR}/postgresql.sql" ]; then
+            RESULT+="File deleted in PR.\n"
+          else
+            RESULT+="No file found.\n"
           fi
 
           # Write to file for the comment step

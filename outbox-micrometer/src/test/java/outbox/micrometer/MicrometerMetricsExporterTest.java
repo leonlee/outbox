@@ -101,6 +101,11 @@ class MicrometerMetricsExporterTest {
     assertThrows(NullPointerException.class, () -> new MicrometerMetricsExporter(registry, null));
   }
 
+  @Test
+  void emptyPrefixThrows() {
+    assertThrows(IllegalArgumentException.class, () -> new MicrometerMetricsExporter(registry, ""));
+  }
+
   private Counter counter(String name) {
     Counter c = registry.find(name).counter();
     assertNotNull(c, "Counter not found: " + name);

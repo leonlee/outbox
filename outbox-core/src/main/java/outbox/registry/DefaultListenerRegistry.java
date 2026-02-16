@@ -4,6 +4,7 @@ import outbox.AggregateType;
 import outbox.EventListener;
 import outbox.EventType;
 
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -39,6 +40,7 @@ public final class DefaultListenerRegistry implements ListenerRegistry {
    * @throws IllegalStateException if a listener is already registered for this pair
    */
   public DefaultListenerRegistry register(String aggregateType, String eventType, EventListener listener) {
+    Objects.requireNonNull(listener, "listener");
     String key = aggregateType + ":" + eventType;
     EventListener prev = listeners.putIfAbsent(key, listener);
     if (prev != null) {

@@ -1,7 +1,7 @@
 package outbox.jdbc.purge;
 
 /**
- * H2 event purger. Uses the default {@code DELETE ... ORDER BY ... LIMIT}
+ * H2 event purger. Uses the default subquery-based {@code DELETE}
  * from {@link AbstractJdbcEventPurger}.
  */
 public final class H2EventPurger extends AbstractJdbcEventPurger {

@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicReference;
 @Warmup(iterations = 3, time = 3)
 @Measurement(iterations = 5, time = 5)
 @Fork(1)
+@Threads(1)
 public class OutboxDispatchBenchmark {
 
   private DataSource dataSource;

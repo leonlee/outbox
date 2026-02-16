@@ -93,7 +93,7 @@ public final class OutboxPurgeScheduler implements AutoCloseable {
   public void runOnce() {
     try {
       Instant cutoff = Instant.now().minus(retention);
-      int totalDeleted = 0;
+      long totalDeleted = 0;
       int deleted;
       do {
         deleted = purgeBatch(cutoff);

@@ -40,6 +40,8 @@ public final class DefaultListenerRegistry implements ListenerRegistry {
    * @throws IllegalStateException if a listener is already registered for this pair
    */
   public DefaultListenerRegistry register(String aggregateType, String eventType, EventListener listener) {
+    Objects.requireNonNull(aggregateType, "aggregateType");
+    Objects.requireNonNull(eventType, "eventType");
     Objects.requireNonNull(listener, "listener");
     String key = aggregateType + ":" + eventType;
     EventListener prev = listeners.putIfAbsent(key, listener);

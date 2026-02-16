@@ -74,6 +74,7 @@ public class OutboxPollerBenchmark {
   @Benchmark
   public int pollAndMarkDone() throws Exception {
     try (Connection conn = connectionProvider.getConnection()) {
+      conn.setAutoCommit(true);
       List<OutboxEvent> events = outboxStore.pollPending(
           conn, Instant.now().plusSeconds(1), Duration.ZERO, batchSize);
       for (OutboxEvent event : events) {
@@ -86,6 +87,7 @@ public class OutboxPollerBenchmark {
   @Benchmark
   public int claimAndMarkDone() throws Exception {
     try (Connection conn = connectionProvider.getConnection()) {
+      conn.setAutoCommit(true);
       Instant now = Instant.now().plusSeconds(1);
       Instant lockExpiry = now.minus(Duration.ofMinutes(5));
       List<OutboxEvent> events = outboxStore.claimPending(

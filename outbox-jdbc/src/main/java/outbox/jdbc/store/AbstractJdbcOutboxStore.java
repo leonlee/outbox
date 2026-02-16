@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Base JDBC outbox store with standard SQL implementations.
@@ -40,7 +41,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
       rs.getString("payload"),
       rs.getString("headers"),
       rs.getInt("attempts"),
-      rs.getTimestamp("created_at").toInstant());
+      Objects.requireNonNull(rs.getTimestamp("created_at"), "created_at is null").toInstant());
 
   private final String tableName;
   private final JsonCodec jsonCodec;
@@ -55,7 +56,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
 
   protected AbstractJdbcOutboxStore(String tableName, JsonCodec jsonCodec) {
     this.tableName = TableNames.validate(tableName);
-    this.jsonCodec = java.util.Objects.requireNonNull(jsonCodec, "jsonCodec");
+    this.jsonCodec = Objects.requireNonNull(jsonCodec, "jsonCodec");
   }
 
   /**
@@ -148,6 +149,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
   @Override
   public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
       Instant lockExpiry, Duration skipRecent, int limit) {
+    Objects.requireNonNull(ownerId, "ownerId");
     // Truncate to millis so stored value matches query (DB may drop nanos)
     Instant nowMs = now.truncatedTo(ChronoUnit.MILLIS);
     Instant recentCutoff = recentCutoff(now, skipRecent);

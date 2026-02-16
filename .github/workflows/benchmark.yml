@@ -69,22 +69,26 @@ jobs:
 
       - name: Determine parameters
         id: params
+        env:
+          INPUT_DATABASE: ${{ inputs.database || 'h2' }}
+          INPUT_FILTER: ${{ inputs.filter || '.*' }}
         run: |
-          DATABASE="${{ inputs.database || 'h2' }}"
-          FILTER="${{ inputs.filter || '.*' }}"
-          echo "database=$DATABASE" >> "$GITHUB_OUTPUT"
-          echo "filter=$FILTER" >> "$GITHUB_OUTPUT"
+          echo "database=$INPUT_DATABASE" >> "$GITHUB_OUTPUT"
+          echo "filter=$INPUT_FILTER" >> "$GITHUB_OUTPUT"
 
       - name: Run JMH benchmarks
+        env:
+          BENCH_DATABASE: ${{ steps.params.outputs.database }}
+          BENCH_FILTER: ${{ steps.params.outputs.filter }}
         run: |
           java \
             -Dbench.mysql.password=root \
             -Dbench.pg.password=postgres \
             -jar benchmarks/target/benchmarks.jar \
-            -p database=${{ steps.params.outputs.database }} \
+            -p "database=$BENCH_DATABASE" \
             -wi 2 -i 3 -f 1 \
             -rf json -rff benchmarks/target/jmh-result.json \
-            "${{ steps.params.outputs.filter }}"
+            "$BENCH_FILTER"
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4

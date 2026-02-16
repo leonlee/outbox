@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * PostgreSQL outbox store.
@@ -49,6 +50,7 @@ public final class PostgresOutboxStore extends AbstractJdbcOutboxStore {
   @Override
   public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
       Instant lockExpiry, Duration skipRecent, int limit) {
+    Objects.requireNonNull(ownerId, "ownerId");
     Instant nowMs = now.truncatedTo(ChronoUnit.MILLIS);
     Instant recentCutoff = recentCutoff(now, skipRecent);
     // Single round-trip: FOR UPDATE SKIP LOCKED + RETURNING

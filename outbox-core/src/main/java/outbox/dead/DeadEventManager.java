@@ -85,7 +85,8 @@ public final class DeadEventManager {
           }
         }
       } catch (SQLException e) {
-        logger.log(Level.SEVERE, "Failed to replay dead events batch", e);
+        logger.log(Level.SEVERE, "Failed to replay dead events batch; replayed "
+            + totalReplayed + " so far", e);
         break;
       }
       totalReplayed += batchReplayed;

@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * MySQL outbox store. Also compatible with TiDB.
@@ -54,6 +55,7 @@ public final class MySqlOutboxStore extends AbstractJdbcOutboxStore {
   @Override
   public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
       Instant lockExpiry, Duration skipRecent, int limit) {
+    Objects.requireNonNull(ownerId, "ownerId");
     // Truncate to millis so stored value matches query (DB may drop nanos)
     Instant nowMs = now.truncatedTo(ChronoUnit.MILLIS);
     Instant recentCutoff = recentCutoff(now, skipRecent);

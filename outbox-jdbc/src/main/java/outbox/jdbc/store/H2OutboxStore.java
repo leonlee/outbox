@@ -24,6 +24,11 @@ public final class H2OutboxStore extends AbstractJdbcOutboxStore {
   }
 
   @Override
+  public AbstractJdbcOutboxStore withJsonCodec(JsonCodec jsonCodec) {
+    return new H2OutboxStore(tableName(), jsonCodec);
+  }
+
+  @Override
   public String name() {
     return "h2";
   }

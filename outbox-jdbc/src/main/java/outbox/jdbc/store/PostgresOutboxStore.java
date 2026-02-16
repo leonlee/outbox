@@ -32,6 +32,11 @@ public final class PostgresOutboxStore extends AbstractJdbcOutboxStore {
   }
 
   @Override
+  public AbstractJdbcOutboxStore withJsonCodec(JsonCodec jsonCodec) {
+    return new PostgresOutboxStore(tableName(), jsonCodec);
+  }
+
+  @Override
   public String name() {
     return "postgresql";
   }

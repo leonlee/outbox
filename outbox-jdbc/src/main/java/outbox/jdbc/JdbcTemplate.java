@@ -65,7 +65,7 @@ public final class JdbcTemplate {
     for (int i = 0; i < params.length; i++) {
       Object param = params[i];
       if (param == null) {
-        ps.setNull(i + 1, Types.NULL);
+        ps.setNull(i + 1, Types.VARCHAR);
       } else if (param instanceof String s) {
         ps.setString(i + 1, s);
       } else if (param instanceof Integer n) {

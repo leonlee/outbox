@@ -74,17 +74,22 @@ public final class DeadEventManager {
    */
   public int replayAll(String eventType, String aggregateType, int batchSize) {
     int totalReplayed = 0;
-    int batchReplayed;
+    List<OutboxEvent> batch;
     do {
-      batchReplayed = 0;
-      List<OutboxEvent> batch = query(eventType, aggregateType, batchSize);
-      for (OutboxEvent event : batch) {
-        if (replay(event.eventId())) {
-          batchReplayed++;
+      int batchReplayed = 0;
+      try (Connection conn = connectionProvider.getConnection()) {
+        batch = outboxStore.queryDead(conn, eventType, aggregateType, batchSize);
+        for (OutboxEvent event : batch) {
+          if (outboxStore.replayDead(conn, event.eventId()) > 0) {
+            batchReplayed++;
+          }
         }
+      } catch (SQLException e) {
+        logger.log(Level.SEVERE, "Failed to replay dead events batch", e);
+        break;
       }
       totalReplayed += batchReplayed;
-    } while (batchReplayed >= batchSize);
+    } while (batch.size() >= batchSize);
     return totalReplayed;
   }
 

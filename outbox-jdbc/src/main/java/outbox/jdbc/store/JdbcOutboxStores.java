@@ -147,12 +147,7 @@ public final class JdbcOutboxStores {
   }
 
   private static AbstractJdbcOutboxStore newInstance(AbstractJdbcOutboxStore template, JsonCodec jsonCodec) {
-    return switch (template.name()) {
-      case "h2" -> new H2OutboxStore(template.tableName(), jsonCodec);
-      case "mysql" -> new MySqlOutboxStore(template.tableName(), jsonCodec);
-      case "postgresql" -> new PostgresOutboxStore(template.tableName(), jsonCodec);
-      default -> throw new IllegalStateException("Cannot create instance for store: " + template.name());
-    };
+    return template.withJsonCodec(jsonCodec);
   }
 
   private static List<String> allPrefixes() {

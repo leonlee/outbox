@@ -14,7 +14,13 @@ import java.util.List;
 /**
  * MySQL outbox store. Also compatible with TiDB.
  *
- * <p>Uses {@code UPDATE...ORDER BY...LIMIT} for claim (no subquery needed).
+ * <p>Uses {@code UPDATE...ORDER BY...LIMIT} for claim followed by a
+ * {@code SELECT} to return claimed rows (two-phase). This two-phase approach
+ * is <strong>not fully atomic under concurrent access</strong> — two concurrent
+ * pollers may see overlapping rows in the SELECT phase. For single-instance
+ * deployments this is safe. For multi-instance deployments, prefer
+ * {@link PostgresOutboxStore} which uses {@code FOR UPDATE SKIP LOCKED}
+ * with {@code RETURNING} in a single round-trip.
  */
 public final class MySqlOutboxStore extends AbstractJdbcOutboxStore {
 
@@ -28,6 +34,11 @@ public final class MySqlOutboxStore extends AbstractJdbcOutboxStore {
 
   public MySqlOutboxStore(String tableName, JsonCodec jsonCodec) {
     super(tableName, jsonCodec);
+  }
+
+  @Override
+  public AbstractJdbcOutboxStore withJsonCodec(JsonCodec jsonCodec) {
+    return new MySqlOutboxStore(tableName(), jsonCodec);
   }
 
   @Override

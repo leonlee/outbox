@@ -59,6 +59,17 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
   }
 
   /**
+   * Creates a new instance of the same store type with the given {@link JsonCodec}.
+   *
+   * <p>Used by {@link JdbcOutboxStores#detect(String, JsonCodec)} to create codec-customised
+   * instances without hard-coding subclass types.
+   *
+   * @param jsonCodec the JSON codec to use
+   * @return a new outbox store instance configured with the given codec
+   */
+  public abstract AbstractJdbcOutboxStore withJsonCodec(JsonCodec jsonCodec);
+
+  /**
    * Unique identifier for this outbox store (e.g., "mysql", "postgresql", "h2").
    */
   public abstract String name();

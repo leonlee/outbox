@@ -66,6 +66,7 @@ public final class JdbcOutboxStores {
    * @throws IllegalArgumentException if no outbox store found
    */
   public static AbstractJdbcOutboxStore get(String name) {
+    Objects.requireNonNull(name, "name");
     AbstractJdbcOutboxStore store = BY_NAME.get(name.toLowerCase());
     if (store == null) {
       throw new IllegalArgumentException("Unknown outbox store: " + name +

@@ -39,9 +39,14 @@ public final class JdbcTransactionManager {
    */
   public Transaction begin() throws SQLException {
     Connection connection = connectionProvider.getConnection();
-    connection.setAutoCommit(false);
-    txContext.bind(connection);
-    return new Transaction(connection, txContext);
+    try {
+      connection.setAutoCommit(false);
+      txContext.bind(connection);
+      return new Transaction(connection, txContext);
+    } catch (Exception e) {
+      connection.close();
+      throw e;
+    }
   }
 
   /**

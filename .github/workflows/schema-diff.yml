@@ -82,15 +82,15 @@ jobs:
           # --- MySQL ---
           RESULT+="\n### MySQL\n"
           if [ -f "main/${SCHEMA_DIR}/mysql.sql" ]; then
-            mysqldef -u root -p root -h 127.0.0.1 --port 3306 outbox < "main/${SCHEMA_DIR}/mysql.sql"
-            MYSQL_DIFF=$(mysqldef -u root -p root -h 127.0.0.1 --port 3306 outbox --dry-run < "pr/${SCHEMA_DIR}/mysql.sql")
+            MYSQL_PWD=root mysqldef -u root -h 127.0.0.1 --port 3306 outbox < "main/${SCHEMA_DIR}/mysql.sql"
+            MYSQL_DIFF=$(MYSQL_PWD=root mysqldef -u root -h 127.0.0.1 --port 3306 outbox --dry-run < "pr/${SCHEMA_DIR}/mysql.sql")
             if echo "$MYSQL_DIFF" | grep -q "^--"; then
               RESULT+="No changes.\n"
             else
               RESULT+="\`\`\`sql\n${MYSQL_DIFF}\n\`\`\`\n"
             fi
           else
-            MYSQL_DIFF=$(mysqldef -u root -p root -h 127.0.0.1 --port 3306 outbox --dry-run < "pr/${SCHEMA_DIR}/mysql.sql")
+            MYSQL_DIFF=$(MYSQL_PWD=root mysqldef -u root -h 127.0.0.1 --port 3306 outbox --dry-run < "pr/${SCHEMA_DIR}/mysql.sql")
             RESULT+="\`\`\`sql\n${MYSQL_DIFF}\n\`\`\`\n"
           fi
 

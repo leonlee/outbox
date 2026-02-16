@@ -13,7 +13,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 import outbox.util.JsonCodec;
 
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;

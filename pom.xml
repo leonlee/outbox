@@ -26,6 +26,9 @@
     <spring.version>6.2.15</spring.version>
     <ulid-creator.version>5.2.3</ulid-creator.version>
     <micrometer.version>1.14.5</micrometer.version>
+    <mysql-connector.version>8.3.0</mysql-connector.version>
+    <postgresql.version>42.7.3</postgresql.version>
+    <hikaricp.version>5.1.0</hikaricp.version>
   </properties>
 
   <dependencyManagement>
@@ -50,6 +53,21 @@
         <groupId>io.micrometer</groupId>
         <artifactId>micrometer-core</artifactId>
         <version>${micrometer.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.mysql</groupId>
+        <artifactId>mysql-connector-j</artifactId>
+        <version>${mysql-connector.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.postgresql</groupId>
+        <artifactId>postgresql</artifactId>
+        <version>${postgresql.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.zaxxer</groupId>
+        <artifactId>HikariCP</artifactId>
+        <version>${hikaricp.version}</version>
       </dependency>
       <dependency>
         <groupId>org.springframework</groupId>

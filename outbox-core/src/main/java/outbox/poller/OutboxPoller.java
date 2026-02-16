@@ -144,11 +144,9 @@ public final class OutboxPoller implements AutoCloseable {
   }
 
   private Instant dispatchRows(List<OutboxEvent> rows) {
-    Instant oldest = null;
+    // Rows are sorted oldest-first by SQL ORDER BY created_at
+    Instant oldest = rows.isEmpty() ? null : rows.get(0).createdAt();
     for (OutboxEvent row : rows) {
-      if (oldest == null || row.createdAt().isBefore(oldest)) {
-        oldest = row.createdAt();
-      }
       if (!dispatchRow(row)) {
         break; // cold queue full
       }

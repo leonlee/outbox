@@ -49,7 +49,7 @@ public final class PostgresOutboxStore extends AbstractJdbcOutboxStore {
   @Override
   public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
       Instant lockExpiry, Duration skipRecent, int limit) {
-    now = now.truncatedTo(ChronoUnit.MILLIS);
+    Instant nowMs = now.truncatedTo(ChronoUnit.MILLIS);
     Instant recentCutoff = recentCutoff(now, skipRecent);
     // Single round-trip: FOR UPDATE SKIP LOCKED + RETURNING
     String sql = "UPDATE " + tableName() + " SET locked_by=?, locked_at=? " +
@@ -62,7 +62,7 @@ public final class PostgresOutboxStore extends AbstractJdbcOutboxStore {
         ") RETURNING event_id, event_type, aggregate_type, aggregate_id, " +
         "tenant_id, payload, headers, attempts, created_at";
     return JdbcTemplate.updateReturning(conn, sql, EVENT_ROW_MAPPER,
-        ownerId, Timestamp.from(now), Timestamp.from(now),
+        ownerId, Timestamp.from(nowMs), Timestamp.from(now),
         Timestamp.from(lockExpiry), Timestamp.from(recentCutoff), limit);
   }
 }

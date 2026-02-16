@@ -64,6 +64,9 @@ public final class MicrometerMetricsExporter implements MetricsExporter {
   public MicrometerMetricsExporter(MeterRegistry registry, String namePrefix) {
     Objects.requireNonNull(registry, "registry");
     Objects.requireNonNull(namePrefix, "namePrefix");
+    if (namePrefix.isEmpty()) {
+      throw new IllegalArgumentException("namePrefix must not be empty");
+    }
 
     this.hotEnqueued = registry.counter(namePrefix + ".enqueue.hot");
     this.hotDropped = registry.counter(namePrefix + ".enqueue.hot.dropped");

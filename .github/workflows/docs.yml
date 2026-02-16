@@ -8,7 +8,6 @@ on:
       - 'outbox-jdbc/src/main/java/**'
       - 'outbox-spring-adapter/src/main/java/**'
       - 'outbox-micrometer/src/main/java/**'
-      - '**/package-info.java'
   workflow_dispatch:
 
 permissions:

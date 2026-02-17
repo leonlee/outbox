@@ -11,7 +11,7 @@
 
 ## 安装
 
-构件托管在 [GitHub Packages](https://github.com/leonlee/outbox/packages)，当前版本 **0.4.1**。
+构件托管在 [GitHub Packages](https://github.com/leonlee/outbox/packages)，当前版本 **0.5.0**。
 
 先在 `pom.xml` 中添加仓库地址：
 
@@ -31,21 +31,28 @@
 <dependency>
   <groupId>outbox</groupId>
   <artifactId>outbox-core</artifactId>
-  <version>0.4.1</version>
+  <version>0.5.0</version>
 </dependency>
 
 <!-- JDBC 实现：OutboxStore 及事务管理（持久化必选） -->
 <dependency>
   <groupId>outbox</groupId>
   <artifactId>outbox-jdbc</artifactId>
-  <version>0.4.1</version>
+  <version>0.5.0</version>
 </dependency>
 
 <!-- Spring 适配器（可选，仅 Spring 项目使用） -->
 <dependency>
   <groupId>outbox</groupId>
   <artifactId>outbox-spring-adapter</artifactId>
-  <version>0.4.1</version>
+  <version>0.5.0</version>
+</dependency>
+
+<!-- Micrometer 监控桥接（可选，用于 Prometheus/Grafana） -->
+<dependency>
+  <groupId>outbox</groupId>
+  <artifactId>outbox-micrometer</artifactId>
+  <version>0.5.0</version>
 </dependency>
 ```
 
@@ -56,6 +63,7 @@
 - `outbox-core`：核心 API、Hook、Dispatcher、Poller、Registry，零外部依赖。
 - `outbox-jdbc`：JDBC OutboxStore 实现及事务管理工具。
 - `outbox-spring-adapter`：可选的 Spring `TxContext` 适配。
+- `outbox-micrometer`：Micrometer 监控桥接，支持 Prometheus/Grafana。
 - `samples/outbox-demo`：纯 JDBC 示例（H2，无 Spring）。
 - `samples/outbox-spring-demo`：Spring Boot 示例。
 - `samples/outbox-multi-ds-demo`：多数据源示例（双 H2 库）。

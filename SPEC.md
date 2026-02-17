@@ -26,6 +26,7 @@ For tutorials and code examples, see [TUTORIAL.md](TUTORIAL.md).
 15. [Observability](#15-observability)
 16. [Thread Safety](#16-thread-safety)
 17. [Event Purge](#17-event-purge)
+18. [Dead Event Management](#18-dead-event-management)
 
 ---
 
@@ -88,6 +89,7 @@ Packages:
 - `outbox.poller` - OutboxPoller, OutboxPollerHandler
 - `outbox.registry` - Listener registry
 - `outbox.purge` - OutboxPurgeScheduler (scheduled purge of terminal events)
+- `outbox.dead` - DeadEventManager (connection-managed facade for dead event queries)
 - `outbox.util` - JsonCodec (interface), DefaultJsonCodec (built-in zero-dependency implementation)
 
 ### 2.2 outbox-jdbc
@@ -131,15 +133,22 @@ Optional Spring integration.
 Classes:
 - `SpringTxContext` - Implements TxContext using Spring's TransactionSynchronizationManager
 
-### 2.4 samples/outbox-demo
+### 2.4 outbox-micrometer
+
+Micrometer metrics bridge for Prometheus, Grafana, Datadog, and other monitoring backends.
+
+Classes:
+- `MicrometerMetricsExporter` - Implements `MetricsExporter` using Micrometer `MeterRegistry`
+
+### 2.5 samples/outbox-demo
 
 Standalone H2 demonstration (no Spring).
 
-### 2.5 samples/outbox-spring-demo
+### 2.6 samples/outbox-spring-demo
 
 Spring Boot REST API demonstration.
 
-### 2.6 samples/outbox-multi-ds-demo
+### 2.7 samples/outbox-multi-ds-demo
 
 Multi-datasource demo (two H2 databases).
 
@@ -180,6 +189,25 @@ Used by OutboxDispatcher and OutboxPoller for short-lived connections outside th
 |----------------|--------|-------------|
 | `ThreadLocalTxContext` | outbox-jdbc | Manual JDBC transaction management |
 | `SpringTxContext` | outbox-spring-adapter | Spring @Transactional integration |
+
+### 3.4 JsonCodec
+
+```java
+public interface JsonCodec {
+  static JsonCodec getDefault() { ... }
+
+  String toJson(Map<String, String> headers);
+  Map<String, String> parseObject(String json);
+}
+```
+
+- `getDefault()` returns the singleton `DefaultJsonCodec` — a lightweight, zero-dependency encoder/decoder that only supports flat `Map<String, String>` objects.
+- `toJson()` returns `null` for null or empty maps; rejects null keys with `IllegalArgumentException`.
+- `parseObject()` returns an empty map for `null`, empty, or `"null"` input.
+- Users who already have Jackson or Gson on the classpath can implement this interface and inject it into:
+  - `AbstractJdbcOutboxStore` constructor: `new H2OutboxStore(tableName, codec)`
+  - `OutboxPoller.Builder.jsonCodec(codec)`
+  - `JdbcOutboxStores.detect(dataSource, codec)`
 
 ---
 
@@ -859,7 +887,39 @@ public interface MetricsExporter {
 }
 ```
 
-### 15.2 Logging
+### 15.2 MicrometerMetricsExporter
+
+The `outbox-micrometer` module provides `MicrometerMetricsExporter`, a ready-to-use implementation that registers counters and gauges with a Micrometer `MeterRegistry`.
+
+**Constructors:**
+
+```java
+new MicrometerMetricsExporter(MeterRegistry registry)                // default prefix: "outbox"
+new MicrometerMetricsExporter(MeterRegistry registry, String namePrefix) // custom prefix
+```
+
+**Counters (monotonically increasing):**
+
+| Metric Name | Description |
+|-------------|-------------|
+| `{prefix}.enqueue.hot` | Events enqueued via hot path |
+| `{prefix}.enqueue.hot.dropped` | Events dropped (hot queue full) |
+| `{prefix}.enqueue.cold` | Events enqueued via cold (poller) path |
+| `{prefix}.dispatch.success` | Events dispatched successfully |
+| `{prefix}.dispatch.failure` | Events failed (will retry) |
+| `{prefix}.dispatch.dead` | Events moved to DEAD |
+
+**Gauges (current value):**
+
+| Metric Name | Description |
+|-------------|-------------|
+| `{prefix}.queue.hot.depth` | Current hot queue depth |
+| `{prefix}.queue.cold.depth` | Current cold queue depth |
+| `{prefix}.lag.oldest.ms` | Lag of oldest pending event in milliseconds |
+
+The default prefix is `outbox`. For multi-instance setups, use a custom prefix (e.g., `"orders.outbox"`) to avoid metric collisions.
+
+### 15.3 Logging
 
 | Level | Event |
 |-------|-------|
@@ -870,7 +930,7 @@ public interface MetricsExporter {
 
 Hot queue drop warnings are emitted by `DispatcherCommitHook`. If no hook is installed (CDC-only), no warning or metric is produced.
 
-### 15.3 Idempotency Requirements
+### 15.4 Idempotency Requirements
 
 - Listeners that publish to MQ MUST include eventId in message header/body
 - Downstream systems must dedupe by eventId
@@ -977,3 +1037,57 @@ void close()    // Stop purge and shut down scheduler thread
 - Logs total purged count at INFO level
 - Errors are caught and logged at SEVERE (does not propagate)
 - Calling `start()` after `close()` MUST throw `IllegalStateException`.
+
+---
+
+## 18. Dead Event Management
+
+### 18.1 Overview
+
+Events that exceed `maxAttempts` or have no registered listener are marked DEAD. The framework provides tooling to query, count, and replay dead events without writing raw SQL.
+
+### 18.2 OutboxStore SPI Methods
+
+The `OutboxStore` interface includes default methods for dead event operations:
+
+```java
+default List<OutboxEvent> queryDead(Connection conn, String eventType, String aggregateType, int limit);
+default int replayDead(Connection conn, String eventId);
+default int countDead(Connection conn, String eventType);
+```
+
+- `queryDead` — returns dead events matching optional filters (`null` for all), ordered oldest first
+- `replayDead` — resets a single DEAD event to NEW status (returns number of rows updated)
+- `countDead` — counts dead events, optionally filtered by event type
+
+### 18.3 DeadEventManager
+
+`DeadEventManager` (`outbox.dead`) is a convenience facade that manages connection lifecycle internally using a `ConnectionProvider`:
+
+```java
+public final class DeadEventManager {
+  public DeadEventManager(ConnectionProvider connectionProvider, OutboxStore outboxStore);
+
+  public List<OutboxEvent> query(String eventType, String aggregateType, int limit);
+  public boolean replay(String eventId);
+  public int replayAll(String eventType, String aggregateType, int batchSize);
+  public int count(String eventType);
+}
+```
+
+**Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `query(eventType, aggregateType, limit)` | Query dead events with optional filters (`null` for all) |
+| `replay(eventId)` | Replay a single dead event by resetting it to NEW; returns `true` if replayed |
+| `replayAll(eventType, aggregateType, batchSize)` | Replay all matching dead events in batches; returns total replayed |
+| `count(eventType)` | Count dead events, optionally filtered by event type (`null` for all) |
+
+### 18.4 Error Handling
+
+All `DeadEventManager` methods catch `SQLException` and log at `SEVERE` level:
+- `query()` returns `List.of()` on failure
+- `replay()` returns `false` on failure
+- `replayAll()` returns the count replayed so far and stops on failure
+- `count()` returns `0` on failure

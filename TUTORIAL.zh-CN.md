@@ -26,6 +26,9 @@
 8. [多数据源](#8-多数据源)
 9. [事件清理](#9-事件清理)
 10. [分布式追踪（OpenTelemetry）](#10-分布式追踪opentelemetry)
+11. [死信事件管理](#11-死信事件管理)
+12. [Micrometer 监控](#12-micrometer-监控)
+13. [自定义 JsonCodec](#13-自定义-jsoncodec)
 
 ---
 
@@ -805,3 +808,254 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
 ```
 
 这样无需框架级 OTel 依赖，即可实现从写入到异步调度的端到端追踪。
+
+---
+
+## 11. 死信事件管理
+
+超过 `maxAttempts` 或没有注册 Listener 的事件最终进入 DEAD 状态。`DeadEventManager` 提供了一个管理连接生命周期的门面，用于查询、重放和统计这些事件。
+
+### 基本配置
+
+```java
+import outbox.dead.DeadEventManager;
+import outbox.jdbc.DataSourceConnectionProvider;
+import outbox.jdbc.store.JdbcOutboxStores;
+
+DataSource dataSource = /* 你的 DataSource */;
+var connectionProvider = new DataSourceConnectionProvider(dataSource);
+var outboxStore = JdbcOutboxStores.detect(dataSource);
+
+DeadEventManager deadEvents = new DeadEventManager(connectionProvider, outboxStore);
+```
+
+### 查询死信事件
+
+```java
+// 查询所有死信事件（最多 100 条）
+var all = deadEvents.query(null, null, 100);
+
+// 按事件类型过滤
+var userErrors = deadEvents.query("UserCreated", null, 50);
+
+// 同时按事件类型和聚合类型过滤
+var orderErrors = deadEvents.query("OrderPlaced", "Order", 50);
+```
+
+### 重放单个事件
+
+```java
+boolean replayed = deadEvents.replay("01HXYZ...");  // 事件 ID
+if (replayed) {
+  System.out.println("事件已重置为 NEW 状态，将被重新处理");
+}
+```
+
+### 批量重放
+
+```java
+// 分批重放所有 "UserCreated" 死信事件，每批 100 条
+int total = deadEvents.replayAll("UserCreated", null, 100);
+System.out.println("已重放 " + total + " 个事件");
+
+// 重放所有死信事件
+int allReplayed = deadEvents.replayAll(null, null, 100);
+```
+
+### 统计死信事件
+
+```java
+int total = deadEvents.count(null);              // 所有死信事件
+int userCount = deadEvents.count("UserCreated"); // 按事件类型统计
+```
+
+### Spring 集成
+
+```java
+@Bean
+public DeadEventManager deadEventManager(
+    DataSourceConnectionProvider connectionProvider,
+    AbstractJdbcOutboxStore outboxStore) {
+  return new DeadEventManager(connectionProvider, outboxStore);
+}
+```
+
+所有方法内部处理 `SQLException` — 以 SEVERE 级别记录日志并返回安全默认值（`List.of()`、`false`、`0`），不会向外抛异常。
+
+---
+
+## 12. Micrometer 监控
+
+`outbox-micrometer` 模块提供了 `MicrometerMetricsExporter`，向 Micrometer `MeterRegistry` 注册计数器和仪表盘，支持导出到 Prometheus、Grafana、Datadog 等。
+
+### 添加依赖
+
+```xml
+<dependency>
+  <groupId>outbox</groupId>
+  <artifactId>outbox-micrometer</artifactId>
+  <version>0.5.0</version>
+</dependency>
+```
+
+### 接入 Dispatcher
+
+```java
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.prometheusmetrics.PrometheusConfig;
+import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
+import outbox.micrometer.MicrometerMetricsExporter;
+
+MeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+MicrometerMetricsExporter metrics = new MicrometerMetricsExporter(registry);
+
+OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+    .connectionProvider(connectionProvider)
+    .outboxStore(outboxStore)
+    .listenerRegistry(listenerRegistry)
+    .metrics(metrics)  // 接入监控
+    .build();
+
+OutboxPoller poller = OutboxPoller.builder()
+    .connectionProvider(connectionProvider)
+    .outboxStore(outboxStore)
+    .handler(new DispatcherPollerHandler(dispatcher))
+    .metrics(metrics)  // Poller 使用同一个 exporter
+    .build();
+```
+
+### Spring Boot 自动配置
+
+在 Spring Boot 中使用 `spring-boot-starter-actuator` 时，`MeterRegistry` 会被自动配置：
+
+```java
+@Bean
+public MicrometerMetricsExporter outboxMetrics(MeterRegistry registry) {
+  return new MicrometerMetricsExporter(registry);
+}
+
+@Bean(destroyMethod = "close")
+public OutboxDispatcher dispatcher(
+    DataSourceConnectionProvider connectionProvider,
+    AbstractJdbcOutboxStore outboxStore,
+    DefaultListenerRegistry listenerRegistry,
+    MicrometerMetricsExporter metrics) {
+  return OutboxDispatcher.builder()
+      .connectionProvider(connectionProvider)
+      .outboxStore(outboxStore)
+      .listenerRegistry(listenerRegistry)
+      .metrics(metrics)
+      .build();
+}
+```
+
+配置完成后，指标可通过 `/actuator/prometheus` 端点获取。
+
+### 指标名称
+
+**计数器：**
+
+| 名称 | 说明 |
+|------|------|
+| `outbox.enqueue.hot` | 通过热路径入队的事件 |
+| `outbox.enqueue.hot.dropped` | 被丢弃的事件（热队列满） |
+| `outbox.enqueue.cold` | 通过冷路径（Poller）入队的事件 |
+| `outbox.dispatch.success` | 成功分发的事件 |
+| `outbox.dispatch.failure` | 失败的事件（将重试） |
+| `outbox.dispatch.dead` | 进入 DEAD 状态的事件 |
+
+**仪表盘：**
+
+| 名称 | 说明 |
+|------|------|
+| `outbox.queue.hot.depth` | 当前热队列深度 |
+| `outbox.queue.cold.depth` | 当前冷队列深度 |
+| `outbox.lag.oldest.ms` | 最旧待处理事件的延迟（毫秒） |
+
+### 多实例前缀
+
+运行多个 outbox 栈时，使用自定义前缀避免指标冲突：
+
+```java
+// 订单栈
+var ordersMetrics = new MicrometerMetricsExporter(registry, "orders.outbox");
+
+// 库存栈
+var inventoryMetrics = new MicrometerMetricsExporter(registry, "inventory.outbox");
+```
+
+这会生成 `orders.outbox.dispatch.success` 和 `inventory.outbox.dispatch.success` 等指标。
+
+---
+
+## 13. 自定义 JsonCodec
+
+框架使用 `JsonCodec` 对事件 header map（`Map<String, String>`）进行 JSON 编解码。内置的 `DefaultJsonCodec` 是一个轻量级、零依赖的实现。如果项目已有 Jackson 或 Gson，可以替换它以获得更好的性能或兼容性。
+
+### 何时替换 DefaultJsonCodec
+
+- 希望使用已有的 Jackson/Gson `ObjectMapper` 保持一致性
+- 需要对超大 header map 有更好的性能
+- 希望利用 Jackson 的流式解析器
+
+### 实现接口
+
+```java
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import outbox.util.JsonCodec;
+
+import java.util.Collections;
+import java.util.Map;
+
+public class JacksonJsonCodec implements JsonCodec {
+  private static final ObjectMapper mapper = new ObjectMapper();
+  private static final TypeReference<Map<String, String>> MAP_TYPE = new TypeReference<>() {};
+
+  @Override
+  public String toJson(Map<String, String> headers) {
+    if (headers == null || headers.isEmpty()) return null;
+    try {
+      return mapper.writeValueAsString(headers);
+    } catch (Exception e) {
+      throw new IllegalArgumentException("编码 headers 失败", e);
+    }
+  }
+
+  @Override
+  public Map<String, String> parseObject(String json) {
+    if (json == null || json.isBlank() || "null".equals(json.trim())) {
+      return Collections.emptyMap();
+    }
+    try {
+      return mapper.readValue(json, MAP_TYPE);
+    } catch (Exception e) {
+      throw new IllegalArgumentException("解析 headers JSON 失败", e);
+    }
+  }
+}
+```
+
+### 注入到组件
+
+自定义 codec 可以在三个位置注入：
+
+```java
+JsonCodec codec = new JacksonJsonCodec();
+
+// 1. OutboxStore（用于 insertNew 和 poll/claim 行映射）
+var outboxStore = new H2OutboxStore("outbox_event", codec);
+
+// 2. OutboxPoller（用于 OutboxEvent → EventEnvelope 转换）
+OutboxPoller poller = OutboxPoller.builder()
+    .connectionProvider(connectionProvider)
+    .outboxStore(outboxStore)
+    .handler(handler)
+    .jsonCodec(codec)
+    .build();
+
+// 3. 自动探测时传入自定义 codec
+var autoStore = JdbcOutboxStores.detect(dataSource, codec);
+```
+
+如不注入 codec，所有组件默认使用 `JsonCodec.getDefault()`（内置的 `DefaultJsonCodec` 单例）。

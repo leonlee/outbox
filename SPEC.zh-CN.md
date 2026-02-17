@@ -26,6 +26,7 @@ API 契约、数据模型、行为规则、配置与可观测性的完整技术�
 15. [可观测性](#15-可观测性)
 16. [线程安全](#16-线程安全)
 17. [事件清理](#17-事件清理)
+18. [死信事件管理](#18-死信事件管理)
 
 ---
 
@@ -88,6 +89,7 @@ OutboxDispatcher 的优先级策略：
 - `outbox.poller` — OutboxPoller、OutboxPollerHandler
 - `outbox.registry` — Listener 注册中心
 - `outbox.purge` — OutboxPurgeScheduler（定时清理终态事件）
+- `outbox.dead` — DeadEventManager（死信事件查询/重放的连接管理门面）
 - `outbox.util` — JsonCodec（接口）、DefaultJsonCodec（内置零依赖实现）
 
 ### 2.2 outbox-jdbc
@@ -131,15 +133,22 @@ JDBC OutboxStore 继承体系、EventPurger 继承体系与手动事务管理工
 类：
 - `SpringTxContext` — 基于 Spring TransactionSynchronizationManager 实现 TxContext
 
-### 2.4 samples/outbox-demo
+### 2.4 outbox-micrometer
+
+Micrometer 监控桥接模块，支持 Prometheus、Grafana、Datadog 等监控后端。
+
+类：
+- `MicrometerMetricsExporter` — 基于 Micrometer `MeterRegistry` 实现 `MetricsExporter`
+
+### 2.5 samples/outbox-demo
 
 独立 H2 示例（无 Spring）。
 
-### 2.5 samples/outbox-spring-demo
+### 2.6 samples/outbox-spring-demo
 
 Spring Boot REST API 示例。
 
-### 2.6 samples/outbox-multi-ds-demo
+### 2.7 samples/outbox-multi-ds-demo
 
 多数据源示例（两个 H2 数据库）。
 
@@ -180,6 +189,25 @@ public interface ConnectionProvider {
 |------|----------|------|
 | `ThreadLocalTxContext` | outbox-jdbc | 手动 JDBC 事务管理 |
 | `SpringTxContext` | outbox-spring-adapter | Spring @Transactional 集成 |
+
+### 3.4 JsonCodec
+
+```java
+public interface JsonCodec {
+  static JsonCodec getDefault() { ... }
+
+  String toJson(Map<String, String> headers);
+  Map<String, String> parseObject(String json);
+}
+```
+
+- `getDefault()` 返回 `DefaultJsonCodec` 单例 — 轻量级、零依赖的编解码器，仅支持扁平 `Map<String, String>` 对象。
+- `toJson()` 对 null 或空 Map 返回 `null`；key 为 null 时抛 `IllegalArgumentException`。
+- `parseObject()` 对 `null`、空字符串或 `"null"` 输入返回空 Map。
+- 已有 Jackson 或 Gson 的项目可实现该接口并注入到：
+  - `AbstractJdbcOutboxStore` 构造函数：`new H2OutboxStore(tableName, codec)`
+  - `OutboxPoller.Builder.jsonCodec(codec)`
+  - `JdbcOutboxStores.detect(dataSource, codec)`
 
 ---
 
@@ -857,7 +885,39 @@ public interface MetricsExporter {
 }
 ```
 
-### 15.2 日志级别
+### 15.2 MicrometerMetricsExporter
+
+`outbox-micrometer` 模块提供了 `MicrometerMetricsExporter`，开箱即用，向 Micrometer `MeterRegistry` 注册计数器和仪表盘。
+
+**构造函数：**
+
+```java
+new MicrometerMetricsExporter(MeterRegistry registry)                // 默认前缀: "outbox"
+new MicrometerMetricsExporter(MeterRegistry registry, String namePrefix) // 自定义前缀
+```
+
+**计数器（单调递增）：**
+
+| 指标名称 | 说明 |
+|----------|------|
+| `{prefix}.enqueue.hot` | 通过热路径入队的事件 |
+| `{prefix}.enqueue.hot.dropped` | 被丢弃的事件（热队列满） |
+| `{prefix}.enqueue.cold` | 通过冷路径（Poller）入队的事件 |
+| `{prefix}.dispatch.success` | 成功分发的事件 |
+| `{prefix}.dispatch.failure` | 失败的事件（将重试） |
+| `{prefix}.dispatch.dead` | 进入 DEAD 状态的事件 |
+
+**仪表盘（当前值）：**
+
+| 指标名称 | 说明 |
+|----------|------|
+| `{prefix}.queue.hot.depth` | 当前热队列深度 |
+| `{prefix}.queue.cold.depth` | 当前冷队列深度 |
+| `{prefix}.lag.oldest.ms` | 最旧待处理事件的延迟（毫秒） |
+
+默认前缀为 `outbox`。多实例部署时，使用自定义前缀（如 `"orders.outbox"`）避免指标冲突。
+
+### 15.3 日志级别
 
 | 级别 | 事件 |
 |------|------|
@@ -868,7 +928,7 @@ public interface MetricsExporter {
 
 热队列丢弃告警由 DispatcherCommitHook 发出。未安装 Hook（纯 CDC 模式）时不会产生告警或指标。
 
-### 15.3 幂等性要求
+### 15.4 幂等性要求
 
 - 向 MQ 投递的 Listener 必须在消息头/消息体中包含 eventId
 - 下游系统按 eventId 去重
@@ -975,3 +1035,57 @@ void close()    // 停止清理并关闭调度线程
 - 以 INFO 级别记录本次清理总数
 - 异常被捕获并以 SEVERE 级别记录（不向上传播）
 - 调用 `close()` 后再次调用 `start()` 必须抛出 `IllegalStateException`。
+
+---
+
+## 18. 死信事件管理
+
+### 18.1 概述
+
+超过 `maxAttempts` 或没有注册 Listener 的事件会被标记为 DEAD。框架提供工具来查询、计数和重放死信事件，无需手写 SQL。
+
+### 18.2 OutboxStore SPI 方法
+
+`OutboxStore` 接口包含用于死信操作的默认方法：
+
+```java
+default List<OutboxEvent> queryDead(Connection conn, String eventType, String aggregateType, int limit);
+default int replayDead(Connection conn, String eventId);
+default int countDead(Connection conn, String eventType);
+```
+
+- `queryDead` — 返回匹配可选过滤条件的死信事件（`null` 表示不过滤），按时间从旧到新排序
+- `replayDead` — 将单个 DEAD 事件重置为 NEW 状态（返回更新的行数）
+- `countDead` — 统计死信事件数量，可按事件类型过滤
+
+### 18.3 DeadEventManager
+
+`DeadEventManager`（`outbox.dead`）是一个便捷门面，通过 `ConnectionProvider` 内部管理连接生命周期：
+
+```java
+public final class DeadEventManager {
+  public DeadEventManager(ConnectionProvider connectionProvider, OutboxStore outboxStore);
+
+  public List<OutboxEvent> query(String eventType, String aggregateType, int limit);
+  public boolean replay(String eventId);
+  public int replayAll(String eventType, String aggregateType, int batchSize);
+  public int count(String eventType);
+}
+```
+
+**方法：**
+
+| 方法 | 说明 |
+|------|------|
+| `query(eventType, aggregateType, limit)` | 查询死信事件，支持可选过滤（`null` 表示不过滤） |
+| `replay(eventId)` | 将单个死信事件重置为 NEW；成功返回 `true` |
+| `replayAll(eventType, aggregateType, batchSize)` | 分批重放所有匹配的死信事件；返回重放总数 |
+| `count(eventType)` | 统计死信事件数量，可按事件类型过滤（`null` 表示不过滤） |
+
+### 18.4 错误处理
+
+所有 `DeadEventManager` 方法在遇到 `SQLException` 时以 `SEVERE` 级别记录日志：
+- `query()` 失败时返回 `List.of()`
+- `replay()` 失败时返回 `false`
+- `replayAll()` 失败时返回已重放的数量并停止
+- `count()` 失败时返回 `0`

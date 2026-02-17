@@ -27,6 +27,9 @@ For the full technical specification, see [SPEC.md](SPEC.md).
 8. [Multi-Datasource](#8-multi-datasource)
 9. [Event Purge](#9-event-purge)
 10. [Distributed Tracing (OpenTelemetry)](#10-distributed-tracing-opentelemetry)
+11. [Dead Event Management](#11-dead-event-management)
+12. [Micrometer Metrics](#12-micrometer-metrics)
+13. [Custom JsonCodec](#13-custom-jsoncodec)
 
 ---
 
@@ -806,3 +809,254 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
 ```
 
 This gives you end-to-end traces from the writer through the async outbox dispatch, with no framework-level OTel dependency.
+
+---
+
+## 11. Dead Event Management
+
+Events that exceed `maxAttempts` or have no registered listener end up in DEAD status. `DeadEventManager` provides a connection-managed facade to query, replay, and count these events.
+
+### Setup
+
+```java
+import outbox.dead.DeadEventManager;
+import outbox.jdbc.DataSourceConnectionProvider;
+import outbox.jdbc.store.JdbcOutboxStores;
+
+DataSource dataSource = /* your DataSource */;
+var connectionProvider = new DataSourceConnectionProvider(dataSource);
+var outboxStore = JdbcOutboxStores.detect(dataSource);
+
+DeadEventManager deadEvents = new DeadEventManager(connectionProvider, outboxStore);
+```
+
+### Query Dead Events
+
+```java
+// All dead events (up to 100)
+var all = deadEvents.query(null, null, 100);
+
+// Filter by event type
+var userErrors = deadEvents.query("UserCreated", null, 50);
+
+// Filter by both event type and aggregate type
+var orderErrors = deadEvents.query("OrderPlaced", "Order", 50);
+```
+
+### Replay a Single Event
+
+```java
+boolean replayed = deadEvents.replay("01HXYZ...");  // event ID
+if (replayed) {
+  System.out.println("Event reset to NEW, will be reprocessed");
+}
+```
+
+### Batch Replay
+
+```java
+// Replay all dead "UserCreated" events in batches of 100
+int total = deadEvents.replayAll("UserCreated", null, 100);
+System.out.println("Replayed " + total + " events");
+
+// Replay ALL dead events
+int allReplayed = deadEvents.replayAll(null, null, 100);
+```
+
+### Count Dead Events
+
+```java
+int total = deadEvents.count(null);              // all dead events
+int userCount = deadEvents.count("UserCreated"); // by event type
+```
+
+### Spring Integration
+
+```java
+@Bean
+public DeadEventManager deadEventManager(
+    DataSourceConnectionProvider connectionProvider,
+    AbstractJdbcOutboxStore outboxStore) {
+  return new DeadEventManager(connectionProvider, outboxStore);
+}
+```
+
+All methods handle `SQLException` internally — they log at SEVERE and return safe defaults (`List.of()`, `false`, `0`) rather than throwing.
+
+---
+
+## 12. Micrometer Metrics
+
+The `outbox-micrometer` module provides `MicrometerMetricsExporter`, which registers counters and gauges with a Micrometer `MeterRegistry` for export to Prometheus, Grafana, Datadog, etc.
+
+### Add Dependency
+
+```xml
+<dependency>
+  <groupId>outbox</groupId>
+  <artifactId>outbox-micrometer</artifactId>
+  <version>0.5.0</version>
+</dependency>
+```
+
+### Wire to Dispatcher
+
+```java
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.prometheusmetrics.PrometheusConfig;
+import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
+import outbox.micrometer.MicrometerMetricsExporter;
+
+MeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+MicrometerMetricsExporter metrics = new MicrometerMetricsExporter(registry);
+
+OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+    .connectionProvider(connectionProvider)
+    .outboxStore(outboxStore)
+    .listenerRegistry(listenerRegistry)
+    .metrics(metrics)  // plug in metrics
+    .build();
+
+OutboxPoller poller = OutboxPoller.builder()
+    .connectionProvider(connectionProvider)
+    .outboxStore(outboxStore)
+    .handler(new DispatcherPollerHandler(dispatcher))
+    .metrics(metrics)  // same exporter for poller
+    .build();
+```
+
+### Spring Boot Auto-Configuration
+
+In Spring Boot with `spring-boot-starter-actuator`, the `MeterRegistry` is auto-configured:
+
+```java
+@Bean
+public MicrometerMetricsExporter outboxMetrics(MeterRegistry registry) {
+  return new MicrometerMetricsExporter(registry);
+}
+
+@Bean(destroyMethod = "close")
+public OutboxDispatcher dispatcher(
+    DataSourceConnectionProvider connectionProvider,
+    AbstractJdbcOutboxStore outboxStore,
+    DefaultListenerRegistry listenerRegistry,
+    MicrometerMetricsExporter metrics) {
+  return OutboxDispatcher.builder()
+      .connectionProvider(connectionProvider)
+      .outboxStore(outboxStore)
+      .listenerRegistry(listenerRegistry)
+      .metrics(metrics)
+      .build();
+}
+```
+
+Metrics are then available at `/actuator/prometheus`.
+
+### Metric Names
+
+**Counters:**
+
+| Name | Description |
+|------|-------------|
+| `outbox.enqueue.hot` | Events enqueued via hot path |
+| `outbox.enqueue.hot.dropped` | Events dropped (hot queue full) |
+| `outbox.enqueue.cold` | Events enqueued via cold (poller) path |
+| `outbox.dispatch.success` | Events dispatched successfully |
+| `outbox.dispatch.failure` | Events failed (will retry) |
+| `outbox.dispatch.dead` | Events moved to DEAD |
+
+**Gauges:**
+
+| Name | Description |
+|------|-------------|
+| `outbox.queue.hot.depth` | Current hot queue depth |
+| `outbox.queue.cold.depth` | Current cold queue depth |
+| `outbox.lag.oldest.ms` | Lag of oldest pending event (ms) |
+
+### Multi-Instance Name Prefix
+
+When running multiple outbox stacks, use a custom prefix to avoid metric collisions:
+
+```java
+// Orders stack
+var ordersMetrics = new MicrometerMetricsExporter(registry, "orders.outbox");
+
+// Inventory stack
+var inventoryMetrics = new MicrometerMetricsExporter(registry, "inventory.outbox");
+```
+
+This produces metrics like `orders.outbox.dispatch.success` and `inventory.outbox.dispatch.success`.
+
+---
+
+## 13. Custom JsonCodec
+
+The framework uses `JsonCodec` to encode/decode event header maps (`Map<String, String>`) to/from JSON. The built-in `DefaultJsonCodec` is a lightweight, zero-dependency implementation. If you already have Jackson or Gson on your classpath, you can replace it for better performance or compatibility.
+
+### When to Replace DefaultJsonCodec
+
+- You want to use your existing Jackson/Gson `ObjectMapper` for consistency
+- You need better performance for very large header maps
+- You want to leverage Jackson's streaming parser
+
+### Implement the Interface
+
+```java
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import outbox.util.JsonCodec;
+
+import java.util.Collections;
+import java.util.Map;
+
+public class JacksonJsonCodec implements JsonCodec {
+  private static final ObjectMapper mapper = new ObjectMapper();
+  private static final TypeReference<Map<String, String>> MAP_TYPE = new TypeReference<>() {};
+
+  @Override
+  public String toJson(Map<String, String> headers) {
+    if (headers == null || headers.isEmpty()) return null;
+    try {
+      return mapper.writeValueAsString(headers);
+    } catch (Exception e) {
+      throw new IllegalArgumentException("Failed to encode headers", e);
+    }
+  }
+
+  @Override
+  public Map<String, String> parseObject(String json) {
+    if (json == null || json.isBlank() || "null".equals(json.trim())) {
+      return Collections.emptyMap();
+    }
+    try {
+      return mapper.readValue(json, MAP_TYPE);
+    } catch (Exception e) {
+      throw new IllegalArgumentException("Failed to parse headers JSON", e);
+    }
+  }
+}
+```
+
+### Inject into Components
+
+The custom codec can be injected at three points:
+
+```java
+JsonCodec codec = new JacksonJsonCodec();
+
+// 1. OutboxStore (used for insertNew and poll/claim row mapping)
+var outboxStore = new H2OutboxStore("outbox_event", codec);
+
+// 2. OutboxPoller (used when converting OutboxEvent → EventEnvelope)
+OutboxPoller poller = OutboxPoller.builder()
+    .connectionProvider(connectionProvider)
+    .outboxStore(outboxStore)
+    .handler(handler)
+    .jsonCodec(codec)
+    .build();
+
+// 3. Auto-detection with custom codec
+var autoStore = JdbcOutboxStores.detect(dataSource, codec);
+```
+
+If you don't inject a codec, `JsonCodec.getDefault()` (the built-in `DefaultJsonCodec` singleton) is used everywhere.

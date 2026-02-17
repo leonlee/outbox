@@ -71,41 +71,45 @@ Then add the dependencies you need:
 ## Architecture
 
 ```text
-  +-----------------------+        write()        +---------------+
-  | Application / Domain | ----------------------> | OutboxWriter  |
-  +-----------------------+                         +-------+-------+
-                                                    | insert
-                                                    v
-                                            +--------------------+
-                                            |    OutboxStore      |
-                                            +---------+----------+
-                                                      | persist
-                                                      v
-                                            +--------------------+
-                                            |   Outbox Table     |
-                                            +--------------------+
++----------------------------------------------------------------+
+|                      Transaction Scope                          |
+|                                                                 |
+|  +------------------------+  write()  +------------------+      |
+|  |  Application / Domain  | --------> |   OutboxWriter   |      |
+|  +------------------------+           +--------+---------+      |
+|                                                | insert         |
+|                                                v                |
+|                                       +------------------+      |
+|                                       |    OutboxStore   |      |
+|                                       +--------+---------+      |
+|                                                | persist        |
+|                                                v                |
+|                                       +------------------+      |
+|                                       |   Outbox Table   |      |
+|                                       +------------------+      |
++------------+-------------------------------+--------------------+
+             |                               |
+    afterCommit hook                    poll pending
+             |                               |
+             v                               v
+       +-----------+                  +--------------+
+       | Hot Queue |                  | OutboxPoller |
+       +-----+-----+                 +------+-------+
+             |                               |
+             v            enqueue cold       |
+    +------------------+                     |
+    | OutboxDispatcher | <-------------------+
+    +--------+---------+
+             |
+             v
+    +------------------+  onEvent()  +--------------+
+    | ListenerRegistry | ----------> |  Listener A  |
+    +--------+---------+             +--------------+
+             |                       +--------------+
+             +---------------------> |  Listener B  |
+                                     +--------------+
 
-   afterCommit hook                                 poll pending
-      |                                                  ^
-      v                                                  |
-  +-----------+                                       +--------------+
-  | Hot Queue |                                       | OutboxPoller |
-  +-----+-----+                                       +------+-------+
-        |                                                    |
-        v                                                    | enqueue cold
-  +------------------+                                       |
-  | OutboxDispatcher | <-------------------------------------+
-  +--------+---------+
-           |
-           v
-  +------------------+     onEvent()      +------------+
-  | ListenerRegistry | ----------------> | Listener A |
-  +--------+---------+                   +------------+
-           |                             +------------+
-           +--------------------------> | Listener B |
-                                         +------------+
-
-  OutboxDispatcher ---> mark DONE/RETRY/DEAD ---> OutboxStore
+    OutboxDispatcher --- mark DONE/RETRY/DEAD ---> OutboxStore
 ```
 
 Hot path is optional: supply an `AfterCommitHook` (for example, `DispatcherCommitHook`) or omit it for CDC-only consumption.

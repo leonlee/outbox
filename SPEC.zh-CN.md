@@ -47,24 +47,35 @@ API 契约、数据模型、行为规则、配置与可观测性的完整技术�
 
 ### 1.2 事件流转
 
-```
-热路径（快速）
-Business TX -> OutboxWriter.write()
-  -> OutboxStore.insertNew()       // 在事务内
-  -> TxContext.afterCommit(...)    // 注册提交后回调
-Commit
-  -> AfterCommitHook.onCommit(event)
-  -> OutboxDispatcher.enqueueHot(...)
-  -> OutboxDispatcher.process()
-  -> OutboxStore.markDone/Retry/Dead()
-
-冷路径（兜底）
-OutboxPoller.poll()
-  -> OutboxStore.pollPending()/claimPending()
-  -> OutboxPollerHandler.handle(event, attempts)
-  -> OutboxDispatcher.enqueueCold(...)
-  -> OutboxDispatcher.process()
-  -> OutboxStore.markDone/Retry/Dead()
+```text
++--------------------------------------------------------------+
+|                       事务作用域                                |
+|                                                               |
+|  业务代码 --> OutboxWriter.write()                              |
+|                    |                                          |
+|                    +--> OutboxStore.insertNew() --> [DB]       |
+|                    |                                          |
+|                    +--> TxContext.afterCommit(hook)            |
++--------------------+----------------------------+-------------+
+                     |                            |
+              提交后回调 (afterCommit)           轮询待处理 (poll)
+                     |                            |
+                     v                            v
+                  热路径                         冷路径
+                     |                            |
+                     v                            v
+      AfterCommitHook.onCommit()    OutboxPoller.poll()
+      Dispatcher.enqueueHot()         pollPending()/claimPending()
+                     |                Handler.handle()
+                     |                Dispatcher.enqueueCold()
+                     |                            |
+                     +----------+--+--------------+
+                                |
+                                v
+                   OutboxDispatcher.process()
+                     -> ListenerRegistry.listenerFor()
+                     -> EventListener.onEvent()
+                     -> markDone/Retry/Dead()
 ```
 
 ### 1.3 队列优先级

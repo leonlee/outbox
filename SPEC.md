@@ -47,24 +47,35 @@ For tutorials and code examples, see [TUTORIAL.md](TUTORIAL.md).
 
 ### 1.2 Event Flow
 
-```
-HOT PATH (Fast)
-Business TX -> OutboxWriter.write()
-  -> OutboxStore.insertNew()  (inside TX)
-  -> TxContext.afterCommit(...) registers hook
-Commit
-  -> AfterCommitHook.onCommit(event)
-  -> OutboxDispatcher.enqueueHot(...)
-  -> OutboxDispatcher.process()
-  -> OutboxStore.markDone/Retry/Dead()
-
-COLD PATH (Fallback)
-OutboxPoller.poll()
-  -> OutboxStore.pollPending()/claimPending()
-  -> OutboxPollerHandler.handle(event, attempts)
-  -> OutboxDispatcher.enqueueCold(...)
-  -> OutboxDispatcher.process()
-  -> OutboxStore.markDone/Retry/Dead()
+```text
++--------------------------------------------------------------+
+|                     Transaction Scope                         |
+|                                                               |
+|  Business Code --> OutboxWriter.write()                       |
+|                         |                                     |
+|                         +--> OutboxStore.insertNew() --> [DB] |
+|                         |                                     |
+|                         +--> TxContext.afterCommit(hook)       |
++-------------------------+-------------------------+-----------+
+                          |                         |
+                   afterCommit hook             poll pending
+                          |                         |
+                          v                         v
+                     HOT PATH                  COLD PATH
+                          |                         |
+                          v                         v
+         AfterCommitHook.onCommit()    OutboxPoller.poll()
+         Dispatcher.enqueueHot()         pollPending()/claimPending()
+                          |              Handler.handle()
+                          |              Dispatcher.enqueueCold()
+                          |                         |
+                          +-----------+-------------+
+                                      |
+                                      v
+                         OutboxDispatcher.process()
+                           -> ListenerRegistry.listenerFor()
+                           -> EventListener.onEvent()
+                           -> markDone/Retry/Dead()
 ```
 
 ### 1.3 Queue Priority

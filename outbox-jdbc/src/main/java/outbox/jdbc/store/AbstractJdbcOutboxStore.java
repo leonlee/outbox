@@ -32,6 +32,9 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
   protected static final String PENDING_STATUS_IN =
       "(" + EventStatus.NEW.code() + "," + EventStatus.RETRY.code() + ")";
 
+  protected static final String TERMINAL_STATUS_IN =
+      "(" + EventStatus.DONE.code() + "," + EventStatus.DEAD.code() + ")";
+
   protected static final JdbcTemplate.RowMapper<OutboxEvent> EVENT_ROW_MAPPER = rs -> new OutboxEvent(
       rs.getString("event_id"),
       rs.getString("event_type"),
@@ -103,7 +106,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
   public int markDone(Connection conn, String eventId) {
     String sql = "UPDATE " + tableName() +
         " SET status=" + EventStatus.DONE.code() + ", done_at=?, locked_by=NULL, locked_at=NULL" +
-        " WHERE event_id=? AND status<>" + EventStatus.DONE.code();
+        " WHERE event_id=? AND status NOT IN " + TERMINAL_STATUS_IN;
     return JdbcTemplate.update(conn, sql, Timestamp.from(Instant.now()), eventId);
   }
 
@@ -112,7 +115,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     String sql = "UPDATE " + tableName() +
         " SET status=" + EventStatus.RETRY.code() +
         ", attempts=attempts+1, available_at=?, last_error=?, locked_by=NULL, locked_at=NULL" +
-        " WHERE event_id=? AND status<>" + EventStatus.DONE.code();
+        " WHERE event_id=? AND status NOT IN " + TERMINAL_STATUS_IN;
     return JdbcTemplate.update(conn, sql, Timestamp.from(nextAt), truncateError(error), eventId);
   }
 
@@ -120,7 +123,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
   public int markDead(Connection conn, String eventId, String error) {
     String sql = "UPDATE " + tableName() +
         " SET status=" + EventStatus.DEAD.code() + ", last_error=?, locked_by=NULL, locked_at=NULL" +
-        " WHERE event_id=? AND status<>" + EventStatus.DONE.code();
+        " WHERE event_id=? AND status NOT IN " + TERMINAL_STATUS_IN;
     return JdbcTemplate.update(conn, sql, truncateError(error), eventId);
   }
 

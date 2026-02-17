@@ -25,6 +25,11 @@ public final class DispatcherPollerHandler implements OutboxPollerHandler {
   }
 
   @Override
+  public int availableCapacity() {
+    return dispatcher.coldQueueRemainingCapacity();
+  }
+
+  @Override
   public boolean handle(EventEnvelope event, int attempts) {
     QueuedEvent queuedEvent = new QueuedEvent(event, QueuedEvent.Source.COLD, attempts);
     return dispatcher.enqueueCold(queuedEvent);

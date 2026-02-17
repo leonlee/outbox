@@ -97,6 +97,24 @@ class DeadEventManagerTest {
   }
 
   @Test
+  void replayAllRejectsBatchSizeZero() {
+    OutboxStore store = stubStore(List.of(), 0, 0);
+    DeadEventManager manager = new DeadEventManager(dummyProvider(), store);
+
+    assertThrows(IllegalArgumentException.class, () ->
+        manager.replayAll(null, null, 0));
+  }
+
+  @Test
+  void replayAllRejectsNegativeBatchSize() {
+    OutboxStore store = stubStore(List.of(), 0, 0);
+    DeadEventManager manager = new DeadEventManager(dummyProvider(), store);
+
+    assertThrows(IllegalArgumentException.class, () ->
+        manager.replayAll(null, null, -1));
+  }
+
+  @Test
   void countDelegates() {
     OutboxStore store = stubStore(List.of(), 0, 5);
     DeadEventManager manager = new DeadEventManager(dummyProvider(), store);

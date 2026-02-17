@@ -141,6 +141,10 @@ public final class OutboxDispatcher implements AutoCloseable {
     return coldQueue.remainingCapacity() > 0;
   }
 
+  public int coldQueueRemainingCapacity() {
+    return coldQueue.remainingCapacity();
+  }
+
   private QueuedEvent pollFairly() throws InterruptedException {
     int cycle = pollCounter.getAndIncrement();
     BlockingQueue<QueuedEvent> primary;

@@ -128,6 +128,21 @@ class DefaultListenerRegistryTest {
   }
 
   @Test
+  void colonInTypeNamesDoesNotCollide() {
+    DefaultListenerRegistry registry = new DefaultListenerRegistry();
+    AtomicInteger firstCalled = new AtomicInteger();
+    AtomicInteger secondCalled = new AtomicInteger();
+
+    // "a:b" + "c" vs "a" + "b:c" — previously collided as "a:b:c"
+    registry.register("a:b", "c", event -> firstCalled.incrementAndGet());
+    registry.register("a", "b:c", event -> secondCalled.incrementAndGet());
+
+    assertNotNull(registry.listenerFor("a:b", "c"));
+    assertNotNull(registry.listenerFor("a", "b:c"));
+    assertNotSame(registry.listenerFor("a:b", "c"), registry.listenerFor("a", "b:c"));
+  }
+
+  @Test
   void registerRejectsNullAggregateType() {
     DefaultListenerRegistry registry = new DefaultListenerRegistry();
 

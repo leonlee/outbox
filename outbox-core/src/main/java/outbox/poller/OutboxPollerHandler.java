@@ -27,4 +27,15 @@ public interface OutboxPollerHandler {
   default boolean hasCapacity() {
     return true;
   }
+
+  /**
+   * Returns the number of events this handler can accept right now.
+   * Used by the poller to cap claim size and avoid over-locking rows
+   * that cannot be immediately processed.
+   *
+   * <p>Default returns {@link Integer#MAX_VALUE} (no cap).
+   */
+  default int availableCapacity() {
+    return Integer.MAX_VALUE;
+  }
 }

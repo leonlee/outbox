@@ -28,7 +28,9 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class DefaultListenerRegistry implements ListenerRegistry {
 
-  private final ConcurrentHashMap<String, EventListener> listeners = new ConcurrentHashMap<>();
+  private record ListenerKey(String aggregateType, String eventType) {}
+
+  private final ConcurrentHashMap<ListenerKey, EventListener> listeners = new ConcurrentHashMap<>();
 
   /**
    * Registers a listener for a specific (aggregateType, eventType) pair.
@@ -43,10 +45,10 @@ public final class DefaultListenerRegistry implements ListenerRegistry {
     Objects.requireNonNull(aggregateType, "aggregateType");
     Objects.requireNonNull(eventType, "eventType");
     Objects.requireNonNull(listener, "listener");
-    String key = aggregateType + ":" + eventType;
+    ListenerKey key = new ListenerKey(aggregateType, eventType);
     EventListener prev = listeners.putIfAbsent(key, listener);
     if (prev != null) {
-      throw new IllegalStateException("Duplicate: " + key);
+      throw new IllegalStateException("Duplicate: aggregateType=" + aggregateType + ", eventType=" + eventType);
     }
     return this;
   }
@@ -89,6 +91,6 @@ public final class DefaultListenerRegistry implements ListenerRegistry {
 
   @Override
   public EventListener listenerFor(String aggregateType, String eventType) {
-    return listeners.get(aggregateType + ":" + eventType);
+    return listeners.get(new ListenerKey(aggregateType, eventType));
   }
 }

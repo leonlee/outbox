@@ -73,6 +73,9 @@ public final class DeadEventManager {
    * @return total number of events replayed
    */
   public int replayAll(String eventType, String aggregateType, int batchSize) {
+    if (batchSize <= 0) {
+      throw new IllegalArgumentException("batchSize must be > 0");
+    }
     int totalReplayed = 0;
     List<OutboxEvent> batch;
     do {

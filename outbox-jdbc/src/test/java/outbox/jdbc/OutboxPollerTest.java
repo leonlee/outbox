@@ -186,6 +186,53 @@ class OutboxPollerTest {
   }
 
   @Test
+  void claimModeRespectsAvailableCapacity() throws Exception {
+    Instant createdAt = Instant.now().minusSeconds(5);
+    insertEvent(EventEnvelope.builder("Test").eventId("evt-cap-1").occurredAt(createdAt).payloadJson("{}").build());
+    insertEvent(EventEnvelope.builder("Test").eventId("evt-cap-2").occurredAt(createdAt).payloadJson("{}").build());
+    insertEvent(EventEnvelope.builder("Test").eventId("evt-cap-3").occurredAt(createdAt).payloadJson("{}").build());
+
+    // Cold queue capacity=2 with 3 pending events: should only claim 2
+    OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .outboxStore(outboxStore)
+        .listenerRegistry(new DefaultListenerRegistry())
+        .retryPolicy(attempts -> 0L)
+        .workerCount(0)
+        .hotQueueCapacity(10)
+        .coldQueueCapacity(2)
+        .build();
+
+    RecordingMetrics metrics = new RecordingMetrics();
+    try (OutboxPoller poller = OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .outboxStore(outboxStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .skipRecent(Duration.ZERO)
+        .batchSize(10)
+        .intervalMs(10)
+        .metrics(metrics)
+        .claimLocking("test-cap", Duration.ofMinutes(5))
+        .build()) {
+      poller.poll();
+    }
+
+    // Only 2 events should be claimed/enqueued, third stays unclaimed
+    assertEquals(2, metrics.coldEnqueued.get());
+
+    // Verify the third event was not locked
+    try (Connection conn = dataSource.getConnection();
+         PreparedStatement ps = conn.prepareStatement(
+             "SELECT COUNT(*) FROM outbox_event WHERE locked_by IS NOT NULL")) {
+      ResultSet rs = ps.executeQuery();
+      rs.next();
+      assertEquals(2, rs.getInt(1));
+    }
+
+    dispatcher.close();
+  }
+
+  @Test
   void pollerUsesCustomJsonCodecForHeaders() throws Exception {
     // Insert event with raw header JSON in the DB
     Instant createdAt = Instant.now().minusSeconds(5);

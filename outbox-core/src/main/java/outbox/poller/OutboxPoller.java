@@ -130,13 +130,17 @@ public final class OutboxPoller implements AutoCloseable {
   }
 
   private List<OutboxEvent> fetchPendingRows(Instant now) {
+    int effectiveBatch = Math.min(batchSize, handler.availableCapacity());
+    if (effectiveBatch <= 0) {
+      return List.of();
+    }
     try (Connection conn = connectionProvider.getConnection()) {
       conn.setAutoCommit(true);
       if (ownerId != null) {
         Instant lockExpiry = now.minus(lockTimeout);
-        return outboxStore.claimPending(conn, ownerId, now, lockExpiry, skipRecent, batchSize);
+        return outboxStore.claimPending(conn, ownerId, now, lockExpiry, skipRecent, effectiveBatch);
       }
-      return outboxStore.pollPending(conn, now, skipRecent, batchSize);
+      return outboxStore.pollPending(conn, now, skipRecent, effectiveBatch);
     } catch (SQLException e) {
       logger.log(Level.SEVERE, "Failed to fetch pending outbox rows", e);
       return List.of();

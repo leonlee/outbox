@@ -456,6 +456,59 @@ class JdbcOutboxStoreTest {
   }
 
   @Test
+  void markDoneReturnsZeroForDeadEvent() throws SQLException {
+    String eventId = insertTestEvent();
+
+    try (Connection conn = dataSource.getConnection()) {
+      outboxStore.markDead(conn, eventId, "dead");
+      int updated = outboxStore.markDone(conn, eventId);
+
+      assertEquals(0, updated);
+
+      try (PreparedStatement ps = conn.prepareStatement(
+          "SELECT status FROM outbox_event WHERE event_id = ?")) {
+        ps.setString(1, eventId);
+        ResultSet rs = ps.executeQuery();
+        assertTrue(rs.next());
+        assertEquals(EventStatus.DEAD.code(), rs.getInt("status"));
+      }
+    }
+  }
+
+  @Test
+  void markRetryReturnsZeroForDeadEvent() throws SQLException {
+    String eventId = insertTestEvent();
+
+    try (Connection conn = dataSource.getConnection()) {
+      outboxStore.markDead(conn, eventId, "dead");
+      int updated = outboxStore.markRetry(conn, eventId, Instant.now().plusSeconds(60), "retry");
+
+      assertEquals(0, updated);
+
+      try (PreparedStatement ps = conn.prepareStatement(
+          "SELECT status FROM outbox_event WHERE event_id = ?")) {
+        ps.setString(1, eventId);
+        ResultSet rs = ps.executeQuery();
+        assertTrue(rs.next());
+        assertEquals(EventStatus.DEAD.code(), rs.getInt("status"));
+      }
+    }
+  }
+
+  @Test
+  void markDeadIsIdempotent() throws SQLException {
+    String eventId = insertTestEvent();
+
+    try (Connection conn = dataSource.getConnection()) {
+      int first = outboxStore.markDead(conn, eventId, "dead");
+      int second = outboxStore.markDead(conn, eventId, "dead again");
+
+      assertEquals(1, first);
+      assertEquals(0, second);
+    }
+  }
+
+  @Test
   void insertNewUsesCustomJsonCodec() throws SQLException {
     JsonCodec customCodec = new JsonCodec() {
       @Override

@@ -53,6 +53,46 @@ All benchmarks support `database` parameter: `h2` (default), `mysql`, or `postgr
 | 50         | 272                | ± 801         |
 | 200        | 125                | ± 422         |
 
+## Sample Results (MySQL 9.6, JDK 21)
+
+> Single-threaded, 2s warmup x 2, 2s measurement x 3, 1 fork. MacBook environment with local MySQL (HikariCP, max 10) — numbers are indicative, not authoritative.
+
+### Write Throughput
+
+| Payload Size | Throughput (ops/s) | Error (99.9%) |
+|-------------:|-------------------:|--------------:|
+| 100 B        | 3,622              | ± 2,560       |
+| 1,000 B      | 3,211              | ± 401         |
+| 10,000 B     | 868                | ± 6,430       |
+
+### Dispatch Latency
+
+| Payload Size | Avg Latency (µs/op) | Error (99.9%) |
+|-------------:|--------------------:|--------------:|
+| 100 B        | 9,563               | ± 1,247       |
+| 1,000 B      | 9,696               | ± 2,182       |
+| 10,000 B     | 9,860               | ± 1,101       |
+
+### Poller Throughput — `pollAndMarkDone`
+
+| Batch Size | Throughput (ops/s) | Error (99.9%) |
+|-----------:|-------------------:|--------------:|
+| 10         | 229                | ± 1,167       |
+| 50         | 74                 | ± 302         |
+| 200        | 17                 | ± 46          |
+
+### Poller Throughput — `claimAndMarkDone`
+
+| Batch Size | Throughput (ops/s) | Error (99.9%) |
+|-----------:|-------------------:|--------------:|
+| 10         | 413                | ± 137         |
+| 50         | 103                | ± 154         |
+| 200        | 26                 | ± 31          |
+
+## Sample Results (PostgreSQL, JDK 21)
+
+> Not yet collected. Run with `-p database=postgresql` and update this section.
+
 ## Running
 
 ### Build

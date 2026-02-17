@@ -89,9 +89,41 @@ All benchmarks support `database` parameter: `h2` (default), `mysql`, or `postgr
 | 50         | 103                | ± 154         |
 | 200        | 26                 | ± 31          |
 
-## Sample Results (PostgreSQL, JDK 21)
+## Sample Results (PostgreSQL 17, JDK 21)
 
-> Not yet collected. Run with `-p database=postgresql` and update this section.
+> Single-threaded, 2s warmup x 2, 2s measurement x 3, 1 fork. MacBook environment with Docker PostgreSQL 17 (HikariCP, max 10) — numbers are indicative, not authoritative.
+
+### Write Throughput
+
+| Payload Size | Throughput (ops/s) | Error (99.9%) |
+|-------------:|-------------------:|--------------:|
+| 100 B        | 624                | ± 5,673       |
+| 1,000 B      | 1,362              | ± 818         |
+| 10,000 B     | 1,285              | ± 690         |
+
+### Dispatch Latency
+
+| Payload Size | Avg Latency (µs/op) | Error (99.9%) |
+|-------------:|--------------------:|--------------:|
+| 100 B        | 10,506              | ± 1,889       |
+| 1,000 B      | 10,709              | ± 3,274       |
+| 10,000 B     | 10,710              | ± 4,209       |
+
+### Poller Throughput — `pollAndMarkDone`
+
+| Batch Size | Throughput (ops/s) | Error (99.9%) |
+|-----------:|-------------------:|--------------:|
+| 10         | 146                | ± 10          |
+| 50         | 30                 | ± 57          |
+| 200        | 8                  | ± 4           |
+
+### Poller Throughput — `claimAndMarkDone`
+
+| Batch Size | Throughput (ops/s) | Error (99.9%) |
+|-----------:|-------------------:|--------------:|
+| 10         | 134                | ± 59          |
+| 50         | 27                 | ± 76          |
+| 200        | 7                  | ± 6           |
 
 ## Running
 

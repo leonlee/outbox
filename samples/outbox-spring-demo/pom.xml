@@ -14,7 +14,7 @@
 
   <groupId>outbox</groupId>
   <artifactId>outbox-spring-demo</artifactId>
-  <version>0.6.0-SNAPSHOT</version>
+  <version>0.6.0</version>
   <name>outbox-spring-demo</name>
   <description>Spring Boot demo of outbox framework</description>
 

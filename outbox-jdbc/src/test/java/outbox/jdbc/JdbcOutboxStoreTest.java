@@ -488,6 +488,21 @@ class JdbcOutboxStoreTest {
     }
   }
 
+  @Test
+  void claimPendingRejectsNullOwnerId() throws SQLException {
+    try (Connection conn = dataSource.getConnection()) {
+      assertThrows(NullPointerException.class, () ->
+          outboxStore.claimPending(conn, null, Instant.now(),
+              Instant.now().minus(Duration.ofMinutes(5)), Duration.ZERO, 10));
+    }
+  }
+
+  @Test
+  void storeNameAndPrefixes() {
+    assertEquals("h2", outboxStore.name());
+    assertEquals(List.of("jdbc:h2:"), outboxStore.jdbcUrlPrefixes());
+  }
+
   private String insertTestEvent() throws SQLException {
     EventEnvelope event = EventEnvelope.builder("TestEvent")
         .payloadJson("{}")

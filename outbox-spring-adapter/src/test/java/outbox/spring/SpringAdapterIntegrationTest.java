@@ -30,6 +30,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SpringAdapterIntegrationTest {
@@ -115,11 +116,55 @@ class SpringAdapterIntegrationTest {
   void afterCommitFailsWhenSynchronizationDisabled() {
     TransactionSynchronizationManager.setActualTransactionActive(true);
     try {
-      IllegalStateException ex = org.junit.jupiter.api.Assertions.assertThrows(
+      IllegalStateException ex = assertThrows(
           IllegalStateException.class,
           () -> txContext.afterCommit(() -> {})
       );
       assertTrue(ex.getMessage().contains("Transaction synchronization is not active"));
+    } finally {
+      TransactionSynchronizationManager.clear();
+    }
+  }
+
+  @Test
+  void afterRollbackFailsWhenSynchronizationDisabled() {
+    TransactionSynchronizationManager.setActualTransactionActive(true);
+    try {
+      IllegalStateException ex = assertThrows(
+          IllegalStateException.class,
+          () -> txContext.afterRollback(() -> {})
+      );
+      assertTrue(ex.getMessage().contains("Transaction synchronization is not active"));
+    } finally {
+      TransactionSynchronizationManager.clear();
+    }
+  }
+
+  @Test
+  void constructorRejectsNullDataSource() {
+    assertThrows(NullPointerException.class, () ->
+        new SpringTxContext(null));
+  }
+
+  @Test
+  void afterCommitRejectsNullCallback() {
+    TransactionSynchronizationManager.setActualTransactionActive(true);
+    TransactionSynchronizationManager.initSynchronization();
+    try {
+      assertThrows(NullPointerException.class, () ->
+          txContext.afterCommit(null));
+    } finally {
+      TransactionSynchronizationManager.clear();
+    }
+  }
+
+  @Test
+  void afterRollbackRejectsNullCallback() {
+    TransactionSynchronizationManager.setActualTransactionActive(true);
+    TransactionSynchronizationManager.initSynchronization();
+    try {
+      assertThrows(NullPointerException.class, () ->
+          txContext.afterRollback(null));
     } finally {
       TransactionSynchronizationManager.clear();
     }

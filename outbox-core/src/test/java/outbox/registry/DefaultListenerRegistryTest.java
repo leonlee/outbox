@@ -126,4 +126,28 @@ class DefaultListenerRegistryTest {
     assertNotNull(registry.listenerFor(AggregateType.GLOBAL.name(), "B"));
     assertNull(registry.listenerFor(AggregateType.GLOBAL.name(), "C"));
   }
+
+  @Test
+  void registerRejectsNullAggregateType() {
+    DefaultListenerRegistry registry = new DefaultListenerRegistry();
+
+    assertThrows(NullPointerException.class, () ->
+        registry.register((String) null, "E", event -> {}));
+  }
+
+  @Test
+  void registerRejectsNullEventType() {
+    DefaultListenerRegistry registry = new DefaultListenerRegistry();
+
+    assertThrows(NullPointerException.class, () ->
+        registry.register("A", (String) null, event -> {}));
+  }
+
+  @Test
+  void registerRejectsNullListener() {
+    DefaultListenerRegistry registry = new DefaultListenerRegistry();
+
+    assertThrows(NullPointerException.class, () ->
+        registry.register("A", "E", null));
+  }
 }

@@ -188,4 +188,22 @@ class DefaultJsonCodecTest {
   void getDefaultReturnsSingleton() {
     assertSame(JsonCodec.getDefault(), JsonCodec.getDefault());
   }
+
+  @Test
+  void invalidUnicodeEscapeThrows() {
+    assertThrows(IllegalArgumentException.class, () ->
+        codec.parseObject("{\"key\":\"\\uZZZZ\"}"));
+  }
+
+  @Test
+  void unknownEscapeSequenceThrows() {
+    assertThrows(IllegalArgumentException.class, () ->
+        codec.parseObject("{\"key\":\"\\q\"}"));
+  }
+
+  @Test
+  void unterminatedStringThrows() {
+    assertThrows(IllegalArgumentException.class, () ->
+        codec.parseObject("{\"key\":\"no closing quote}"));
+  }
 }

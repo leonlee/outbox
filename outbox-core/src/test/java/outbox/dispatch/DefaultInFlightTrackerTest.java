@@ -87,4 +87,16 @@ class DefaultInFlightTrackerTest {
 
     assertFalse(tracker.tryAcquire("event-1"));
   }
+
+  @Test
+  void negativeTtlBehavesLikeZero() throws InterruptedException {
+    DefaultInFlightTracker tracker = new DefaultInFlightTracker(-100);
+
+    assertTrue(tracker.tryAcquire("event-1"));
+
+    Thread.sleep(10);
+
+    // Negative TTL should not enable expiry — entry persists until released
+    assertFalse(tracker.tryAcquire("event-1"));
+  }
 }

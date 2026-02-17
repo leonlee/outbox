@@ -90,4 +90,18 @@ class ExponentialBackoffRetryPolicyTest {
 
     assertEquals(0, delay);
   }
+
+  @Test
+  void zeroAttemptsReturnsZero() {
+    ExponentialBackoffRetryPolicy policy = new ExponentialBackoffRetryPolicy(100, 10000);
+
+    assertEquals(0L, policy.computeDelayMs(0));
+  }
+
+  @Test
+  void negativeAttemptsReturnsZero() {
+    ExponentialBackoffRetryPolicy policy = new ExponentialBackoffRetryPolicy(100, 10000);
+
+    assertEquals(0L, policy.computeDelayMs(-1));
+  }
 }

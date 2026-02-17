@@ -894,7 +894,7 @@ public DeadEventManager deadEventManager(
 <dependency>
   <groupId>outbox</groupId>
   <artifactId>outbox-micrometer</artifactId>
-  <version>0.5.0</version>
+  <version>0.6.0</version>
 </dependency>
 ```
 

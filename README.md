@@ -11,7 +11,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, optional hot-path e
 
 ## Installation
 
-Artifacts are published to [GitHub Packages](https://github.com/leonlee/outbox/packages). Current release: **0.5.0**.
+Artifacts are published to [GitHub Packages](https://github.com/leonlee/outbox/packages). Current release: **0.6.0**.
 
 Add the GitHub Packages repository to your `pom.xml`:
 
@@ -31,28 +31,28 @@ Then add the dependencies you need:
 <dependency>
   <groupId>outbox</groupId>
   <artifactId>outbox-core</artifactId>
-  <version>0.5.0</version>
+  <version>0.6.0</version>
 </dependency>
 
 <!-- JDBC outbox store and transaction helpers (required for persistence) -->
 <dependency>
   <groupId>outbox</groupId>
   <artifactId>outbox-jdbc</artifactId>
-  <version>0.5.0</version>
+  <version>0.6.0</version>
 </dependency>
 
 <!-- Spring transaction integration (optional, only if using Spring) -->
 <dependency>
   <groupId>outbox</groupId>
   <artifactId>outbox-spring-adapter</artifactId>
-  <version>0.5.0</version>
+  <version>0.6.0</version>
 </dependency>
 
 <!-- Micrometer metrics bridge for Prometheus/Grafana (optional) -->
 <dependency>
   <groupId>outbox</groupId>
   <artifactId>outbox-micrometer</artifactId>
-  <version>0.5.0</version>
+  <version>0.6.0</version>
 </dependency>
 ```
 

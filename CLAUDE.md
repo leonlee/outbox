@@ -62,6 +62,8 @@ outbox-core/src/main/java/
     │  # Feature Packages
     ├── dispatch/
     │   ├── OutboxDispatcher.java
+    │   ├── DispatcherWriterHook.java (WriterHook → hot queue bridge)
+    │   ├── DispatcherPollerHandler.java (OutboxPollerHandler → cold queue bridge)
     │   ├── RetryPolicy.java (interface)
     │   ├── ExponentialBackoffRetryPolicy.java
     │   ├── InFlightTracker.java (interface)
@@ -121,14 +123,18 @@ outbox-jdbc/src/main/java/
 ### Key Abstractions
 
 - **TxContext**: Abstracts transaction lifecycle (`isTransactionActive()`, `currentConnection()`, `afterCommit()`, `afterRollback()`). Implementations: `ThreadLocalTxContext` (`outbox.jdbc.tx`, JDBC), `SpringTxContext` (Spring).
-- **OutboxStore**: Persistence contract (`insertNew`, `markDone`, `markRetry`, `markDead`, `pollPending`, `claimPending`, `queryDead`, `replayDead`, `countDead`). Implemented by `AbstractJdbcOutboxStore` hierarchy in `outbox.jdbc.store`.
+- **OutboxStore**: Persistence contract (`insertNew`, `insertBatch`, `markDone`, `markRetry`, `markDead`, `pollPending`, `claimPending`, `queryDead`, `replayDead`, `countDead`). `insertBatch` defaults to looping `insertNew`; `AbstractJdbcOutboxStore` overrides with `addBatch/executeBatch`. Implemented by `AbstractJdbcOutboxStore` hierarchy in `outbox.jdbc.store`.
 - **AbstractJdbcOutboxStore** (`outbox.jdbc.store`): Base JDBC outbox store with shared SQL, row mapper, and H2-compatible default `claimPending`. Subclasses: `H2OutboxStore`, `MySqlOutboxStore` (UPDATE...ORDER BY...LIMIT), `PostgresOutboxStore` (FOR UPDATE SKIP LOCKED + RETURNING).
 - **JdbcOutboxStores** (`outbox.jdbc.store`): Static utility with ServiceLoader registry (`META-INF/services/outbox.jdbc.store.AbstractJdbcOutboxStore`) and `detect(DataSource)` auto-detection. Overloaded `detect(DataSource, JsonCodec)` creates new instances with a custom codec.
-- **OutboxDispatcher**: Dual-queue event processor with hot queue (afterCommit callbacks) and cold queue (poller fallback). Created via `OutboxDispatcher.builder()`. Uses `InFlightTracker` for deduplication, `RetryPolicy` for exponential backoff, `EventInterceptor` for cross-cutting hooks, fair 2:1 hot/cold queue draining, and graceful shutdown with configurable drain timeout.
+- **OutboxDispatcher**: Dual-queue single-event processor with hot queue (afterCommit callbacks) and cold queue (poller fallback). Each event is dispatched individually: acquire in-flight → run interceptors → call listener → markDone/markRetry/markDead. Created via `OutboxDispatcher.builder()`. Uses `InFlightTracker` for deduplication, `RetryPolicy` for exponential backoff, `EventInterceptor` for cross-cutting hooks, fair 2:1 hot/cold queue draining, and graceful shutdown with configurable drain timeout.
 - **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails. Created via `OutboxPoller.builder()`. Uses an `OutboxPollerHandler` to forward events. Two modes: single-node (default, `pollPending`) and multi-node (`claimLocking()` enables `claimPending` with row-level locks). Accepts optional `JsonCodec` via `.jsonCodec()` builder method.
 - **JsonCodec**: Interface for `Map<String, String>` ↔ JSON encoding/decoding. `DefaultJsonCodec` is the built-in zero-dependency implementation (singleton via `JsonCodec.getDefault()`). Injectable into `AbstractJdbcOutboxStore`, `OutboxPoller`, and `JdbcOutboxStores.detect()` for users who prefer Jackson/Gson.
 - **TableNames**: Shared utility in `outbox.jdbc` for table name validation (regex `[a-zA-Z_][a-zA-Z0-9_]*`).
-- **WriterHook**: Lifecycle hook for OutboxWriter batch writes (beforeWrite/afterWrite/afterCommit/afterRollback). `DispatcherWriterHook` bridges into the dispatcher's hot queue.
+- **OutboxWriter**: Primary entry point for writing events. `write()` delegates to `writeAll()`. Lifecycle: `WriterHook.beforeWrite` (may transform) → `OutboxStore.insertBatch` → `afterWrite` → tx commit/rollback → `afterCommit`/`afterRollback`. Single callback registered per batch. Constructor accepts optional `WriterHook` (defaults to `NOOP`).
+- **WriterHook**: Lifecycle hook for `OutboxWriter` batch writes. Phases: `beforeWrite` (transform, may abort) → insert → `afterWrite` (observational) → tx commit/rollback → `afterCommit`/`afterRollback` (swallowed). `WriterHook.NOOP` does nothing (poller-only mode).
+- **DispatcherWriterHook** (`outbox.dispatch`): `WriterHook` implementation that bridges to the dispatcher's hot queue. `afterCommit` enqueues each event individually as `QueuedEvent(event, HOT, 0)`. Accepts optional `MetricsExporter`.
+- **DispatcherPollerHandler** (`outbox.dispatch`): `OutboxPollerHandler` implementation that bridges to the dispatcher's cold queue.
+- **QueuedEvent** (`outbox.dispatch`): Simple record `(EventEnvelope envelope, Source source, int attempts)` wrapping a single event with its origin (HOT/COLD) and attempt count.
 - **JdbcTemplate**: Lightweight JDBC helper (`update`, `query`, `updateReturning`) used by `AbstractJdbcOutboxStore` subclasses.
 - **ListenerRegistry**: Maps `(aggregateType, eventType)` pairs to a single `EventListener`. Uses `AggregateType.GLOBAL` as default. Unroutable events (no listener) are immediately marked DEAD.
 - **EventInterceptor**: Cross-cutting before/after hooks for audit, logging, metrics. `beforeDispatch` runs in registration order; `afterDispatch` in reverse. Replaces the old wildcard `registerAll()` pattern.
@@ -139,10 +145,10 @@ outbox-jdbc/src/main/java/
 
 ### Event Flow
 
-1. `OutboxWriter.write()` inserts event to DB within caller's transaction
-2. `afterCommit` callback invokes `WriterHook` (e.g., DispatcherWriterHook enqueues each event to OutboxDispatcher hot queue)
+1. `OutboxWriter.writeAll()` runs `WriterHook.beforeWrite` → `OutboxStore.insertBatch` → `WriterHook.afterWrite` within caller's transaction
+2. After commit, `WriterHook.afterCommit` fires (e.g., `DispatcherWriterHook` enqueues each event individually to OutboxDispatcher hot queue)
 3. If hot queue full, event is dropped (logged) and poller picks it up later
-4. OutboxDispatcher workers process events: run interceptors → find listener via `(aggregateType, eventType)` → execute → update status to DONE/RETRY/DEAD
+4. OutboxDispatcher workers process events one at a time: acquire in-flight → run interceptors → find listener via `(aggregateType, eventType)` → call `listener.onEvent()` → update status to DONE/RETRY/DEAD
 5. Unroutable events (no listener found) are immediately marked DEAD (no retry)
 
 ## Coding Style

@@ -28,6 +28,21 @@ public interface OutboxStore {
   void insertNew(Connection conn, EventEnvelope event);
 
   /**
+   * Inserts multiple events in a batch with status NEW.
+   *
+   * <p>Default loops {@link #insertNew}. JDBC implementations may override
+   * with {@code addBatch}/{@code executeBatch} for better throughput.
+   *
+   * @param conn   the JDBC connection (typically within a transaction)
+   * @param events the event envelopes to persist
+   */
+  default void insertBatch(Connection conn, List<EventEnvelope> events) {
+    for (EventEnvelope event : events) {
+      insertNew(conn, event);
+    }
+  }
+
+  /**
    * Marks an event as DONE (successfully processed).
    *
    * @param conn    the JDBC connection

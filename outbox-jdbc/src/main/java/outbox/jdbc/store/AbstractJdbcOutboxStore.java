@@ -87,6 +87,10 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     return tableName;
   }
 
+  protected JsonCodec jsonCodec() {
+    return jsonCodec;
+  }
+
   @Override
   public void insertNew(Connection conn, EventEnvelope event) {
     String sql = "INSERT INTO " + tableName() + " (" +
@@ -100,6 +104,43 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
         event.aggregateId(), event.tenantId(), event.payloadJson(),
         jsonCodec.toJson(event.headers()),
         EventStatus.NEW.code(), 0, now, now);
+  }
+
+  @Override
+  public void insertBatch(Connection conn, List<EventEnvelope> events) {
+    if (events.size() <= 1) {
+      for (EventEnvelope event : events) {
+        insertNew(conn, event);
+      }
+      return;
+    }
+    // Pure SQL multi-row INSERT: VALUES (...), (...), ...
+    String row = "(?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL)";
+    StringBuilder sql = new StringBuilder("INSERT INTO " + tableName() + " (" +
+        "event_id, event_type, aggregate_type, aggregate_id, tenant_id, " +
+        "payload, headers, status, attempts, available_at, created_at, done_at, last_error, " +
+        "locked_by, locked_at) VALUES ");
+    sql.append(row);
+    for (int i = 1; i < events.size(); i++) {
+      sql.append(',').append(row);
+    }
+    Object[] params = new Object[events.size() * 11];
+    int idx = 0;
+    for (EventEnvelope event : events) {
+      Timestamp now = Timestamp.from(event.occurredAt());
+      params[idx++] = event.eventId();
+      params[idx++] = event.eventType();
+      params[idx++] = event.aggregateType();
+      params[idx++] = event.aggregateId();
+      params[idx++] = event.tenantId();
+      params[idx++] = event.payloadJson();
+      params[idx++] = jsonCodec.toJson(event.headers());
+      params[idx++] = EventStatus.NEW.code();
+      params[idx++] = 0;
+      params[idx++] = now;
+      params[idx++] = now;
+    }
+    JdbcTemplate.update(conn, sql.toString(), params);
   }
 
   @Override

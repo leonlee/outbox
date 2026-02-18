@@ -3,7 +3,7 @@ package outbox.demo;
 import outbox.EventEnvelope;
 import outbox.OutboxWriter;
 import outbox.dispatch.DefaultInFlightTracker;
-import outbox.dispatch.DispatcherCommitHook;
+import outbox.dispatch.DispatcherWriterHook;
 import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.EventInterceptor;
 import outbox.dispatch.OutboxDispatcher;
@@ -90,7 +90,7 @@ public final class OutboxDemo {
 
     // 5. Create transaction manager and writer
     JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
-    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
+    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
     System.out.println("=== Outbox Demo ===\n");
 

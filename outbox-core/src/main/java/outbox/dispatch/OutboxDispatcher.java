@@ -37,7 +37,7 @@ import java.util.logging.Logger;
  * {@link AutoCloseable} for graceful shutdown with a configurable drain timeout.
  *
  * @see OutboxDispatcher.Builder
- * @see DispatcherCommitHook
+ * @see DispatcherWriterHook
  * @see DispatcherPollerHandler
  */
 public final class OutboxDispatcher implements AutoCloseable {
@@ -233,22 +233,23 @@ public final class OutboxDispatcher implements AutoCloseable {
   }
 
   private void handleFailure(QueuedEvent event, Exception failure) {
+    String eventId = event.envelope().eventId();
     if (failure instanceof UnroutableEventException) {
-      markDead(event.envelope().eventId(), failure);
+      markDead(eventId, failure);
       metrics.incrementDispatchDead();
-      logger.log(Level.SEVERE, "Unroutable event marked DEAD: " + event.envelope().eventId(), failure);
+      logger.log(Level.SEVERE, "Unroutable event marked DEAD: " + eventId, failure);
       return;
     }
 
     int nextAttempt = event.attempts() + 1;
     if (nextAttempt >= maxAttempts) {
-      markDead(event.envelope().eventId(), failure);
+      markDead(eventId, failure);
       metrics.incrementDispatchDead();
-      logger.log(Level.SEVERE, "Event moved to DEAD after max attempts: " + event.envelope().eventId(), failure);
+      logger.log(Level.SEVERE, "Event moved to DEAD after max attempts: " + eventId, failure);
     } else {
       long delayMs = retryPolicy.computeDelayMs(nextAttempt);
       Instant nextAt = Instant.now().plusMillis(delayMs);
-      markRetry(event.envelope().eventId(), nextAt, failure);
+      markRetry(eventId, nextAt, failure);
       metrics.incrementDispatchFailure();
     }
   }

@@ -131,7 +131,8 @@ public final class JdbcTransactionManager {
     private void safeRollback() {
       try {
         connection.rollback();
-      } catch (SQLException ignored) {
+      } catch (SQLException e) {
+        LOG.log(Level.WARNING, "Failed to rollback transaction after commit failure", e);
       }
     }
   }

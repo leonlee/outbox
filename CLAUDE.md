@@ -44,7 +44,7 @@ outbox-core/src/main/java/
     ├── StringEventType.java (record)
     ├── StringAggregateType.java (record)
     ├── EventListener.java (interface)
-    ├── AfterCommitHook.java (interface)
+    ├── WriterHook.java (interface)
     │
     │  # SPI - Extension Point Interfaces
     ├── spi/
@@ -128,7 +128,7 @@ outbox-jdbc/src/main/java/
 - **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails. Created via `OutboxPoller.builder()`. Uses an `OutboxPollerHandler` to forward events. Two modes: single-node (default, `pollPending`) and multi-node (`claimLocking()` enables `claimPending` with row-level locks). Accepts optional `JsonCodec` via `.jsonCodec()` builder method.
 - **JsonCodec**: Interface for `Map<String, String>` ↔ JSON encoding/decoding. `DefaultJsonCodec` is the built-in zero-dependency implementation (singleton via `JsonCodec.getDefault()`). Injectable into `AbstractJdbcOutboxStore`, `OutboxPoller`, and `JdbcOutboxStores.detect()` for users who prefer Jackson/Gson.
 - **TableNames**: Shared utility in `outbox.jdbc` for table name validation (regex `[a-zA-Z_][a-zA-Z0-9_]*`).
-- **AfterCommitHook**: Optional post-commit hook used by OutboxWriter to trigger hot-path processing (e.g., DispatcherCommitHook).
+- **WriterHook**: Lifecycle hook for OutboxWriter batch writes (beforeWrite/afterWrite/afterCommit/afterRollback). `DispatcherWriterHook` bridges into the dispatcher's hot queue.
 - **JdbcTemplate**: Lightweight JDBC helper (`update`, `query`, `updateReturning`) used by `AbstractJdbcOutboxStore` subclasses.
 - **ListenerRegistry**: Maps `(aggregateType, eventType)` pairs to a single `EventListener`. Uses `AggregateType.GLOBAL` as default. Unroutable events (no listener) are immediately marked DEAD.
 - **EventInterceptor**: Cross-cutting before/after hooks for audit, logging, metrics. `beforeDispatch` runs in registration order; `afterDispatch` in reverse. Replaces the old wildcard `registerAll()` pattern.
@@ -140,7 +140,7 @@ outbox-jdbc/src/main/java/
 ### Event Flow
 
 1. `OutboxWriter.write()` inserts event to DB within caller's transaction
-2. `afterCommit` callback invokes `AfterCommitHook` (e.g., DispatcherCommitHook -> OutboxDispatcher hot queue)
+2. `afterCommit` callback invokes `WriterHook` (e.g., DispatcherWriterHook enqueues each event to OutboxDispatcher hot queue)
 3. If hot queue full, event is dropped (logged) and poller picks it up later
 4. OutboxDispatcher workers process events: run interceptors → find listener via `(aggregateType, eventType)` → execute → update status to DONE/RETRY/DEAD
 5. Unroutable events (no listener found) are immediately marked DEAD (no retry)

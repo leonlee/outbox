@@ -4,7 +4,7 @@
  *
  * <h2>Core Design</h2>
  * <p>Events are written to a database table <em>within</em> the caller's transaction via
- * {@link outbox.OutboxWriter}. After commit, an {@link outbox.AfterCommitHook} pushes the event
+ * {@link outbox.OutboxWriter}. After commit, the configured {@link outbox.WriterHook} pushes events
  * to the {@linkplain outbox.dispatch.OutboxDispatcher dispatcher}'s hot queue for immediate
  * delivery. A scheduled {@linkplain outbox.poller.OutboxPoller poller} acts as a fallback,
  * sweeping events that missed the hot path. The two paths are drained with a fair 2:1
@@ -54,7 +54,7 @@
  * // 4. Write events inside a transaction
  * var txManager = new JdbcTransactionManager(connProvider, txContext);
  * var writer    = new OutboxWriter(txContext, outboxStore,
- *                     new DispatcherCommitHook(dispatcher));
+ *                     new DispatcherWriterHook(dispatcher));
  *
  * try (var tx = txManager.begin()) {
  *     writer.write(EventEnvelope.builder("OrderPlaced")
@@ -85,6 +85,6 @@
  * @see outbox.EventType
  * @see outbox.AggregateType
  * @see outbox.EventListener
- * @see outbox.AfterCommitHook
+ * @see outbox.WriterHook
  */
 package outbox;

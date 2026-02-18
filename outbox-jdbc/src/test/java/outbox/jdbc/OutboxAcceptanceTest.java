@@ -2,7 +2,7 @@ package outbox.jdbc;
 
 import outbox.OutboxWriter;
 import outbox.EventEnvelope;
-import outbox.dispatch.DispatcherCommitHook;
+import outbox.dispatch.DispatcherWriterHook;
 import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.dispatch.ExponentialBackoffRetryPolicy;
@@ -65,7 +65,7 @@ class OutboxAcceptanceTest {
   @Test
   void atomicityRollbackDoesNotPersist() throws Exception {
     OutboxDispatcher dispatcher = dispatcher(0, 10, 10);
-    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
+    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
       writer.write(EventEnvelope.ofJson("TestEvent", "{}"));
@@ -83,7 +83,7 @@ class OutboxAcceptanceTest {
         .register("UserCreated", event -> latch.countDown());
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers);
-    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
+    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
     String eventId;
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
@@ -102,7 +102,7 @@ class OutboxAcceptanceTest {
     OutboxDispatcher noWorkers = dispatcher(0, 1, 1);
     noWorkers.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("Preload", "{}"), QueuedEvent.Source.HOT, 0));
 
-    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(noWorkers));
+    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(noWorkers));
 
     String eventId;
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
@@ -144,7 +144,7 @@ class OutboxAcceptanceTest {
         .register("Failing", event -> { throw new RuntimeException("boom"); });
 
     OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers, 3);
-    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
+    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
     String eventId;
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
@@ -169,6 +169,40 @@ class OutboxAcceptanceTest {
 
     assertEquals(EventStatus.DEAD.code(), getStatus(eventId));
     assertNotNull(getLastError(eventId));
+
+    dispatcher.close();
+  }
+
+  @Test
+  void batchWriteAndDispatchEndToEnd() throws Exception {
+    CountDownLatch latch = new CountDownLatch(3);
+    java.util.List<String> dispatched = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    DefaultListenerRegistry publishers = new DefaultListenerRegistry()
+        .register("BatchEvent", event -> {
+          dispatched.add(event.eventId());
+          latch.countDown();
+        });
+
+    OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers);
+    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
+
+    java.util.List<String> eventIds;
+    try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
+      eventIds = writer.writeAll(java.util.List.of(
+          EventEnvelope.ofJson("BatchEvent", "{\"n\":1}"),
+          EventEnvelope.ofJson("BatchEvent", "{\"n\":2}"),
+          EventEnvelope.ofJson("BatchEvent", "{\"n\":3}")
+      ));
+      tx.commit();
+    }
+
+    assertEquals(3, eventIds.size());
+    assertTrue(latch.await(2, TimeUnit.SECONDS));
+
+    for (String id : eventIds) {
+      awaitStatus(id, EventStatus.DONE, 2_000);
+    }
 
     dispatcher.close();
   }

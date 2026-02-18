@@ -8,7 +8,6 @@ import outbox.dispatch.QueuedEvent;
 import outbox.jdbc.store.H2OutboxStore;
 import outbox.model.EventStatus;
 import outbox.registry.DefaultListenerRegistry;
-import outbox.spi.MetricsExporter;
 
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.AfterEach;

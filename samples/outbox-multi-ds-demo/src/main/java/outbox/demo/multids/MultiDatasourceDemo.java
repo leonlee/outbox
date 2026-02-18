@@ -2,7 +2,7 @@ package outbox.demo.multids;
 
 import outbox.EventEnvelope;
 import outbox.OutboxWriter;
-import outbox.dispatch.DispatcherCommitHook;
+import outbox.dispatch.DispatcherWriterHook;
 import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
@@ -73,7 +73,7 @@ public final class MultiDatasourceDemo {
 
     JdbcTransactionManager ordersTxMgr = new JdbcTransactionManager(ordersConn, ordersTx);
     OutboxWriter ordersWriter = new OutboxWriter(
-        ordersTx, ordersOutboxStore, new DispatcherCommitHook(ordersDispatcher));
+        ordersTx, ordersOutboxStore, new DispatcherWriterHook(ordersDispatcher));
 
     // ── Inventory stack ──────────────────────────────────────────
     var invOutboxStore = JdbcOutboxStores.detect(inventoryDs);
@@ -100,7 +100,7 @@ public final class MultiDatasourceDemo {
 
     JdbcTransactionManager invTxMgr = new JdbcTransactionManager(invConn, invTx);
     OutboxWriter invWriter = new OutboxWriter(
-        invTx, invOutboxStore, new DispatcherCommitHook(invDispatcher));
+        invTx, invOutboxStore, new DispatcherWriterHook(invDispatcher));
 
     // ── Publish events ───────────────────────────────────────────
     System.out.println("=== Multi-Datasource Demo ===\n");

@@ -2,9 +2,12 @@ package outbox.dispatch;
 
 import outbox.EventEnvelope;
 
+import java.util.Objects;
+
 /**
- * Internal wrapper pairing an {@link EventEnvelope} with its origin queue and attempt count.
- * Used by {@link OutboxDispatcher} to track events through the dual-queue processing pipeline.
+ * Internal wrapper pairing an {@link EventEnvelope} with its origin queue
+ * and attempt count. Used by {@link OutboxDispatcher} to track events through the
+ * dual-queue processing pipeline.
  */
 public record QueuedEvent(EventEnvelope envelope, Source source, int attempts) {
 
@@ -14,5 +17,10 @@ public record QueuedEvent(EventEnvelope envelope, Source source, int attempts) {
     HOT,
     /** Event enqueued by the poller from the database. */
     COLD
+  }
+
+  public QueuedEvent {
+    Objects.requireNonNull(envelope, "envelope");
+    Objects.requireNonNull(source, "source");
   }
 }

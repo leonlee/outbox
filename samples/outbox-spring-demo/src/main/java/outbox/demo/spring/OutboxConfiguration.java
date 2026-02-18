@@ -4,7 +4,7 @@ import outbox.OutboxWriter;
 import outbox.spi.TxContext;
 import outbox.dispatch.DefaultInFlightTracker;
 import outbox.dispatch.EventInterceptor;
-import outbox.dispatch.DispatcherCommitHook;
+import outbox.dispatch.DispatcherWriterHook;
 import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
@@ -104,6 +104,6 @@ public class OutboxConfiguration {
       AbstractJdbcOutboxStore outboxStore,
       OutboxDispatcher dispatcher
   ) {
-    return new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
+    return new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
   }
 }

@@ -15,9 +15,9 @@ import java.util.logging.Logger;
  *
  * <p>All {@code write} and {@code writeAll} calls require an active transaction via
  * {@link outbox.spi.TxContext}. After the transaction commits, the configured
- * {@link AfterCommitHook} is invoked to trigger hot-path processing.
+ * {@link WriterHook} is invoked to trigger hot-path processing.
  *
- * @see AfterCommitHook
+ * @see WriterHook
  * @see outbox.spi.TxContext
  * @see outbox.spi.OutboxStore
  */
@@ -26,33 +26,33 @@ public final class OutboxWriter {
 
   private final TxContext txContext;
   private final OutboxStore outboxStore;
-  private final AfterCommitHook afterCommitHook;
+  private final WriterHook writerHook;
 
   /**
-   * Creates a writer with no after-commit hook (poller-only mode).
+   * Creates a writer with no writer hook (poller-only mode).
    *
    * @param txContext   transaction context for connection and lifecycle management
    * @param outboxStore persistence backend for outbox events
    */
   public OutboxWriter(TxContext txContext, OutboxStore outboxStore) {
-    this(txContext, outboxStore, AfterCommitHook.NOOP);
+    this(txContext, outboxStore, WriterHook.NOOP);
   }
 
   /**
-   * Creates a writer with an after-commit hook for hot-path dispatch.
+   * Creates a writer with a writer hook for hot-path dispatch.
    *
-   * @param txContext       transaction context for connection and lifecycle management
-   * @param outboxStore     persistence backend for outbox events
-   * @param afterCommitHook callback invoked after commit; {@code null} defaults to {@link AfterCommitHook#NOOP}
+   * @param txContext   transaction context for connection and lifecycle management
+   * @param outboxStore persistence backend for outbox events
+   * @param writerHook  lifecycle hook; {@code null} defaults to {@link WriterHook#NOOP}
    */
   public OutboxWriter(
       TxContext txContext,
       OutboxStore outboxStore,
-      AfterCommitHook afterCommitHook
+      WriterHook writerHook
   ) {
     this.txContext = Objects.requireNonNull(txContext, "txContext");
     this.outboxStore = Objects.requireNonNull(outboxStore, "outboxStore");
-    this.afterCommitHook = afterCommitHook == null ? AfterCommitHook.NOOP : afterCommitHook;
+    this.writerHook = writerHook == null ? WriterHook.NOOP : writerHook;
   }
 
   /**
@@ -63,19 +63,9 @@ public final class OutboxWriter {
    * @throws IllegalStateException if no transaction is active
    */
   public String write(EventEnvelope event) {
-    if (!txContext.isTransactionActive()) {
-      throw new IllegalStateException("No active transaction");
-    }
     Objects.requireNonNull(event, "event");
-
-    Connection conn = txContext.currentConnection();
-    outboxStore.insertNew(conn, event);
-
-    if (afterCommitHook != AfterCommitHook.NOOP) {
-      txContext.afterCommit(() -> runAfterCommitHook(event));
-    }
-
-    return event.eventId();
+    List<String> ids = writeAll(List.of(event));
+    return ids.get(0);
   }
 
   /**
@@ -105,27 +95,57 @@ public final class OutboxWriter {
   /**
    * Writes multiple events to the outbox within the current transaction.
    *
+   * <p>Events are inserted in a single batch. A single {@code afterCommit} / {@code afterRollback}
+   * callback is registered for the entire batch. The {@link WriterHook#beforeWrite} hook
+   * may transform the event list before insertion.
+   *
    * @param events the event envelopes to persist
-   * @return list of event IDs in the same order as the input
-   * @throws IllegalStateException if no transaction is active
+   * @return list of event IDs in the same order as the (possibly transformed) input
+   * @throws IllegalStateException if no transaction is active or if {@code beforeWrite} returns null/empty
    */
   public List<String> writeAll(List<EventEnvelope> events) {
     if (!txContext.isTransactionActive()) {
       throw new IllegalStateException("No active transaction");
     }
     Objects.requireNonNull(events, "events");
-    List<String> ids = new ArrayList<>(events.size());
-    for (EventEnvelope event : events) {
-      ids.add(write(event));
+    if (events.isEmpty()) {
+      return List.of();
     }
+
+    // beforeWrite: may transform the list; throwing aborts the write
+    List<EventEnvelope> transformed = writerHook.beforeWrite(List.copyOf(events));
+    if (transformed == null || transformed.isEmpty()) {
+      throw new IllegalStateException("WriterHook.beforeWrite must not return null or empty list");
+    }
+
+    // Insert batch
+    Connection conn = txContext.currentConnection();
+    outboxStore.insertBatch(conn, transformed);
+
+    // afterWrite: observational
+    runSafely("afterWrite", () -> writerHook.afterWrite(List.copyOf(transformed)));
+
+    // Collect IDs
+    List<String> ids = new ArrayList<>(transformed.size());
+    for (EventEnvelope event : transformed) {
+      ids.add(event.eventId());
+    }
+
+    // Register ONE afterCommit and ONE afterRollback for the whole batch
+    List<EventEnvelope> written = List.copyOf(transformed);
+    if (writerHook != WriterHook.NOOP) {
+      txContext.afterCommit(() -> runSafely("afterCommit", () -> writerHook.afterCommit(written)));
+      txContext.afterRollback(() -> runSafely("afterRollback", () -> writerHook.afterRollback(written)));
+    }
+
     return ids;
   }
 
-  private void runAfterCommitHook(EventEnvelope event) {
+  private void runSafely(String phase, Runnable action) {
     try {
-      afterCommitHook.onCommit(event);
+      action.run();
     } catch (RuntimeException ex) {
-      logger.log(Level.WARNING, "After-commit hook failed for eventId=" + event.eventId(), ex);
+      logger.log(Level.WARNING, "WriterHook." + phase + " failed", ex);
     }
   }
 }

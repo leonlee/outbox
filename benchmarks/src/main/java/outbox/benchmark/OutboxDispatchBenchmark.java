@@ -3,7 +3,7 @@ package outbox.benchmark;
 import outbox.benchmark.BenchmarkDataSourceFactory.DatabaseSetup;
 import org.openjdk.jmh.annotations.*;
 import outbox.OutboxWriter;
-import outbox.dispatch.DispatcherCommitHook;
+import outbox.dispatch.DispatcherWriterHook;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.jdbc.DataSourceConnectionProvider;
 import outbox.jdbc.tx.JdbcTransactionManager;
@@ -69,7 +69,7 @@ public class OutboxDispatchBenchmark {
         .coldQueueCapacity(100)
         .build();
 
-    writer = new OutboxWriter(txContext, db.store(), new DispatcherCommitHook(dispatcher));
+    writer = new OutboxWriter(txContext, db.store(), new DispatcherWriterHook(dispatcher));
     payload = "{\"data\":\"" + "x".repeat(Math.max(0, payloadSize - 11)) + "\"}";
   }
 

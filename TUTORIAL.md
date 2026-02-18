@@ -30,6 +30,7 @@ For the full technical specification, see [SPEC.md](SPEC.md).
 11. [Dead Event Management](#11-dead-event-management)
 12. [Micrometer Metrics](#12-micrometer-metrics)
 13. [Custom JsonCodec](#13-custom-jsoncodec)
+14. [Ordered Delivery](#14-ordered-delivery)
 
 ---
 
@@ -1060,3 +1061,64 @@ var autoStore = JdbcOutboxStores.detect(dataSource, codec);
 ```
 
 If you don't inject a codec, `JsonCodec.getDefault()` (the built-in `DefaultJsonCodec` singleton) is used everywhere.
+
+---
+
+## 14. Ordered Delivery
+
+For use cases requiring per-aggregate FIFO ordering (e.g., `OrderCreated` must be delivered before `OrderShipped`), use the **poller-only** mode with a single dispatch worker.
+
+### Why This Works
+
+The dual hot+cold path architecture makes ordering hard — events for the same aggregate can arrive via different paths in unpredictable order. By disabling the hot path and using a single worker, the poller reads events in `ORDER BY created_at` order and the worker delivers them sequentially. Since DB I/O (polling) is the throughput bottleneck, a single worker easily keeps up.
+
+**Caveat — retries break ordering.** If event A fails and enters backoff retry, its `available_at` is set to a future time. Event B (same aggregate, inserted later) will be polled and delivered while A waits — breaking order. Set `maxAttempts(1)` so failed events go straight to DEAD. Use [Dead Event Management](#11-dead-event-management) to replay them after fixing the issue.
+
+### Configuration
+
+```java
+// 1. Register listeners
+ListenerRegistry registry = new DefaultListenerRegistry();
+registry.register(
+    new StringAggregateType("Order"),
+    new StringEventType("OrderCreated"),
+    event -> System.out.println("Order created: " + event.payload())
+);
+registry.register(
+    new StringAggregateType("Order"),
+    new StringEventType("OrderShipped"),
+    event -> System.out.println("Order shipped: " + event.payload())
+);
+
+// 2. Dispatcher with single worker — sequential dispatch preserves poll order
+OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+    .connectionProvider(connectionProvider)
+    .outboxStore(outboxStore)
+    .listenerRegistry(registry)
+    .workerCount(1)    // single worker → sequential dispatch
+    .maxAttempts(1)    // no retry → strict ordering (failed events go DEAD)
+    .build();
+
+// 3. No DispatcherWriterHook — hot path disabled
+//    WriterHook defaults to NOOP, so just omit it
+OutboxWriter writer = new OutboxWriter(outboxStore, txContext);
+
+// 4. Single-node poller reads in DB insertion order
+OutboxPoller poller = OutboxPoller.builder()
+    .connectionProvider(connectionProvider)
+    .outboxStore(outboxStore)
+    .handler(new DispatcherPollerHandler(dispatcher))
+    .intervalSeconds(1)
+    .build();
+poller.start();
+```
+
+### Trade-offs
+
+| | Hot + Poller (default) | Poller-only, single worker |
+|---|---|---|
+| **Latency** | Sub-second (hot path) | Bounded by poll interval |
+| **Ordering** | No guarantee | Per-aggregate FIFO |
+| **Throughput** | Parallel workers | Single-threaded |
+
+For unordered events, use the default hot + poller mode for lowest latency.

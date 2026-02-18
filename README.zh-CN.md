@@ -160,6 +160,27 @@ purgeScheduler.start();
 - Listener 异常触发 `RETRY`，超过 `maxAttempts` 进入 `DEAD`。
 - 状态更新失败时事件仍保留在 DB，之后可重试。
 
+## 有序投递
+
+当业务场景要求同一聚合根的事件按顺序投递时（例如 `OrderCreated` 必须先于
+`OrderShipped`），可使用**仅 Poller** 模式配合单分发线程：
+
+1. **不配置 `WriterHook`** — 不注入 `DispatcherWriterHook`（禁用热路径）。
+2. **单节点 `OutboxPoller`** — 由一个 Poller 实例按 DB 插入顺序读取事件。
+3. **`workerCount(1)`** — 单个分发线程顺序处理事件。
+
+Poller 按 `ORDER BY created_at` 读取待处理事件，单线程按该顺序依次投递给
+Listener。由于数据库 I/O（轮询）才是吞吐瓶颈，而非内存中的分发，因此单线程
+完全能跟上。
+
+**注意——重试会打破顺序。** 如果事件 A 失败并进入退避重试，同一聚合根的后续事件
+B 可能在 A 等待重试期间被轮询并投递。要保证严格有序，设置 `maxAttempts(1)` 使
+失败事件直接进入 DEAD 而不重试。可通过[死信事件管理](TUTORIAL.zh-CN.md#11-死信事件管理)
+检查并手动重放。
+
+代价：延迟更高（取决于轮询间隔，而非热路径的即时投递）。对于不需要顺序的事件，
+建议使用默认的热路径 + Poller 模式以获得最低延迟。
+
 ## 环境要求
 
 - Java 17+

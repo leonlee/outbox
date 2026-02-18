@@ -27,6 +27,7 @@ For tutorials and code examples, see [TUTORIAL.md](TUTORIAL.md).
 16. [Thread Safety](#16-thread-safety)
 17. [Event Purge](#17-event-purge)
 18. [Dead Event Management](#18-dead-event-management)
+19. [Ordered Delivery](#19-ordered-delivery)
 
 ---
 
@@ -1110,3 +1111,47 @@ All `DeadEventManager` methods catch `SQLException` and log at `SEVERE` level:
 - `replay()` returns `false` on failure
 - `replayAll()` returns the count replayed so far and stops on failure
 - `count()` returns `0` on failure
+
+---
+
+## 19. Ordered Delivery
+
+### 19.1 Poller-Only, Single Worker Mode
+
+For per-aggregate FIFO ordering:
+
+| Setting | Value | Reason |
+|---------|-------|--------|
+| `WriterHook` | `NOOP` (default) | Disable hot path to avoid dual-path reordering |
+| `OutboxPoller` | Single node | Prevent cross-node claim interleaving |
+| `workerCount` | `1` | Sequential dispatch preserves poll order |
+
+The poller reads events in `ORDER BY created_at` order. The single dispatch
+worker processes them sequentially, guaranteeing that events for the same
+aggregate are delivered in insertion order.
+
+### 19.2 Why Poller-Only
+
+The dual hot+cold path architecture makes ordering hard in general — events
+for the same aggregate can arrive via different paths in unpredictable order.
+Disabling the hot path (`WriterHook.NOOP`) ensures all events flow through
+the poller, which reads them in DB insertion order.
+
+### 19.3 Retry Breaks Ordering
+
+If event A fails and is marked RETRY with exponential backoff, its `available_at`
+is set to a future timestamp. Meanwhile, event B (same aggregate, inserted after A)
+has `available_at <= now` and will be polled and delivered before A's retry becomes
+eligible — breaking per-aggregate ordering.
+
+**Mitigation:** Set `maxAttempts(1)` so failed events go directly to DEAD without
+retry. Use `DeadEventManager` to inspect and replay them manually after fixing the
+underlying issue.
+
+### 19.4 Limitations
+
+- Higher latency than hot-path mode (bounded by poll interval).
+- Throughput limited by single-worker sequential processing (sufficient when
+  DB poll is the bottleneck).
+- Ordering is per-node; no cross-node ordering guarantee.
+- Retries break ordering (see 19.3); use `maxAttempts(1)` for strict FIFO.

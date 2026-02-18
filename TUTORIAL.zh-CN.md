@@ -29,6 +29,7 @@
 11. [死信事件管理](#11-死信事件管理)
 12. [Micrometer 监控](#12-micrometer-监控)
 13. [自定义 JsonCodec](#13-自定义-jsoncodec)
+14. [有序投递](#14-有序投递)
 
 ---
 
@@ -1059,3 +1060,64 @@ var autoStore = JdbcOutboxStores.detect(dataSource, codec);
 ```
 
 如不注入 codec，所有组件默认使用 `JsonCodec.getDefault()`（内置的 `DefaultJsonCodec` 单例）。
+
+---
+
+## 14. 有序投递
+
+当业务要求按聚合根维度 FIFO 有序投递时（例如 `OrderCreated` 必须先于 `OrderShipped` 投递），可使用**仅 Poller** 模式配合单分发线程。
+
+### 原理
+
+热路径 + 冷路径的双通道架构难以保证顺序——同一聚合根的事件可能通过不同路径以不可预测的顺序到达。禁用热路径并使用单线程后，Poller 按 `ORDER BY created_at` 顺序读取事件，单线程依次投递。由于数据库 I/O（轮询）才是吞吐瓶颈，单线程完全能跟上。
+
+**注意——重试会打破顺序。** 如果事件 A 失败并进入退避重试，其 `available_at` 被设为未来时间。同一聚合根的后续事件 B 会在 A 等待期间被轮询并投递——打破顺序。设置 `maxAttempts(1)` 使失败事件直接进入 DEAD。可通过[死信事件管理](#11-死信事件管理)在修复问题后手动重放。
+
+### 配置
+
+```java
+// 1. 注册 Listener
+ListenerRegistry registry = new DefaultListenerRegistry();
+registry.register(
+    new StringAggregateType("Order"),
+    new StringEventType("OrderCreated"),
+    event -> System.out.println("订单已创建: " + event.payload())
+);
+registry.register(
+    new StringAggregateType("Order"),
+    new StringEventType("OrderShipped"),
+    event -> System.out.println("订单已发货: " + event.payload())
+);
+
+// 2. 单线程 Dispatcher — 顺序分发保持轮询顺序
+OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+    .connectionProvider(connectionProvider)
+    .outboxStore(outboxStore)
+    .listenerRegistry(registry)
+    .workerCount(1)    // 单线程 → 顺序分发
+    .maxAttempts(1)    // 不重试 → 严格有序（失败事件进入 DEAD）
+    .build();
+
+// 3. 不配置 DispatcherWriterHook — 禁用热路径
+//    WriterHook 默认为 NOOP，直接省略即可
+OutboxWriter writer = new OutboxWriter(outboxStore, txContext);
+
+// 4. 单节点 Poller 按 DB 插入顺序读取事件
+OutboxPoller poller = OutboxPoller.builder()
+    .connectionProvider(connectionProvider)
+    .outboxStore(outboxStore)
+    .handler(new DispatcherPollerHandler(dispatcher))
+    .intervalSeconds(1)
+    .build();
+poller.start();
+```
+
+### 权衡
+
+| | 热路径 + Poller（默认） | 仅 Poller + 单线程 |
+|---|---|---|
+| **延迟** | 亚秒级（热路径） | 取决于轮询间隔 |
+| **顺序** | 无保证 | 按聚合根 FIFO |
+| **吞吐** | 并行 Worker | 单线程 |
+
+对于不需要顺序的事件，建议使用默认的热路径 + Poller 模式以获得最低延迟。

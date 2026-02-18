@@ -160,6 +160,28 @@ If clients need to archive events for audit, they should do so in their `EventLi
 - Listener exceptions trigger `RETRY` with backoff; after `maxAttempts`, events go `DEAD`.
 - If status updates fail, the event remains in DB and may be retried later.
 
+## Ordered Delivery
+
+For use cases requiring per-aggregate event ordering (e.g., `OrderCreated` before
+`OrderShipped`), use the **poller-only** mode with a single dispatch worker:
+
+1. **Omit `WriterHook`** — do not configure `DispatcherWriterHook` (disables the hot path).
+2. **Single-node `OutboxPoller`** — one poller instance reads events in DB insertion order.
+3. **`workerCount(1)`** — one dispatch worker processes events sequentially.
+
+The poller reads pending events `ORDER BY created_at`, and the single worker delivers
+them to listeners in that order. Since DB I/O (polling) is the throughput bottleneck —
+not in-memory dispatch — a single worker easily keeps up.
+
+**Caveat — retries break ordering.** If event A fails and is retried with backoff,
+event B (same aggregate, inserted later) can be polled and delivered while A waits.
+To preserve strict ordering, set `maxAttempts(1)` so failed events go straight to
+DEAD without retry. Use [Dead Event Management](TUTORIAL.md#11-dead-event-management)
+to inspect and replay them manually.
+
+Trade-off: higher latency (poll interval vs. immediate hot-path delivery). For
+unordered events, use the default hot + poller mode for lowest latency.
+
 ## Requirements
 
 - Java 17 or later

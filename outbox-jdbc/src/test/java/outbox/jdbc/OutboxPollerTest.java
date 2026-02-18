@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class OutboxPollerTest {
   private DataSource dataSource;
@@ -131,7 +132,7 @@ class OutboxPollerTest {
     }
 
     assertEquals(1, metrics.coldEnqueued.get());
-    assertFalse(dispatcher.hasColdQueueCapacity());
+    assertEquals(0, dispatcher.coldQueueRemainingCapacity());
 
     dispatcher.close();
   }
@@ -295,6 +296,38 @@ class OutboxPollerTest {
     assertEquals("injected", capturedHeaders.get().get("custom"));
 
     dispatcher.close();
+  }
+
+  @Test
+  void claimLockingRejectsNegativeLockTimeout() {
+    assertThrows(IllegalArgumentException.class, () ->
+        OutboxPoller.builder()
+            .connectionProvider(connectionProvider)
+            .outboxStore(outboxStore)
+            .handler(new DispatcherPollerHandler(
+                OutboxDispatcher.builder()
+                    .connectionProvider(connectionProvider)
+                    .outboxStore(outboxStore)
+                    .listenerRegistry(new DefaultListenerRegistry())
+                    .workerCount(0)
+                    .build()))
+            .claimLocking("test", Duration.ofMinutes(-1)));
+  }
+
+  @Test
+  void claimLockingRejectsZeroLockTimeout() {
+    assertThrows(IllegalArgumentException.class, () ->
+        OutboxPoller.builder()
+            .connectionProvider(connectionProvider)
+            .outboxStore(outboxStore)
+            .handler(new DispatcherPollerHandler(
+                OutboxDispatcher.builder()
+                    .connectionProvider(connectionProvider)
+                    .outboxStore(outboxStore)
+                    .listenerRegistry(new DefaultListenerRegistry())
+                    .workerCount(0)
+                    .build()))
+            .claimLocking("test", Duration.ZERO));
   }
 
   private void insertEvent(EventEnvelope event) throws SQLException {

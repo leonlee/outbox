@@ -59,13 +59,13 @@ public final class OutboxWriter {
    * Writes a single event to the outbox within the current transaction.
    *
    * @param event the event envelope to persist
-   * @return the event ID (ULID)
+   * @return the event ID (ULID), or {@code null} if the write was suppressed by {@link WriterHook#beforeWrite}
    * @throws IllegalStateException if no transaction is active
    */
   public String write(EventEnvelope event) {
     Objects.requireNonNull(event, "event");
     List<String> ids = writeAll(List.of(event));
-    return ids.get(0);
+    return ids.isEmpty() ? null : ids.get(0);
   }
 
   /**
@@ -73,7 +73,7 @@ public final class OutboxWriter {
    *
    * @param eventType   the event type name
    * @param payloadJson the JSON payload
-   * @return the event ID (ULID)
+   * @return the event ID (ULID), or {@code null} if suppressed by {@link WriterHook#beforeWrite}
    * @throws IllegalStateException if no transaction is active
    */
   public String write(String eventType, String payloadJson) {
@@ -85,7 +85,7 @@ public final class OutboxWriter {
    *
    * @param eventType   the event type
    * @param payloadJson the JSON payload
-   * @return the event ID (ULID)
+   * @return the event ID (ULID), or {@code null} if suppressed by {@link WriterHook#beforeWrite}
    * @throws IllegalStateException if no transaction is active
    */
   public String write(EventType eventType, String payloadJson) {
@@ -100,8 +100,9 @@ public final class OutboxWriter {
    * may transform the event list before insertion.
    *
    * @param events the event envelopes to persist
-   * @return list of event IDs in the same order as the (possibly transformed) input
-   * @throws IllegalStateException if no transaction is active or if {@code beforeWrite} returns null/empty
+   * @return list of event IDs in the same order as the (possibly transformed) input;
+   *     empty if the write was suppressed by {@link WriterHook#beforeWrite}
+   * @throws IllegalStateException if no transaction is active
    */
   public List<String> writeAll(List<EventEnvelope> events) {
     if (!txContext.isTransactionActive()) {
@@ -112,10 +113,10 @@ public final class OutboxWriter {
       return List.of();
     }
 
-    // beforeWrite: may transform the list; throwing aborts the write
+    // beforeWrite: may transform or suppress the list; throwing aborts the write
     List<EventEnvelope> transformed = writerHook.beforeWrite(List.copyOf(events));
     if (transformed == null || transformed.isEmpty()) {
-      throw new IllegalStateException("WriterHook.beforeWrite must not return null or empty list");
+      return List.of();
     }
 
     // Insert batch

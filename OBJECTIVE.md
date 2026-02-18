@@ -9,7 +9,7 @@ Project goals, constraints, and acceptance criteria for the outbox-java framewor
 Build a framework that:
 
 1. Persists a unified event record into an outbox table within the current business DB transaction.
-2. After successful transaction commit, optionally invokes an AfterCommitHook (fast path).
+2. After successful transaction commit, optionally invokes an WriterHook (fast path).
 3. OutboxDispatcher executes registered EventListeners (send to MQ, update caches, call APIs, etc.).
 4. On success, OutboxDispatcher updates outbox status to DONE; on failure updates to RETRY/DEAD.
 5. A low-frequency OutboxPoller (optional) scans DB as fallback only (node crash, enqueue downgrade, missed enqueue) and forwards unfinished events to a handler; CDC can also serve as the fallback path.
@@ -29,7 +29,7 @@ Build a framework that:
 ## Delivery Semantics
 
 - Delivery is **at-least-once**. Use `eventId` for downstream dedupe.
-- Hot queue drops (DispatcherCommitHook) do not throw; the poller (if enabled) or CDC should pick up the event.
+- Hot queue drops (DispatcherWriterHook) do not throw; the poller (if enabled) or CDC should pick up the event.
 
 ---
 

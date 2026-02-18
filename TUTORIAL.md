@@ -105,7 +105,7 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 import outbox.EventEnvelope;
 import outbox.OutboxWriter;
 import outbox.spi.MetricsExporter;
-import outbox.dispatch.DispatcherCommitHook;
+import outbox.dispatch.DispatcherWriterHook;
 import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.EventInterceptor;
 import outbox.dispatch.OutboxDispatcher;
@@ -148,7 +148,7 @@ OutboxPoller poller = OutboxPoller.builder()
 poller.start();
 
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
-OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
+OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
 try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
   writer.write("UserCreated", "{\"id\":123}");
@@ -164,7 +164,7 @@ try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
 import outbox.EventEnvelope;
 import outbox.OutboxWriter;
 import outbox.spi.MetricsExporter;
-import outbox.dispatch.DispatcherCommitHook;
+import outbox.dispatch.DispatcherWriterHook;
 import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
@@ -235,7 +235,7 @@ public final class OutboxExample {
         .build();
     poller.start();
 
-    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
+    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
       writer.write("UserCreated", "{\"id\":123}");
@@ -301,7 +301,7 @@ Wire all outbox beans in a `@Configuration` class:
 ```java
 import outbox.OutboxWriter;
 import outbox.dispatch.DefaultInFlightTracker;
-import outbox.dispatch.DispatcherCommitHook;
+import outbox.dispatch.DispatcherWriterHook;
 import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.EventInterceptor;
 import outbox.dispatch.OutboxDispatcher;
@@ -384,14 +384,14 @@ public class OutboxConfiguration {
       TxContext txContext,
       AbstractJdbcOutboxStore outboxStore,
       OutboxDispatcher dispatcher) {
-    return new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
+    return new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
   }
 }
 ```
 
 ### Publishing Events from @Transactional Methods
 
-Inject `OutboxWriter` into any Spring-managed bean and call `write()` inside a `@Transactional` method. The event is inserted within the same database transaction as your business logic. After Spring commits, the `DispatcherCommitHook` fires automatically.
+Inject `OutboxWriter` into any Spring-managed bean and call `write()` inside a `@Transactional` method. The event is inserted within the same database transaction as your business logic. After Spring commits, the `DispatcherWriterHook` fires automatically.
 
 ```java
 @RestController
@@ -464,19 +464,19 @@ OutboxPoller poller = OutboxPoller.builder()
 For high-throughput workloads, you can disable the in-process poller and use CDC to consume the outbox table.
 
 1. Do not start `OutboxPoller`.
-2. Create `OutboxWriter` without a hook (or with `AfterCommitHook.NOOP`) to skip hot-path enqueue.
+2. Create `OutboxWriter` without a hook (or with `WriterHook.NOOP`) to skip hot-path enqueue.
 3. Use CDC to read `outbox_event` inserts and publish downstream; dedupe by `event_id`.
 4. Status updates are optional in CDC-only mode. If you do not mark DONE, treat the table as append-only and enforce retention (e.g., partitioning + TTL).
 
 ```java
 import outbox.OutboxWriter;
-import outbox.AfterCommitHook;
+import outbox.WriterHook;
 
 OutboxWriter writer = new OutboxWriter(txContext, outboxStore);
-// or: new OutboxWriter(txContext, outboxStore, AfterCommitHook.NOOP)
+// or: new OutboxWriter(txContext, outboxStore, WriterHook.NOOP)
 ```
 
-If you enable both `DispatcherCommitHook` and CDC, you must dedupe downstream or choose one primary delivery path.
+If you enable both `DispatcherWriterHook` and CDC, you must dedupe downstream or choose one primary delivery path.
 
 ---
 
@@ -535,7 +535,7 @@ ordersPoller.start();
 
 var ordersTxManager = new JdbcTransactionManager(ordersConn, ordersTx);
 var ordersWriter = new OutboxWriter(ordersTx, ordersOutboxStore,
-    new DispatcherCommitHook(ordersDispatcher));
+    new DispatcherWriterHook(ordersDispatcher));
 
 // --- Inventory stack (same pattern, different datasource) ---
 DataSource inventoryDs = createDataSource("inventory");
@@ -563,7 +563,7 @@ invPoller.start();
 
 var invTxManager = new JdbcTransactionManager(invConn, invTx);
 var invWriter = new OutboxWriter(invTx, invOutboxStore,
-    new DispatcherCommitHook(invDispatcher));
+    new DispatcherWriterHook(invDispatcher));
 
 // --- Publish to each stack independently ---
 try (var tx = ordersTxManager.begin()) {

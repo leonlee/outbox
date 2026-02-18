@@ -21,17 +21,10 @@ public interface OutboxPollerHandler {
   boolean handle(EventEnvelope event, int attempts);
 
   /**
-   * Returns whether this handler can accept more events. The poller skips the
-   * poll cycle entirely when this returns {@code false}.
-   */
-  default boolean hasCapacity() {
-    return true;
-  }
-
-  /**
    * Returns the number of events this handler can accept right now.
    * Used by the poller to cap claim size and avoid over-locking rows
-   * that cannot be immediately processed.
+   * that cannot be immediately processed. The poller skips the poll
+   * cycle entirely when this returns {@code 0}.
    *
    * <p>Default returns {@link Integer#MAX_VALUE} (no cap).
    */

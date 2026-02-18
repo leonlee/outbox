@@ -9,7 +9,7 @@ outbox-java 框架的项目目标、约束与验收标准。
 框架要做到：
 
 1. 在当前业务事务中，将事件记录原子写入 outbox 表。
-2. 事务提交后，可选地触发 AfterCommitHook（快速路径）。
+2. 事务提交后，可选地触发 WriterHook（快速路径）。
 3. OutboxDispatcher 调用已注册的 EventListener 完成后续动作（推送 MQ、刷缓存、调接口等）。
 4. 处理成功则标记 DONE，失败则标记 RETRY 或 DEAD。
 5. OutboxPoller（可选）作为兜底，低频扫表捡漏（宕机、入队失败等场景），将未完成事件交给 Handler 处理；也可用 CDC 替代。
@@ -29,7 +29,7 @@ outbox-java 框架的项目目标、约束与验收标准。
 ## 投递语义
 
 - **at-least-once**，下游按 `eventId` 去重。
-- 热队列满时 DispatcherCommitHook 静默丢弃（不抛异常），由 Poller 或 CDC 兜底。
+- 热队列满时 DispatcherWriterHook 静默丢弃（不抛异常），由 Poller 或 CDC 兜底。
 
 ---
 

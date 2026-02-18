@@ -64,7 +64,7 @@ For tutorials and code examples, see [TUTORIAL.md](TUTORIAL.md).
                      HOT PATH                  COLD PATH
                           |                         |
                           v                         v
-         AfterCommitHook.onCommit()    OutboxPoller.poll()
+         WriterHook.afterCommit()       OutboxPoller.poll()
          Dispatcher.enqueueHot()         pollPending()/claimPending()
                           |              Handler.handle()
                           |              Dispatcher.enqueueCold()
@@ -93,7 +93,7 @@ OutboxDispatcher MUST prioritize:
 Core interfaces, hooks, dispatcher, poller, and registries. **Zero external dependencies.**
 
 Packages:
-- `outbox` - Main API: OutboxWriter, EventEnvelope, EventType, AggregateType, EventListener, AfterCommitHook
+- `outbox` - Main API: OutboxWriter, EventEnvelope, EventType, AggregateType, EventListener, WriterHook
 - `outbox.spi` - Extension point interfaces: TxContext, ConnectionProvider, OutboxStore, EventPurger, MetricsExporter
 - `outbox.model` - Domain objects: OutboxEvent, EventStatus
 - `outbox.dispatch` - OutboxDispatcher, retry policy, inflight tracking
@@ -408,35 +408,43 @@ EventEnvelope.builder(eventType)
 ```java
 public final class OutboxWriter {
   public OutboxWriter(TxContext txContext, OutboxStore outboxStore);
-  public OutboxWriter(TxContext txContext, OutboxStore outboxStore, AfterCommitHook afterCommitHook);
+  public OutboxWriter(TxContext txContext, OutboxStore outboxStore, WriterHook writerHook);
 
-  public String write(EventEnvelope event);
-  public String write(String eventType, String payloadJson);
-  public String write(EventType eventType, String payloadJson);
-  public List<String> writeAll(List<EventEnvelope> events);
+  public String write(EventEnvelope event);              // returns null if suppressed
+  public String write(String eventType, String payloadJson);  // returns null if suppressed
+  public String write(EventType eventType, String payloadJson); // returns null if suppressed
+  public List<String> writeAll(List<EventEnvelope> events);  // returns empty list if suppressed
 }
 ```
 
 Semantics:
 - MUST require an active transaction via TxContext
-- MUST insert outbox row (NEW) using `TxContext.currentConnection()` within the current transaction
-- MUST register `TxContext.afterCommit(() -> afterCommitHook.onCommit(event))` when a hook is provided
-- If the hook throws, it MUST NOT propagate to the caller (log and continue)
-- If no hook is provided, no post-commit action is executed (poller/CDC is responsible)
+- `write()` delegates to `writeAll()` (single-element list)
+- `writeAll()` calls `WriterHook.beforeWrite()` which may transform or suppress the list
+- If `beforeWrite` returns null or empty, no events are inserted (suppressed write)
+- MUST insert outbox rows (NEW) using `TxContext.currentConnection()` within the current transaction
+- MUST register a single `afterCommit`/`afterRollback` callback per `writeAll` batch
+- If the hook throws in `afterWrite`/`afterCommit`/`afterRollback`, it MUST NOT propagate (log and continue)
+- If no hook is provided (or `WriterHook.NOOP`), no post-commit action is executed (poller/CDC is responsible)
 
-### 7.2 AfterCommitHook
+### 7.2 WriterHook
 
 ```java
-@FunctionalInterface
-public interface AfterCommitHook {
-  void onCommit(EventEnvelope event);
+public interface WriterHook {
+  default List<EventEnvelope> beforeWrite(List<EventEnvelope> events) { return events; }
+  default void afterWrite(List<EventEnvelope> events) {}
+  default void afterCommit(List<EventEnvelope> events) {}
+  default void afterRollback(List<EventEnvelope> events) {}
 
-  AfterCommitHook NOOP = event -> {};
+  WriterHook NOOP = new WriterHook() {};
 }
 ```
 
-- Hook invoked after transaction commit (optional)
-- Used to connect hot-path dispatchers or external notifiers
+Lifecycle: `beforeWrite` (transform/suppress) → insert → `afterWrite` → tx commit/rollback → `afterCommit`/`afterRollback`.
+
+- `beforeWrite` may return a modified list; returning null or empty suppresses the write
+- `afterWrite`/`afterCommit`/`afterRollback` exceptions are swallowed and logged
+- `DispatcherWriterHook` implements `afterCommit` to enqueue each event into the dispatcher's hot queue
 
 ---
 
@@ -537,7 +545,7 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
 ```java
 boolean enqueueHot(QueuedEvent event)  // Returns false if queue full or shutting down
 boolean enqueueCold(QueuedEvent event) // Returns false if queue full or shutting down
-boolean hasColdQueueCapacity()         // Check if cold queue has space
+int coldQueueRemainingCapacity()       // Number of slots available in cold queue
 void close()                           // Graceful shutdown with drain
 ```
 
@@ -684,8 +692,8 @@ When `claimLocking` is configured, the poller uses claim-based locking:
 public interface OutboxPollerHandler {
   boolean handle(EventEnvelope event, int attempts);
 
-  default boolean hasCapacity() {
-    return true;
+  default int availableCapacity() {
+    return Integer.MAX_VALUE;
   }
 }
 ```
@@ -697,7 +705,7 @@ public interface OutboxPollerHandler {
 
 For high-QPS workloads, CDC can replace the in-process poller and hot-path hook:
 
-- Construct `OutboxWriter` without a hook (or with `AfterCommitHook.NOOP`)
+- Construct `OutboxWriter` without a hook (or with `WriterHook.NOOP`)
 - Do not start `OutboxPoller`
 - CDC consumer publishes downstream; status updates are optional in CDC-only mode
 - If you do not mark DONE, treat the table as append-only and apply retention (e.g., partitioning + TTL)
@@ -834,10 +842,10 @@ Workers execute listeners synchronously (blocking). This provides natural rate l
 
 **Key insight:** The database acts as a durable buffer when in-memory queues are full.
 
-### 13.4 Hot Queue Full Behavior (DispatcherCommitHook)
+### 13.4 Hot Queue Full Behavior (DispatcherWriterHook)
 
 - `write()` MUST NOT throw
-- `DispatcherCommitHook` logs WARNING and increments metric when the hot queue drops
+- `DispatcherWriterHook` logs WARNING and increments metric when the hot queue drops
 - Event remains in DB with status NEW
 - OutboxPoller or CDC picks up when workers have capacity
 
@@ -934,12 +942,12 @@ The default prefix is `outbox`. For multi-instance setups, use a custom prefix (
 
 | Level | Event |
 |-------|-------|
-| WARNING | Hot queue drop (DispatcherCommitHook) |
+| WARNING | Hot queue drop (DispatcherWriterHook) |
 | ERROR | DEAD transition |
 | ERROR | OutboxDispatcher/poller loop errors |
 | SEVERE | Decode failures (malformed headers) |
 
-Hot queue drop warnings are emitted by `DispatcherCommitHook`. If no hook is installed (CDC-only), no warning or metric is produced.
+Hot queue drop warnings are emitted by `DispatcherWriterHook`. If no hook is installed (CDC-only), no warning or metric is produced.
 
 ### 15.4 Idempotency Requirements
 

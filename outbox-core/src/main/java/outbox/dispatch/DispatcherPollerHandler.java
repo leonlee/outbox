@@ -20,11 +20,6 @@ public final class DispatcherPollerHandler implements OutboxPollerHandler {
   }
 
   @Override
-  public boolean hasCapacity() {
-    return dispatcher.hasColdQueueCapacity();
-  }
-
-  @Override
   public int availableCapacity() {
     return dispatcher.coldQueueRemainingCapacity();
   }

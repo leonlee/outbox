@@ -112,12 +112,12 @@
     OutboxDispatcher --- mark DONE/RETRY/DEAD ---> OutboxStore
 ```
 
-热路径是可选的——配置 `AfterCommitHook`（如 `DispatcherCommitHook`）即可启用；不配置则可由 Poller 或 CDC 消费。
+热路径是可选的——配置 `WriterHook`（如 `DispatcherWriterHook`）即可启用；不配置则可由 Poller 或 CDC 消费。
 
 ## 工作原理
 
 - **事务内写入**：`OutboxWriter.write(...)` 使用业务事务的同一 JDBC 连接写入 `outbox_event`。
-- **提交后 Hook**：`DispatcherCommitHook` 在提交后将事件入热队列；队列满时事件留在 DB。
+- **提交后 Hook**：`DispatcherWriterHook` 在提交后将事件入热队列；队列满时事件留在 DB。
 - **派发**：`OutboxDispatcher` 消费热/冷队列，路由到唯一监听器，并更新状态 `DONE`/`RETRY`/`DEAD`。
 - **兜底**：`OutboxPoller` 定期扫描/Claim 待处理行并入冷队列。
 - **至少一次**：监听器可能重复收到事件，下游需按 `eventId` 去重。
@@ -125,7 +125,7 @@
 
 ## 运行模式
 
-- **热路径 + Poller（默认）**：启用 `DispatcherCommitHook` 并启动 `OutboxPoller`，低延迟 + 兜底。
+- **热路径 + Poller（默认）**：启用 `DispatcherWriterHook` 并启动 `OutboxPoller`，低延迟 + 兜底。
 - **仅 Poller**：不配置 Hook，启动 `OutboxPoller`，更简单但延迟更高。
 - **仅 CDC**：不配置 Hook 也不启动 Poller；由 CDC 消费并自行去重与保留策略。
 
@@ -134,7 +134,7 @@
 - `workerCount` 控制最大并发 listener 数。
 - `hotQueueCapacity`/`coldQueueCapacity` 控制内存队列容量。
 - `skipRecent` 减少与刚提交事件的竞争。
-- `ownerId` + `lockTimeout` 支持多实例锁定。
+- `claimLocking(ownerId, lockTimeout)` 支持多实例锁定。
 - `maxAttempts` 和 `RetryPolicy` 控制重试策略。
 
 ## 事件保留与清理
@@ -173,4 +173,4 @@ purgeScheduler.start();
 ## 补充说明
 
 - 语义为 **at-least-once**，下游需按 `eventId` 去重。
-- 热队列满时 DispatcherCommitHook 不会抛异常，事件仍安全落库，由 Poller 或 CDC 兜底投递。
+- 热队列满时 DispatcherWriterHook 不会抛异常，事件仍安全落库，由 Poller 或 CDC 兜底投递。

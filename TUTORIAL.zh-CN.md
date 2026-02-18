@@ -104,7 +104,7 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 import outbox.EventEnvelope;
 import outbox.OutboxWriter;
 import outbox.spi.MetricsExporter;
-import outbox.dispatch.DispatcherCommitHook;
+import outbox.dispatch.DispatcherWriterHook;
 import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.EventInterceptor;
 import outbox.dispatch.OutboxDispatcher;
@@ -147,7 +147,7 @@ OutboxPoller poller = OutboxPoller.builder()
 poller.start();
 
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
-OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
+OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
 try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
   writer.write("UserCreated", "{\"id\":123}");
@@ -163,7 +163,7 @@ try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
 import outbox.EventEnvelope;
 import outbox.OutboxWriter;
 import outbox.spi.MetricsExporter;
-import outbox.dispatch.DispatcherCommitHook;
+import outbox.dispatch.DispatcherWriterHook;
 import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.poller.OutboxPoller;
@@ -234,7 +234,7 @@ public final class OutboxExample {
         .build();
     poller.start();
 
-    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
+    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
     try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
       writer.write("UserCreated", "{\"id\":123}");
@@ -300,7 +300,7 @@ EventEnvelope envelope = EventEnvelope.builder(UserEvents.USER_CREATED)
 ```java
 import outbox.OutboxWriter;
 import outbox.dispatch.DefaultInFlightTracker;
-import outbox.dispatch.DispatcherCommitHook;
+import outbox.dispatch.DispatcherWriterHook;
 import outbox.dispatch.DispatcherPollerHandler;
 import outbox.dispatch.EventInterceptor;
 import outbox.dispatch.OutboxDispatcher;
@@ -383,14 +383,14 @@ public class OutboxConfiguration {
       TxContext txContext,
       AbstractJdbcOutboxStore outboxStore,
       OutboxDispatcher dispatcher) {
-    return new OutboxWriter(txContext, outboxStore, new DispatcherCommitHook(dispatcher));
+    return new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
   }
 }
 ```
 
 ### 在 @Transactional 方法中发布事件
 
-注入 `OutboxWriter`，在 `@Transactional` 方法中调用 `write()`。事件写入与业务逻辑共享同一个数据库事务，Spring 提交后 `DispatcherCommitHook` 自动触发。
+注入 `OutboxWriter`，在 `@Transactional` 方法中调用 `write()`。事件写入与业务逻辑共享同一个数据库事务，Spring 提交后 `DispatcherWriterHook` 自动触发。
 
 ```java
 @RestController
@@ -463,19 +463,19 @@ OutboxPoller poller = OutboxPoller.builder()
 高吞吐场景下，可以关闭进程内 Poller，改用 CDC 消费 outbox 表。
 
 1. 不启动 `OutboxPoller`
-2. 创建 `OutboxWriter` 时不传 Hook（或用 `AfterCommitHook.NOOP`），跳过热路径入队
+2. 创建 `OutboxWriter` 时不传 Hook（或用 `WriterHook.NOOP`），跳过热路径入队
 3. 用 CDC 监听 `outbox_event` 的 INSERT，下游按 `event_id` 去重
 4. 纯 CDC 模式下可以不更新状态，将表当作 append-only 使用，配合分区 + TTL 做数据清理
 
 ```java
 import outbox.OutboxWriter;
-import outbox.AfterCommitHook;
+import outbox.WriterHook;
 
 OutboxWriter writer = new OutboxWriter(txContext, outboxStore);
-// 或: new OutboxWriter(txContext, outboxStore, AfterCommitHook.NOOP)
+// 或: new OutboxWriter(txContext, outboxStore, WriterHook.NOOP)
 ```
 
-如果同时启用了 `DispatcherCommitHook` 和 CDC，下游需要做去重，或只选其中一条投递路径。
+如果同时启用了 `DispatcherWriterHook` 和 CDC，下游需要做去重，或只选其中一条投递路径。
 
 ---
 
@@ -534,7 +534,7 @@ ordersPoller.start();
 
 var ordersTxManager = new JdbcTransactionManager(ordersConn, ordersTx);
 var ordersWriter = new OutboxWriter(ordersTx, ordersOutboxStore,
-    new DispatcherCommitHook(ordersDispatcher));
+    new DispatcherWriterHook(ordersDispatcher));
 
 // --- 库存栈（同样的模式，不同数据源）---
 DataSource inventoryDs = createDataSource("inventory");
@@ -562,7 +562,7 @@ invPoller.start();
 
 var invTxManager = new JdbcTransactionManager(invConn, invTx);
 var invWriter = new OutboxWriter(invTx, invOutboxStore,
-    new DispatcherCommitHook(invDispatcher));
+    new DispatcherWriterHook(invDispatcher));
 
 // --- 分别向各自的栈发布事件 ---
 try (var tx = ordersTxManager.begin()) {

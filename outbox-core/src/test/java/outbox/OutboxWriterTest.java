@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -148,7 +149,26 @@ class OutboxWriterTest {
   }
 
   @Test
-  void writeAllBeforeWriteReturnsNullThrows() {
+  void writeSingleReturnsNullWhenSuppressed() {
+    StubTxContext txContext = new StubTxContext(true);
+    RecordingOutboxStore store = new RecordingOutboxStore();
+
+    WriterHook suppressHook = new WriterHook() {
+      @Override
+      public List<EventEnvelope> beforeWrite(List<EventEnvelope> events) {
+        return null;
+      }
+    };
+
+    OutboxWriter writer = new OutboxWriter(txContext, store, suppressHook);
+
+    String id = writer.write(EventEnvelope.ofJson("Test", "{}"));
+    assertNull(id);
+    assertEquals(0, store.batchInsertCount.get());
+  }
+
+  @Test
+  void writeAllBeforeWriteReturnsNullSuppressesWrite() {
     StubTxContext txContext = new StubTxContext(true);
     RecordingOutboxStore store = new RecordingOutboxStore();
 
@@ -161,8 +181,27 @@ class OutboxWriterTest {
 
     OutboxWriter writer = new OutboxWriter(txContext, store, nullHook);
 
-    assertThrows(IllegalStateException.class, () ->
-        writer.writeAll(List.of(EventEnvelope.ofJson("Test", "{}"))));
+    List<String> ids = writer.writeAll(List.of(EventEnvelope.ofJson("Test", "{}")));
+    assertTrue(ids.isEmpty());
+    assertEquals(0, store.batchInsertCount.get());
+  }
+
+  @Test
+  void writeAllBeforeWriteReturnsEmptySuppressesWrite() {
+    StubTxContext txContext = new StubTxContext(true);
+    RecordingOutboxStore store = new RecordingOutboxStore();
+
+    WriterHook emptyHook = new WriterHook() {
+      @Override
+      public List<EventEnvelope> beforeWrite(List<EventEnvelope> events) {
+        return List.of();
+      }
+    };
+
+    OutboxWriter writer = new OutboxWriter(txContext, store, emptyHook);
+
+    List<String> ids = writer.writeAll(List.of(EventEnvelope.ofJson("Test", "{}")));
+    assertTrue(ids.isEmpty());
     assertEquals(0, store.batchInsertCount.get());
   }
 

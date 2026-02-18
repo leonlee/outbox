@@ -64,7 +64,7 @@ API 契约、数据模型、行为规则、配置与可观测性的完整技术�
                   热路径                         冷路径
                      |                            |
                      v                            v
-      AfterCommitHook.onCommit()    OutboxPoller.poll()
+      WriterHook.afterCommit()       OutboxPoller.poll()
       Dispatcher.enqueueHot()         pollPending()/claimPending()
                      |                Handler.handle()
                      |                Dispatcher.enqueueCold()
@@ -93,7 +93,7 @@ OutboxDispatcher 的优先级策略：
 核心接口、Hook、Dispatcher、Poller 和注册中心。**零外部依赖。**
 
 包结构：
-- `outbox` — 主 API：OutboxWriter、EventEnvelope、EventType、AggregateType、EventListener、AfterCommitHook
+- `outbox` — 主 API：OutboxWriter、EventEnvelope、EventType、AggregateType、EventListener、WriterHook
 - `outbox.spi` — 扩展点接口：TxContext、ConnectionProvider、OutboxStore、EventPurger、MetricsExporter
 - `outbox.model` — 领域对象：OutboxEvent、EventStatus
 - `outbox.dispatch` — OutboxDispatcher、重试策略、InFlight 追踪
@@ -408,35 +408,43 @@ EventEnvelope.builder(eventType)
 ```java
 public final class OutboxWriter {
   public OutboxWriter(TxContext txContext, OutboxStore outboxStore);
-  public OutboxWriter(TxContext txContext, OutboxStore outboxStore, AfterCommitHook afterCommitHook);
+  public OutboxWriter(TxContext txContext, OutboxStore outboxStore, WriterHook writerHook);
 
-  public String write(EventEnvelope event);
-  public String write(String eventType, String payloadJson);
-  public String write(EventType eventType, String payloadJson);
-  public List<String> writeAll(List<EventEnvelope> events);
+  public String write(EventEnvelope event);              // 被抑制时返回 null
+  public String write(String eventType, String payloadJson);  // 被抑制时返回 null
+  public String write(EventType eventType, String payloadJson); // 被抑制时返回 null
+  public List<String> writeAll(List<EventEnvelope> events);  // 被抑制时返回空列表
 }
 ```
 
 语义：
 - 必须在活跃事务中调用（通过 TxContext 校验）
+- `write()` 委托给 `writeAll()`（单元素列表）
+- `writeAll()` 调用 `WriterHook.beforeWrite()`，可变换或抑制事件列表
+- 若 `beforeWrite` 返回 null 或空列表，不执行插入（写入被抑制）
 - 使用 `TxContext.currentConnection()` 在当前事务内插入 outbox 行（状态 NEW）
-- 若提供了 Hook，必须注册 `TxContext.afterCommit(() -> afterCommitHook.onCommit(event))`
-- Hook 抛异常时不得传播给调用方（仅记录日志）
-- 未提供 Hook 时不执行任何提交后动作（由 Poller / CDC 负责后续投递）
+- 每次 `writeAll` 批次只注册一个 `afterCommit`/`afterRollback` 回调
+- `afterWrite`/`afterCommit`/`afterRollback` 中 Hook 抛异常时不得传播（仅记录日志）
+- 未提供 Hook（或使用 `WriterHook.NOOP`）时不执行任何提交后动作（由 Poller / CDC 负责后续投递）
 
-### 7.2 AfterCommitHook
+### 7.2 WriterHook
 
 ```java
-@FunctionalInterface
-public interface AfterCommitHook {
-  void onCommit(EventEnvelope event);
+public interface WriterHook {
+  default List<EventEnvelope> beforeWrite(List<EventEnvelope> events) { return events; }
+  default void afterWrite(List<EventEnvelope> events) {}
+  default void afterCommit(List<EventEnvelope> events) {}
+  default void afterRollback(List<EventEnvelope> events) {}
 
-  AfterCommitHook NOOP = event -> {};
+  WriterHook NOOP = new WriterHook() {};
 }
 ```
 
-- 事务提交后触发（可选）
-- 用于接入热路径 Dispatcher 或外部通知
+生命周期：`beforeWrite`（变换/抑制）→ 插入 → `afterWrite` → 事务提交/回滚 → `afterCommit`/`afterRollback`。
+
+- `beforeWrite` 可返回修改后的列表；返回 null 或空列表将抑制写入
+- `afterWrite`/`afterCommit`/`afterRollback` 异常被吞掉并记录日志
+- `DispatcherWriterHook` 实现 `afterCommit`，将每个事件入 Dispatcher 热队列
 
 ---
 
@@ -537,7 +545,7 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
 ```java
 boolean enqueueHot(QueuedEvent event)  // 队列满或正在关闭时返回 false
 boolean enqueueCold(QueuedEvent event) // 队列满或正在关闭时返回 false
-boolean hasColdQueueCapacity()         // 冷队列是否有空间
+int coldQueueRemainingCapacity()       // 冷队列剩余容量
 void close()                           // 优雅关闭，等待排空
 ```
 
@@ -682,8 +690,8 @@ void close()    // 停止轮询
 public interface OutboxPollerHandler {
   boolean handle(EventEnvelope event, int attempts);
 
-  default boolean hasCapacity() {
-    return true;
+  default int availableCapacity() {
+    return Integer.MAX_VALUE;
   }
 }
 ```
@@ -695,7 +703,7 @@ public interface OutboxPollerHandler {
 
 高 QPS 场景下，CDC 可替代进程内 Poller 和热路径 Hook：
 
-- 构造 `OutboxWriter` 时不传 Hook（或传 `AfterCommitHook.NOOP`）
+- 构造 `OutboxWriter` 时不传 Hook（或传 `WriterHook.NOOP`）
 - 不启动 `OutboxPoller`
 - CDC 消费者负责下游投递；纯 CDC 模式下状态更新是可选的
 - 若不标记 DONE，将表视为 append-only，通过分区 + TTL 做数据保留
@@ -832,10 +840,10 @@ Worker 同步（阻塞）执行 Listener，天然实现限流：
 
 **关键洞察：** 内存队列满时，数据库充当持久化缓冲区。
 
-### 13.4 热队列满时的行为（DispatcherCommitHook）
+### 13.4 热队列满时的行为（DispatcherWriterHook）
 
 - `write()` 不得抛异常
-- DispatcherCommitHook 记录 WARNING 日志并递增指标
+- DispatcherWriterHook 记录 WARNING 日志并递增指标
 - 事件以 NEW 状态留在 DB
 - Poller 或 CDC 在 Worker 有空闲后接管
 
@@ -932,12 +940,12 @@ new MicrometerMetricsExporter(MeterRegistry registry, String namePrefix) // 自�
 
 | 级别 | 事件 |
 |------|------|
-| WARNING | 热队列丢弃（DispatcherCommitHook） |
+| WARNING | 热队列丢弃（DispatcherWriterHook） |
 | ERROR | 进入 DEAD 状态 |
 | ERROR | Dispatcher / Poller 循环异常 |
 | SEVERE | 解码失败（如 headers 格式异常） |
 
-热队列丢弃告警由 DispatcherCommitHook 发出。未安装 Hook（纯 CDC 模式）时不会产生告警或指标。
+热队列丢弃告警由 DispatcherWriterHook 发出。未安装 Hook（纯 CDC 模式）时不会产生告警或指标。
 
 ### 15.4 幂等性要求
 

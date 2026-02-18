@@ -31,7 +31,7 @@ public interface WriterHook {
    * an exception aborts the entire write — no events are inserted.
    *
    * @param events immutable copy of the events to be written
-   * @return the (possibly modified) event list to actually insert; must not be {@code null} or empty
+   * @return the (possibly modified) event list to actually insert; {@code null} or empty suppresses the write
    */
   default List<EventEnvelope> beforeWrite(List<EventEnvelope> events) {
     return events;

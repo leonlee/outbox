@@ -109,7 +109,7 @@ public final class OutboxPoller implements AutoCloseable {
   /** Executes a single poll cycle. Called automatically by the scheduler, but may also be invoked directly for testing. */
   public void poll() {
     try {
-      if (!handler.hasCapacity()) {
+      if (handler.availableCapacity() <= 0) {
         return;
       }
 
@@ -349,6 +349,9 @@ public final class OutboxPoller implements AutoCloseable {
     public Builder claimLocking(String ownerId, Duration lockTimeout) {
       this.ownerId = Objects.requireNonNull(ownerId, "ownerId");
       this.lockTimeout = Objects.requireNonNull(lockTimeout, "lockTimeout");
+      if (lockTimeout.isNegative() || lockTimeout.isZero()) {
+        throw new IllegalArgumentException("lockTimeout must be positive");
+      }
       return this;
     }
 

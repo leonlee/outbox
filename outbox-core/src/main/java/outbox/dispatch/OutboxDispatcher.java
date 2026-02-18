@@ -137,10 +137,6 @@ public final class OutboxDispatcher implements AutoCloseable {
     return enqueued;
   }
 
-  public boolean hasColdQueueCapacity() {
-    return coldQueue.remainingCapacity() > 0;
-  }
-
   public int coldQueueRemainingCapacity() {
     return coldQueue.remainingCapacity();
   }
@@ -149,6 +145,7 @@ public final class OutboxDispatcher implements AutoCloseable {
     int cycle = pollCounter.getAndIncrement();
     BlockingQueue<QueuedEvent> primary;
     BlockingQueue<QueuedEvent> secondary;
+    // Mask sign bit to stay non-negative after int overflow
     if ((cycle & 0x7FFFFFFF) % 3 == 2) {
       primary = coldQueue;
       secondary = hotQueue;

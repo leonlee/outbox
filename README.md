@@ -112,12 +112,12 @@ Then add the dependencies you need:
     OutboxDispatcher --- mark DONE/RETRY/DEAD ---> OutboxStore
 ```
 
-Hot path is optional: supply an `AfterCommitHook` (for example, `DispatcherCommitHook`) or omit it for CDC-only consumption.
+Hot path is optional: supply an `WriterHook` (for example, `DispatcherWriterHook`) or omit it for CDC-only consumption.
 
 ## How It Works
 
 - **Write inside TX**: `OutboxWriter.write(...)` inserts into `outbox_event` using the same JDBC connection as your business work.
-- **After-commit hook**: `DispatcherCommitHook` enqueues the event into the hot queue after commit. If the queue is full, the event stays in the DB.
+- **After-commit hook**: `DispatcherWriterHook` enqueues the event into the hot queue after commit. If the queue is full, the event stays in the DB.
 - **Dispatch**: `OutboxDispatcher` drains hot/cold queues, routes to a single listener, and updates status to `DONE`, `RETRY`, or `DEAD`.
 - **Fallback**: `OutboxPoller` periodically scans/claims pending rows and enqueues them into the cold queue.
 - **At-least-once**: listeners may see duplicates. Always dedupe downstream by `eventId`.
@@ -125,7 +125,7 @@ Hot path is optional: supply an `AfterCommitHook` (for example, `DispatcherCommi
 
 ## Operating Modes
 
-- **Hot + Poller (default)**: Use `DispatcherCommitHook` and start `OutboxPoller` for low latency plus durable fallback.
+- **Hot + Poller (default)**: Use `DispatcherWriterHook` and start `OutboxPoller` for low latency plus durable fallback.
 - **Poller-only**: Omit the hook, start `OutboxPoller`. Simpler wiring, higher latency.
 - **CDC-only**: Omit both hook and poller. CDC reads the table; you manage dedupe and retention.
 
@@ -134,7 +134,7 @@ Hot path is optional: supply an `AfterCommitHook` (for example, `DispatcherCommi
 - `workerCount` controls max concurrent listener executions.
 - `hotQueueCapacity`/`coldQueueCapacity` bound in-memory buffering.
 - `skipRecent` avoids racing very recent inserts with the hot path.
-- `ownerId` + `lockTimeout` enable multi-instance poller locking.
+- `claimLocking(ownerId, lockTimeout)` enables multi-instance poller locking.
 - `maxAttempts` and `RetryPolicy` control retries and backoff.
 
 ## Event Retention / Purge
@@ -173,4 +173,4 @@ If clients need to archive events for audit, they should do so in their `EventLi
 ## Notes
 
 - Delivery is **at-least-once**. Use `eventId` for downstream dedupe.
-- Hot queue drops (DispatcherCommitHook) do not throw; the poller (if enabled) or CDC should pick up the event.
+- Hot queue drops (DispatcherWriterHook) do not throw; the poller (if enabled) or CDC should pick up the event.

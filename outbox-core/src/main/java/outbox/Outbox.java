@@ -703,7 +703,7 @@ public final class Outbox implements AutoCloseable {
       Objects.requireNonNull(txContext, "txContext");
       Objects.requireNonNull(outboxStore, "outboxStore");
       if (purger != null) {
-        Objects.requireNonNull(connectionProvider, "connectionProvider is required when purger is set");
+        Objects.requireNonNull(connectionProvider, "connectionProvider");
       }
     }
 

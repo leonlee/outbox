@@ -722,7 +722,12 @@ public final class Outbox implements AutoCloseable {
           pb.retention(purgeRetention);
         }
         scheduler = pb.build();
-        scheduler.start();
+        try {
+          scheduler.start();
+        } catch (RuntimeException e) {
+          scheduler.close();
+          throw e;
+        }
       }
       return new Outbox(writer, null, null, scheduler);
     }

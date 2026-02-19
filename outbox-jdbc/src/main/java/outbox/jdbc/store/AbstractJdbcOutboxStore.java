@@ -163,9 +163,9 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
   @Override
   public int markDead(Connection conn, String eventId, String error) {
     String sql = "UPDATE " + tableName() +
-        " SET status=" + EventStatus.DEAD.code() + ", last_error=?, locked_by=NULL, locked_at=NULL" +
+        " SET status=" + EventStatus.DEAD.code() + ", done_at=?, last_error=?, locked_by=NULL, locked_at=NULL" +
         " WHERE event_id=? AND status NOT IN " + TERMINAL_STATUS_IN;
-    return JdbcTemplate.update(conn, sql, truncateError(error), eventId);
+    return JdbcTemplate.update(conn, sql, Timestamp.from(Instant.now()), truncateError(error), eventId);
   }
 
   @Override

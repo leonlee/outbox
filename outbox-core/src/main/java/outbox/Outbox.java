@@ -81,14 +81,30 @@ public final class Outbox implements AutoCloseable {
    */
   @Override
   public void close() {
+    RuntimeException first = null;
     if (purgeScheduler != null) {
-      purgeScheduler.close();
+      try {
+        purgeScheduler.close();
+      } catch (RuntimeException e) {
+        first = e;
+      }
     }
     if (poller != null) {
-      poller.close();
+      try {
+        poller.close();
+      } catch (RuntimeException e) {
+        if (first == null) first = e; else first.addSuppressed(e);
+      }
     }
     if (dispatcher != null) {
-      dispatcher.close();
+      try {
+        dispatcher.close();
+      } catch (RuntimeException e) {
+        if (first == null) first = e; else first.addSuppressed(e);
+      }
+    }
+    if (first != null) {
+      throw first;
     }
   }
 
@@ -153,8 +169,21 @@ public final class Outbox implements AutoCloseable {
     int batchSize = 50;
     Duration skipRecent;
     long drainTimeoutMs = 5000;
+    private boolean built;
 
     AbstractBuilder() {}
+
+    /**
+     * Marks this builder as used, preventing reuse.
+     *
+     * @throws IllegalStateException if build() was already called
+     */
+    void markBuilt() {
+      if (built) {
+        throw new IllegalStateException("build() already called on this builder");
+      }
+      built = true;
+    }
 
     @SuppressWarnings("unchecked")
     private B self() {
@@ -331,6 +360,7 @@ public final class Outbox implements AutoCloseable {
         String ownerId, Duration lockTimeout,
         boolean hotPathEnabled) {
 
+      markBuilt();
       OutboxDispatcher.Builder db = OutboxDispatcher.builder()
           .connectionProvider(connectionProvider)
           .outboxStore(outboxStore)
@@ -374,7 +404,13 @@ public final class Outbox implements AutoCloseable {
         dispatcher.close();
         throw e;
       }
-      poller.start();
+      try {
+        poller.start();
+      } catch (RuntimeException e) {
+        poller.close();
+        dispatcher.close();
+        throw e;
+      }
 
       OutboxWriter writer;
       if (hotPathEnabled) {
@@ -710,6 +746,7 @@ public final class Outbox implements AutoCloseable {
     @Override
     public Outbox build() {
       validateRequired();
+      markBuilt();
       OutboxWriter writer = new OutboxWriter(txContext, outboxStore);
       OutboxPurgeScheduler scheduler = null;
       if (purger != null) {

@@ -42,6 +42,7 @@ public final class DeadEventManager {
    */
   public List<OutboxEvent> query(String eventType, String aggregateType, int limit) {
     try (Connection conn = connectionProvider.getConnection()) {
+      conn.setAutoCommit(true);
       return outboxStore.queryDead(conn, eventType, aggregateType, limit);
     } catch (SQLException e) {
       logger.log(Level.SEVERE, "Failed to query dead events", e);
@@ -57,6 +58,7 @@ public final class DeadEventManager {
    */
   public boolean replay(String eventId) {
     try (Connection conn = connectionProvider.getConnection()) {
+      conn.setAutoCommit(true);
       return outboxStore.replayDead(conn, eventId) > 0;
     } catch (SQLException e) {
       logger.log(Level.SEVERE, "Failed to replay dead event: " + eventId, e);
@@ -81,6 +83,7 @@ public final class DeadEventManager {
     do {
       int batchReplayed = 0;
       try (Connection conn = connectionProvider.getConnection()) {
+        conn.setAutoCommit(true);
         batch = outboxStore.queryDead(conn, eventType, aggregateType, batchSize);
         for (OutboxEvent event : batch) {
           if (outboxStore.replayDead(conn, event.eventId()) > 0) {
@@ -105,6 +108,7 @@ public final class DeadEventManager {
    */
   public int count(String eventType) {
     try (Connection conn = connectionProvider.getConnection()) {
+      conn.setAutoCommit(true);
       return outboxStore.countDead(conn, eventType);
     } catch (SQLException e) {
       logger.log(Level.SEVERE, "Failed to count dead events", e);

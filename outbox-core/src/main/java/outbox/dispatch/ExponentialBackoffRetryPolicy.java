@@ -17,6 +17,12 @@ public final class ExponentialBackoffRetryPolicy implements RetryPolicy {
    * @param maxDelayMs  maximum delay cap (milliseconds)
    */
   public ExponentialBackoffRetryPolicy(long baseDelayMs, long maxDelayMs) {
+    if (baseDelayMs < 0) {
+      throw new IllegalArgumentException("baseDelayMs must be >= 0, got: " + baseDelayMs);
+    }
+    if (maxDelayMs < 0) {
+      throw new IllegalArgumentException("maxDelayMs must be >= 0, got: " + maxDelayMs);
+    }
     this.baseDelayMs = baseDelayMs;
     this.maxDelayMs = maxDelayMs;
   }

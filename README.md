@@ -188,6 +188,22 @@ try (Outbox outbox = Outbox.ordered()
     .outboxStore(store).listenerRegistry(registry)
     .intervalMs(1000)
     .build()) { ... }
+
+// Writer-only (CDC mode): no dispatcher or poller
+try (Outbox outbox = Outbox.writerOnly()
+    .txContext(txContext).outboxStore(store)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+  // Events consumed externally (e.g. Debezium)
+}
+
+// Writer-only with age-based purge
+try (Outbox outbox = Outbox.writerOnly()
+    .txContext(txContext).outboxStore(store)
+    .connectionProvider(connProvider)
+    .purger(new H2AgeBasedPurger())
+    .purgeRetention(Duration.ofHours(24))
+    .build()) { ... }
 ```
 
 For advanced wiring (custom `InFlightTracker`, per-component lifecycle, etc.), use

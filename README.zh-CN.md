@@ -188,6 +188,22 @@ try (Outbox outbox = Outbox.ordered()
     .outboxStore(store).listenerRegistry(registry)
     .intervalMs(1000)
     .build()) { ... }
+
+// 仅写入（CDC 模式）：无 dispatcher/poller
+try (Outbox outbox = Outbox.writerOnly()
+    .txContext(txContext).outboxStore(store)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+  // 事件由外部消费（如 Debezium）
+}
+
+// 仅写入 + 基于时间的清理
+try (Outbox outbox = Outbox.writerOnly()
+    .txContext(txContext).outboxStore(store)
+    .connectionProvider(connProvider)
+    .purger(new H2AgeBasedPurger())
+    .purgeRetention(Duration.ofHours(24))
+    .build()) { ... }
 ```
 
 如需高级配置（自定义 `InFlightTracker`、逐组件生命周期管理等），可直接使用

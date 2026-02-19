@@ -3,6 +3,7 @@ package outbox.jdbc;
 import outbox.EventEnvelope;
 import outbox.Outbox;
 import outbox.OutboxWriter;
+import outbox.jdbc.purge.H2AgeBasedPurger;
 import outbox.jdbc.store.H2OutboxStore;
 import outbox.jdbc.tx.JdbcTransactionManager;
 import outbox.jdbc.tx.ThreadLocalTxContext;
@@ -161,6 +162,38 @@ class OutboxCompositeTest {
 
       assertTrue(latch.await(3, TimeUnit.SECONDS), "Listener should be invoked");
       awaitStatus(eventId, EventStatus.DONE, 2_000);
+    }
+  }
+
+  @Test
+  void writerOnly_writesEventsWithoutDispatch() throws Exception {
+    try (Outbox outbox = Outbox.writerOnly()
+        .txContext(txContext)
+        .outboxStore(outboxStore)
+        .build()) {
+
+      OutboxWriter writer = outbox.writer();
+      String eventId;
+      try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
+        eventId = writer.write(EventEnvelope.ofJson("CdcEvent", "{\"id\":1}"));
+        tx.commit();
+      }
+
+      // Event stays in NEW status — no dispatcher/poller to process it
+      assertEquals(EventStatus.NEW.code(), getStatus(eventId));
+    }
+  }
+
+  @Test
+  void writerOnly_withPurge_buildsAndClosesCleanly() throws Exception {
+    try (Outbox outbox = Outbox.writerOnly()
+        .txContext(txContext)
+        .outboxStore(outboxStore)
+        .connectionProvider(connectionProvider)
+        .purger(new H2AgeBasedPurger())
+        .purgeIntervalSeconds(3600)
+        .build()) {
+      assertNotNull(outbox.writer());
     }
   }
 

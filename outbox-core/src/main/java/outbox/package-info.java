@@ -25,6 +25,11 @@
  * </ul>
  *
  * <h2>Quick Start (composite builder)</h2>
+ *
+ * <p>Four builders are available: {@link outbox.Outbox#singleNode() singleNode()},
+ * {@link outbox.Outbox#multiNode() multiNode()}, {@link outbox.Outbox#ordered() ordered()},
+ * and {@link outbox.Outbox#writerOnly() writerOnly()} (CDC mode, no dispatcher/poller).
+ *
  * <pre>{@code
  * var outboxStore  = JdbcOutboxStores.detect(dataSource);
  * var connProvider = new DataSourceConnectionProvider(dataSource);

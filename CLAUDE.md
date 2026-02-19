@@ -108,12 +108,17 @@ outbox-jdbc/src/main/java/
     │   ├── PostgresOutboxStore.java
     │   └── JdbcOutboxStores.java
     │
-    │  # EventPurger hierarchy
+    │  # EventPurger hierarchy (status-based: terminal events only)
     ├── purge/
     │   ├── AbstractJdbcEventPurger.java
     │   ├── H2EventPurger.java
     │   ├── MySqlEventPurger.java
-    │   └── PostgresEventPurger.java
+    │   ├── PostgresEventPurger.java
+    │   │  # Age-based purger hierarchy (all events by age, for CDC)
+    │   ├── AbstractJdbcAgeBasedPurger.java
+    │   ├── H2AgeBasedPurger.java
+    │   ├── MySqlAgeBasedPurger.java
+    │   └── PostgresAgeBasedPurger.java
     │
     │  # Transaction management
     └── tx/
@@ -127,7 +132,7 @@ outbox-jdbc/src/main/java/
 - **OutboxStore**: Persistence contract (`insertNew`, `insertBatch`, `markDone`, `markRetry`, `markDead`, `pollPending`, `claimPending`, `queryDead`, `replayDead`, `countDead`). `insertBatch` defaults to looping `insertNew`; `AbstractJdbcOutboxStore` overrides with `addBatch/executeBatch`. Implemented by `AbstractJdbcOutboxStore` hierarchy in `outbox.jdbc.store`.
 - **AbstractJdbcOutboxStore** (`outbox.jdbc.store`): Base JDBC outbox store with shared SQL, row mapper, and H2-compatible default `claimPending`. Subclasses: `H2OutboxStore`, `MySqlOutboxStore` (UPDATE...ORDER BY...LIMIT), `PostgresOutboxStore` (FOR UPDATE SKIP LOCKED + RETURNING).
 - **JdbcOutboxStores** (`outbox.jdbc.store`): Static utility with ServiceLoader registry (`META-INF/services/outbox.jdbc.store.AbstractJdbcOutboxStore`) and `detect(DataSource)` auto-detection. Overloaded `detect(DataSource, JsonCodec)` creates new instances with a custom codec.
-- **Outbox**: Composite entry point that wires `OutboxDispatcher`, `OutboxPoller`, and `OutboxWriter` into a single `AutoCloseable`. Three scenario builders via sealed `AbstractBuilder<B>` (CRTP): `singleNode()` (hot path + poller), `multiNode()` (hot path + claim-based locking; `claimLocking()` required), `ordered()` (poller-only, forces `workerCount=1`, `maxAttempts=1`, no `WriterHook`). `close()` shuts down poller first, then dispatcher. Access the writer via `outbox.writer()`.
+- **Outbox**: Composite entry point that wires `OutboxWriter` and optionally `OutboxDispatcher`, `OutboxPoller`, `OutboxPurgeScheduler` into a single `AutoCloseable`. Four scenario builders via sealed `AbstractBuilder<B>` (CRTP): `singleNode()` (hot path + poller), `multiNode()` (hot path + claim-based locking; `claimLocking()` required), `ordered()` (poller-only, forces `workerCount=1`, `maxAttempts=1`, no `WriterHook`), `writerOnly()` (CDC mode, writer + optional age-based purge, no dispatcher/poller). `close()` shuts down purgeScheduler → poller → dispatcher (null components skipped). Access the writer via `outbox.writer()`.
 - **OutboxDispatcher**: Dual-queue single-event processor with hot queue (afterCommit callbacks) and cold queue (poller fallback). Each event is dispatched individually: acquire in-flight → run interceptors → call listener → markDone/markRetry/markDead. Created via `OutboxDispatcher.builder()`. Uses `InFlightTracker` for deduplication, `RetryPolicy` for exponential backoff, `EventInterceptor` for cross-cutting hooks, fair 2:1 hot/cold queue draining, and graceful shutdown with configurable drain timeout.
 - **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails. Created via `OutboxPoller.builder()`. Uses an `OutboxPollerHandler` to forward events. Two modes: single-node (default, `pollPending`) and multi-node (`claimLocking()` enables `claimPending` with row-level locks). Accepts optional `JsonCodec` via `.jsonCodec()` builder method.
 - **JsonCodec**: Interface for `Map<String, String>` ↔ JSON encoding/decoding. `DefaultJsonCodec` is the built-in zero-dependency implementation (singleton via `JsonCodec.getDefault()`). Injectable into `AbstractJdbcOutboxStore`, `OutboxPoller`, and `JdbcOutboxStores.detect()` for users who prefer Jackson/Gson.
@@ -140,7 +145,7 @@ outbox-jdbc/src/main/java/
 - **JdbcTemplate**: Lightweight JDBC helper (`update`, `query`, `updateReturning`) used by `AbstractJdbcOutboxStore` subclasses.
 - **ListenerRegistry**: Maps `(aggregateType, eventType)` pairs to a single `EventListener`. Uses `AggregateType.GLOBAL` as default. Unroutable events (no listener) are immediately marked DEAD.
 - **EventInterceptor**: Cross-cutting before/after hooks for audit, logging, metrics. `beforeDispatch` runs in registration order; `afterDispatch` in reverse. Replaces the old wildcard `registerAll()` pattern.
-- **EventPurger**: SPI for deleting terminal events (DONE + DEAD) older than a cutoff. Implementations in `outbox.jdbc.purge`: `AbstractJdbcEventPurger` (base with subquery-based `DELETE`), `MySqlEventPurger` (`DELETE...ORDER BY...LIMIT`).
+- **EventPurger**: SPI for deleting events older than a cutoff. Two hierarchies in `outbox.jdbc.purge`: (1) status-based — `AbstractJdbcEventPurger` deletes only terminal events (DONE + DEAD), with `MySqlEventPurger` (`DELETE...ORDER BY...LIMIT`); (2) age-based — `AbstractJdbcAgeBasedPurger` deletes all events regardless of status (for CDC mode), with `MySqlAgeBasedPurger` (`DELETE...ORDER BY...LIMIT`).
 - **OutboxPurgeScheduler**: Scheduled component that purges terminal events on a configurable interval. Builder pattern, `AutoCloseable`, daemon threads (same lifecycle as `OutboxPoller`). Loops batches until `count < batchSize`.
 - **DeadEventManager** (`outbox.dead`): Connection-managed facade for querying, counting, and replaying DEAD events. Constructor takes `ConnectionProvider` + `OutboxStore`.
 - **MicrometerMetricsExporter** (`outbox.micrometer`): Micrometer-based `MetricsExporter` implementation with counters and gauges. Supports custom `namePrefix` for multi-instance use.

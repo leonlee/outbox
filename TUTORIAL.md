@@ -519,6 +519,33 @@ For high-throughput workloads, you can disable the in-process poller and use CDC
 3. Use CDC to read `outbox_event` inserts and publish downstream; dedupe by `event_id`.
 4. Status updates are optional in CDC-only mode. If you do not mark DONE, treat the table as append-only and enforce retention (e.g., partitioning + TTL).
 
+### Using the composite builder (recommended)
+
+```java
+// Simplest CDC setup — writer only, no purge
+try (Outbox outbox = Outbox.writerOnly()
+    .txContext(txContext)
+    .outboxStore(outboxStore)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+  // write events inside transactions; CDC reads the table externally
+}
+
+// CDC with age-based purge — deletes ALL events older than retention, regardless of status
+try (Outbox outbox = Outbox.writerOnly()
+    .txContext(txContext)
+    .outboxStore(outboxStore)
+    .connectionProvider(connectionProvider)
+    .purger(new H2AgeBasedPurger())           // or MySqlAgeBasedPurger, PostgresAgeBasedPurger
+    .purgeRetention(Duration.ofHours(24))      // default: 7 days
+    .purgeIntervalSeconds(1800)                // default: 1 hour
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+}
+```
+
+### Manual wiring (advanced)
+
 ```java
 import outbox.OutboxWriter;
 import outbox.WriterHook;

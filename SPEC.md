@@ -862,7 +862,7 @@ Workers execute listeners synchronously (blocking). This provides natural rate l
 
 ## 14. Configuration
 
-The recommended way to configure the outbox is via the `Outbox` composite builder (`Outbox.singleNode()`, `Outbox.multiNode()`, `Outbox.ordered()`), which wires all components with correct defaults. For advanced use cases, `OutboxDispatcher.Builder` and `OutboxPoller.Builder` are available directly.
+The recommended way to configure the outbox is via the `Outbox` composite builder (`Outbox.singleNode()`, `Outbox.multiNode()`, `Outbox.ordered()`, `Outbox.writerOnly()`), which wires all components with correct defaults. For advanced use cases, `OutboxDispatcher.Builder` and `OutboxPoller.Builder` are available directly.
 
 ### 14.1 Dispatcher Defaults
 
@@ -1180,13 +1180,14 @@ underlying issue.
 
 ### 20.1 Overview
 
-The `Outbox` class is the recommended entry point for wiring the framework. It provides three scenario-specific builders that create an `OutboxDispatcher`, `OutboxPoller`, and `OutboxWriter` as a single `AutoCloseable` unit.
+The `Outbox` class is the recommended entry point for wiring the framework. It provides four scenario-specific builders that create an `OutboxWriter` and optionally an `OutboxDispatcher`, `OutboxPoller`, and `OutboxPurgeScheduler` as a single `AutoCloseable` unit.
 
 | Builder | Hot Path | Poller Mode | workerCount | maxAttempts | WriterHook |
 |---------|----------|-------------|-------------|-------------|------------|
 | `Outbox.singleNode()` | Yes | `pollPending` | user-set (default 4) | user-set (default 10) | `DispatcherWriterHook` |
 | `Outbox.multiNode()` | Yes | `claimPending` | user-set (default 4) | user-set (default 10) | `DispatcherWriterHook` |
 | `Outbox.ordered()` | No | `pollPending` | 1 (forced) | 1 (forced) | `NOOP` (forced) |
+| `Outbox.writerOnly()` | No | None | N/A | N/A | `NOOP` (forced) |
 
 ### 20.2 Sealed Builder Hierarchy
 
@@ -1195,8 +1196,9 @@ Outbox (final, AutoCloseable)
 ├── singleNode()   → SingleNodeBuilder
 ├── multiNode()    → MultiNodeBuilder
 ├── ordered()      → OrderedBuilder
+├── writerOnly()   → WriterOnlyBuilder
 │
-└── AbstractBuilder<B> (sealed, permits 3 concrete builders)
+└── AbstractBuilder<B> (sealed, permits 4 concrete builders)
     Required: connectionProvider, txContext, outboxStore, listenerRegistry
     Optional: metrics, jsonCodec, interceptor(s), intervalMs, batchSize,
               skipRecent, drainTimeoutMs
@@ -1206,24 +1208,28 @@ Outbox (final, AutoCloseable)
 
 `OrderedBuilder` exposes no additional parameters.
 
+`WriterOnlyBuilder` only requires `txContext` and `outboxStore`. Optionally accepts `purger`, `purgeRetention`, `purgeBatchSize`, `purgeIntervalSeconds` for age-based cleanup; if `purger` is set, `connectionProvider` is also required. Inherited dispatcher/poller settings are ignored.
+
 ### 20.3 Build Lifecycle
 
 Each `build()`:
 
 1. Validates required fields (`NullPointerException` if missing).
 2. `MultiNodeBuilder` checks `claimLocking()` was called (`IllegalStateException` if not).
-3. Builds `OutboxDispatcher` (workers start immediately).
-4. Builds `OutboxPoller` — wrapped in try-catch: if fails, dispatcher is closed before rethrowing.
-5. Starts poller.
-6. Creates `OutboxWriter` (with `DispatcherWriterHook` for single/multi-node, `NOOP` for ordered).
-7. Returns `Outbox`.
+3. Builds `OutboxDispatcher` (workers start immediately). Skipped for `WriterOnlyBuilder`.
+4. Builds `OutboxPoller` — wrapped in try-catch: if fails, dispatcher is closed before rethrowing. Skipped for `WriterOnlyBuilder`.
+5. Starts poller. Skipped for `WriterOnlyBuilder`.
+6. Creates `OutboxWriter` (with `DispatcherWriterHook` for single/multi-node, `NOOP` for ordered and writer-only).
+7. `WriterOnlyBuilder` optionally builds and starts `OutboxPurgeScheduler` if a purger is configured.
+8. Returns `Outbox`.
 
 ### 20.4 Shutdown
 
-`Outbox.close()` shuts down in order:
+`Outbox.close()` shuts down in order (null components are skipped):
 
-1. `poller.close()` — stop feeding cold queue.
-2. `dispatcher.close()` — drain remaining events within `drainTimeoutMs`.
+1. `purgeScheduler.close()` — stop purge schedule.
+2. `poller.close()` — stop feeding cold queue.
+3. `dispatcher.close()` — drain remaining events within `drainTimeoutMs`.
 
 ### 20.5 API
 
@@ -1249,6 +1255,24 @@ try (Outbox outbox = Outbox.multiNode()
 try (Outbox outbox = Outbox.ordered()
     .connectionProvider(cp).txContext(tx).outboxStore(store).listenerRegistry(reg)
     .intervalMs(1000)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+}
+
+// Writer-only (CDC mode, no dispatcher/poller)
+try (Outbox outbox = Outbox.writerOnly()
+    .txContext(tx).outboxStore(store)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+}
+
+// Writer-only with age-based purge
+try (Outbox outbox = Outbox.writerOnly()
+    .txContext(tx).outboxStore(store)
+    .connectionProvider(cp)
+    .purger(new H2AgeBasedPurger())
+    .purgeRetention(Duration.ofHours(24))
+    .purgeIntervalSeconds(1800)
     .build()) {
   OutboxWriter writer = outbox.writer();
 }

@@ -3,6 +3,7 @@ package outbox;
 import outbox.model.OutboxEvent;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.spi.ConnectionProvider;
+import outbox.spi.EventPurger;
 import outbox.spi.OutboxStore;
 import outbox.spi.TxContext;
 
@@ -153,6 +154,77 @@ class OutboxTest {
           .outboxStore(STUB_STORE).listenerRegistry(STUB_REG)
           .claimLocking("node-1", Duration.ofMinutes(5))
           .intervalMs(60_000)
+          .build()) {
+        assertNotNull(outbox.writer());
+      }
+    });
+  }
+
+  // ── Validation: writerOnly ──────────────────────────────────────
+
+  @Test
+  void writerOnly_missingTxContext_throwsNPE() {
+    assertThrows(NullPointerException.class, () ->
+        Outbox.writerOnly()
+            .outboxStore(STUB_STORE)
+            .build());
+  }
+
+  @Test
+  void writerOnly_missingOutboxStore_throwsNPE() {
+    assertThrows(NullPointerException.class, () ->
+        Outbox.writerOnly()
+            .txContext(STUB_TX)
+            .build());
+  }
+
+  @Test
+  void writerOnly_buildsAndClosesCleanly() {
+    assertDoesNotThrow(() -> {
+      try (Outbox outbox = Outbox.writerOnly()
+          .txContext(STUB_TX)
+          .outboxStore(STUB_STORE)
+          .build()) {
+        assertNotNull(outbox.writer());
+      }
+    });
+  }
+
+  @Test
+  void writerOnly_withPurger_missingConnectionProvider_throwsNPE() {
+    EventPurger stubPurger = (conn, before, limit) -> 0;
+    assertThrows(NullPointerException.class, () ->
+        Outbox.writerOnly()
+            .txContext(STUB_TX)
+            .outboxStore(STUB_STORE)
+            .purger(stubPurger)
+            .build());
+  }
+
+  @Test
+  void writerOnly_withPurger_buildsAndClosesCleanly() {
+    EventPurger stubPurger = (conn, before, limit) -> 0;
+    assertDoesNotThrow(() -> {
+      try (Outbox outbox = Outbox.writerOnly()
+          .txContext(STUB_TX)
+          .outboxStore(STUB_STORE)
+          .connectionProvider(STUB_CP)
+          .purger(stubPurger)
+          .purgeRetention(Duration.ofHours(24))
+          .purgeIntervalSeconds(1800)
+          .purgeBatchSize(100)
+          .build()) {
+        assertNotNull(outbox.writer());
+      }
+    });
+  }
+
+  @Test
+  void writerOnly_connectionProviderNotRequiredWithoutPurger() {
+    assertDoesNotThrow(() -> {
+      try (Outbox outbox = Outbox.writerOnly()
+          .txContext(STUB_TX)
+          .outboxStore(STUB_STORE)
           .build()) {
         assertNotNull(outbox.writer());
       }

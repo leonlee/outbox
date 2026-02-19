@@ -517,6 +517,33 @@ OutboxPoller poller = OutboxPoller.builder()
 3. 用 CDC 监听 `outbox_event` 的 INSERT，下游按 `event_id` 去重
 4. 纯 CDC 模式下可以不更新状态，将表当作 append-only 使用，配合分区 + TTL 做数据清理
 
+### 使用组合构建器（推荐）
+
+```java
+// 最简 CDC 配置 — 仅写入，不清理
+try (Outbox outbox = Outbox.writerOnly()
+    .txContext(txContext)
+    .outboxStore(outboxStore)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+  // 在事务中写入事件；CDC 从外部消费表
+}
+
+// CDC + 基于时间的清理 — 删除超过保留期的所有事件，不区分状态
+try (Outbox outbox = Outbox.writerOnly()
+    .txContext(txContext)
+    .outboxStore(outboxStore)
+    .connectionProvider(connectionProvider)
+    .purger(new H2AgeBasedPurger())           // 或 MySqlAgeBasedPurger、PostgresAgeBasedPurger
+    .purgeRetention(Duration.ofHours(24))      // 默认: 7 天
+    .purgeIntervalSeconds(1800)                // 默认: 1 小时
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+}
+```
+
+### 手动组装（高级）
+
 ```java
 import outbox.OutboxWriter;
 import outbox.WriterHook;

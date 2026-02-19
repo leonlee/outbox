@@ -860,7 +860,7 @@ Worker 同步（阻塞）执行 Listener，天然实现限流：
 
 ## 14. 配置
 
-推荐通过 `Outbox` 组合构建器（`Outbox.singleNode()`、`Outbox.multiNode()`、`Outbox.ordered()`）进行配置，它会以正确的默认值组装所有组件。高级场景可直接使用 `OutboxDispatcher.Builder` 和 `OutboxPoller.Builder`。
+推荐通过 `Outbox` 组合构建器（`Outbox.singleNode()`、`Outbox.multiNode()`、`Outbox.ordered()`、`Outbox.writerOnly()`）进行配置，它会以正确的默认值组装所有组件。高级场景可直接使用 `OutboxDispatcher.Builder` 和 `OutboxPoller.Builder`。
 
 ### 14.1 Dispatcher 默认值
 
@@ -1173,13 +1173,14 @@ Poller 按 `ORDER BY created_at` 顺序读取事件。单个分发线程依次�
 
 ### 20.1 概述
 
-`Outbox` 类是推荐的框架接入入口。它提供三个场景化构建器，将 `OutboxDispatcher`、`OutboxPoller` 和 `OutboxWriter` 组装为统一的 `AutoCloseable` 单元。
+`Outbox` 类是推荐的框架接入入口。它提供四个场景化构建器，将 `OutboxWriter` 以及可选的 `OutboxDispatcher`、`OutboxPoller`、`OutboxPurgeScheduler` 组装为统一的 `AutoCloseable` 单元。
 
 | 构建器 | 热路径 | Poller 模式 | workerCount | maxAttempts | WriterHook |
 |--------|--------|-------------|-------------|-------------|------------|
 | `Outbox.singleNode()` | 是 | `pollPending` | 用户设置（默认 4） | 用户设置（默认 10） | `DispatcherWriterHook` |
 | `Outbox.multiNode()` | 是 | `claimPending` | 用户设置（默认 4） | 用户设置（默认 10） | `DispatcherWriterHook` |
 | `Outbox.ordered()` | 否 | `pollPending` | 1（强制） | 1（强制） | `NOOP`（强制） |
+| `Outbox.writerOnly()` | 否 | 无 | N/A | N/A | `NOOP`（强制） |
 
 ### 20.2 密封构建器层次
 
@@ -1188,8 +1189,9 @@ Outbox (final, AutoCloseable)
 ├── singleNode()   → SingleNodeBuilder
 ├── multiNode()    → MultiNodeBuilder
 ├── ordered()      → OrderedBuilder
+├── writerOnly()   → WriterOnlyBuilder
 │
-└── AbstractBuilder<B> (sealed, permits 3 个具体构建器)
+└── AbstractBuilder<B> (sealed, permits 4 个具体构建器)
     必填：connectionProvider, txContext, outboxStore, listenerRegistry
     可选：metrics, jsonCodec, interceptor(s), intervalMs, batchSize,
           skipRecent, drainTimeoutMs
@@ -1199,24 +1201,28 @@ Outbox (final, AutoCloseable)
 
 `OrderedBuilder` 不暴露额外参数。
 
+`WriterOnlyBuilder` 仅需 `txContext` 和 `outboxStore`。可选配置 `purger`、`purgeRetention`、`purgeBatchSize`、`purgeIntervalSeconds` 进行基于时间的清理；若设置了 `purger`，则还需 `connectionProvider`。继承的 dispatcher/poller 配置被忽略。
+
 ### 20.3 构建生命周期
 
 每个 `build()` 执行以下步骤：
 
 1. 校验必填字段（缺失则抛 `NullPointerException`）。
 2. `MultiNodeBuilder` 检查是否已调用 `claimLocking()`（未调用则抛 `IllegalStateException`）。
-3. 构建 `OutboxDispatcher`（Worker 立即启动）。
-4. 构建 `OutboxPoller` — 包裹在 try-catch 中：若失败则先关闭 Dispatcher 再重新抛出异常。
-5. 启动 Poller。
-6. 创建 `OutboxWriter`（单节点/多节点使用 `DispatcherWriterHook`，有序模式使用 `NOOP`）。
-7. 返回 `Outbox`。
+3. 构建 `OutboxDispatcher`（Worker 立即启动）。`WriterOnlyBuilder` 跳过此步。
+4. 构建 `OutboxPoller` — 包裹在 try-catch 中：若失败则先关闭 Dispatcher 再重新抛出异常。`WriterOnlyBuilder` 跳过此步。
+5. 启动 Poller。`WriterOnlyBuilder` 跳过此步。
+6. 创建 `OutboxWriter`（单节点/多节点使用 `DispatcherWriterHook`，有序模式和仅写入模式使用 `NOOP`）。
+7. `WriterOnlyBuilder` 在配置了 purger 时可选构建并启动 `OutboxPurgeScheduler`。
+8. 返回 `Outbox`。
 
 ### 20.4 关闭顺序
 
-`Outbox.close()` 按顺序关闭：
+`Outbox.close()` 按顺序关闭（null 组件跳过）：
 
-1. `poller.close()` — 停止向冷队列喂数据。
-2. `dispatcher.close()` — 在 `drainTimeoutMs` 内排空剩余事件。
+1. `purgeScheduler.close()` — 停止清理调度。
+2. `poller.close()` — 停止向冷队列喂数据。
+3. `dispatcher.close()` — 在 `drainTimeoutMs` 内排空剩余事件。
 
 ### 20.5 API
 
@@ -1242,6 +1248,24 @@ try (Outbox outbox = Outbox.multiNode()
 try (Outbox outbox = Outbox.ordered()
     .connectionProvider(cp).txContext(tx).outboxStore(store).listenerRegistry(reg)
     .intervalMs(1000)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+}
+
+// 仅写入（CDC 模式，无 dispatcher/poller）
+try (Outbox outbox = Outbox.writerOnly()
+    .txContext(tx).outboxStore(store)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+}
+
+// 仅写入 + 基于时间的清理
+try (Outbox outbox = Outbox.writerOnly()
+    .txContext(tx).outboxStore(store)
+    .connectionProvider(cp)
+    .purger(new H2AgeBasedPurger())
+    .purgeRetention(Duration.ofHours(24))
+    .purgeIntervalSeconds(1800)
     .build()) {
   OutboxWriter writer = outbox.writer();
 }

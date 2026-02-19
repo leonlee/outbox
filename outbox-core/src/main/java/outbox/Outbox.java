@@ -6,8 +6,10 @@ import outbox.dispatch.EventInterceptor;
 import outbox.dispatch.OutboxDispatcher;
 import outbox.dispatch.RetryPolicy;
 import outbox.poller.OutboxPoller;
+import outbox.purge.OutboxPurgeScheduler;
 import outbox.registry.ListenerRegistry;
 import outbox.spi.ConnectionProvider;
+import outbox.spi.EventPurger;
 import outbox.spi.MetricsExporter;
 import outbox.spi.OutboxStore;
 import outbox.spi.TxContext;
@@ -23,12 +25,13 @@ import java.util.UUID;
  * Composite entry point that wires an {@link OutboxDispatcher}, {@link OutboxPoller},
  * and {@link OutboxWriter} into a single {@link AutoCloseable} unit.
  *
- * <p>Three scenario-specific builders expose only the parameters relevant to each
+ * <p>Four scenario-specific builders expose only the parameters relevant to each
  * deployment topology:
  * <ul>
  *   <li>{@link #singleNode()} — hot path + poller fallback (default)</li>
  *   <li>{@link #multiNode()} — hot path + poller with claim-based locking</li>
  *   <li>{@link #ordered()} — poller-only, single worker, no retry</li>
+ *   <li>{@link #writerOnly()} — writer only, no dispatcher/poller (CDC mode)</li>
  * </ul>
  *
  * <h2>Example</h2>
@@ -53,11 +56,14 @@ public final class Outbox implements AutoCloseable {
   private final OutboxWriter writer;
   private final OutboxPoller poller;
   private final OutboxDispatcher dispatcher;
+  private final OutboxPurgeScheduler purgeScheduler;
 
-  private Outbox(OutboxWriter writer, OutboxPoller poller, OutboxDispatcher dispatcher) {
+  private Outbox(OutboxWriter writer, OutboxPoller poller,
+      OutboxDispatcher dispatcher, OutboxPurgeScheduler purgeScheduler) {
     this.writer = writer;
     this.poller = poller;
     this.dispatcher = dispatcher;
+    this.purgeScheduler = purgeScheduler;
   }
 
   /**
@@ -70,13 +76,20 @@ public final class Outbox implements AutoCloseable {
   }
 
   /**
-   * Shuts down the poller first (stop feeding cold queue), then the dispatcher
-   * (drain remaining events).
+   * Shuts down components in order: purge scheduler, poller, dispatcher.
+   * Null components (e.g. in writer-only mode) are skipped.
    */
   @Override
   public void close() {
-    poller.close();
-    dispatcher.close();
+    if (purgeScheduler != null) {
+      purgeScheduler.close();
+    }
+    if (poller != null) {
+      poller.close();
+    }
+    if (dispatcher != null) {
+      dispatcher.close();
+    }
   }
 
   /**
@@ -106,6 +119,19 @@ public final class Outbox implements AutoCloseable {
     return new OrderedBuilder();
   }
 
+  /**
+   * Creates a builder for writer-only (CDC) mode: no dispatcher or poller.
+   *
+   * <p>Events are written to the outbox table and consumed externally (e.g. via
+   * Debezium reading the WAL/binlog). An optional age-based purge scheduler
+   * can be configured to clean up old events.
+   *
+   * @return a new writer-only builder
+   */
+  public static WriterOnlyBuilder writerOnly() {
+    return new WriterOnlyBuilder();
+  }
+
   // ── Abstract builder ─────────────────────────────────────────────
 
   /**
@@ -114,7 +140,7 @@ public final class Outbox implements AutoCloseable {
    * @param <B> the concrete builder type (CRTP)
    */
   public static abstract sealed class AbstractBuilder<B extends AbstractBuilder<B>>
-      permits SingleNodeBuilder, MultiNodeBuilder, OrderedBuilder {
+      permits SingleNodeBuilder, MultiNodeBuilder, OrderedBuilder, WriterOnlyBuilder {
 
     ConnectionProvider connectionProvider;
     TxContext txContext;
@@ -357,7 +383,7 @@ public final class Outbox implements AutoCloseable {
       } else {
         writer = new OutboxWriter(txContext, outboxStore);
       }
-      return new Outbox(writer, poller, dispatcher);
+      return new Outbox(writer, poller, dispatcher, null);
     }
 
     /**
@@ -594,6 +620,111 @@ public final class Outbox implements AutoCloseable {
     public Outbox build() {
       validateRequired();
       return buildComposite(1, 1000, 1000, 1, null, null, null, false);
+    }
+  }
+
+  // ── Writer-only builder ────────────────────────────────────────
+
+  /**
+   * Builder for writer-only (CDC) mode: no dispatcher or poller.
+   *
+   * <p>Creates only an {@link OutboxWriter} with an optional
+   * {@link OutboxPurgeScheduler} for age-based cleanup. Intended for CDC
+   * scenarios where events are consumed externally (e.g. Debezium).
+   *
+   * <p>Inherited builder methods for dispatcher/poller configuration
+   * ({@code listenerRegistry}, {@code interceptor}, {@code intervalMs},
+   * {@code batchSize}, {@code skipRecent}, {@code drainTimeoutMs}) are
+   * callable but have no effect in this mode.
+   */
+  public static final class WriterOnlyBuilder extends AbstractBuilder<WriterOnlyBuilder> {
+    private EventPurger purger;
+    private Duration purgeRetention;
+    private int purgeBatchSize = 500;
+    private long purgeIntervalSeconds = 3600;
+
+    WriterOnlyBuilder() {}
+
+    /**
+     * Sets the age-based purger for cleaning up old events.
+     *
+     * <p>Optional. If set, {@code connectionProvider} is also required.
+     *
+     * @param purger the event purger
+     * @return this builder
+     */
+    public WriterOnlyBuilder purger(EventPurger purger) {
+      this.purger = purger;
+      return this;
+    }
+
+    /**
+     * Sets the retention period for the purge scheduler. Events older than
+     * this duration are eligible for purging.
+     *
+     * <p>Optional. Defaults to {@code 7 days}.
+     *
+     * @param purgeRetention the retention duration
+     * @return this builder
+     */
+    public WriterOnlyBuilder purgeRetention(Duration purgeRetention) {
+      this.purgeRetention = purgeRetention;
+      return this;
+    }
+
+    /**
+     * Sets the maximum number of events deleted per batch within a purge cycle.
+     *
+     * <p>Optional. Defaults to {@code 500}.
+     *
+     * @param purgeBatchSize max events per batch
+     * @return this builder
+     */
+    public WriterOnlyBuilder purgeBatchSize(int purgeBatchSize) {
+      this.purgeBatchSize = purgeBatchSize;
+      return this;
+    }
+
+    /**
+     * Sets the interval in seconds between purge cycles.
+     *
+     * <p>Optional. Defaults to {@code 3600} (1 hour).
+     *
+     * @param purgeIntervalSeconds purge interval in seconds
+     * @return this builder
+     */
+    public WriterOnlyBuilder purgeIntervalSeconds(long purgeIntervalSeconds) {
+      this.purgeIntervalSeconds = purgeIntervalSeconds;
+      return this;
+    }
+
+    @Override
+    void validateRequired() {
+      Objects.requireNonNull(txContext, "txContext");
+      Objects.requireNonNull(outboxStore, "outboxStore");
+      if (purger != null) {
+        Objects.requireNonNull(connectionProvider, "connectionProvider is required when purger is set");
+      }
+    }
+
+    @Override
+    public Outbox build() {
+      validateRequired();
+      OutboxWriter writer = new OutboxWriter(txContext, outboxStore);
+      OutboxPurgeScheduler scheduler = null;
+      if (purger != null) {
+        OutboxPurgeScheduler.Builder pb = OutboxPurgeScheduler.builder()
+            .connectionProvider(connectionProvider)
+            .purger(purger)
+            .batchSize(purgeBatchSize)
+            .intervalSeconds(purgeIntervalSeconds);
+        if (purgeRetention != null) {
+          pb.retention(purgeRetention);
+        }
+        scheduler = pb.build();
+        scheduler.start();
+      }
+      return new Outbox(writer, null, null, scheduler);
     }
   }
 }

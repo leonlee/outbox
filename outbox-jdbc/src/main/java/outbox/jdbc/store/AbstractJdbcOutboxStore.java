@@ -28,6 +28,7 @@ import java.util.Objects;
 public abstract class AbstractJdbcOutboxStore implements OutboxStore {
   protected static final String DEFAULT_TABLE = TableNames.DEFAULT_TABLE;
   private static final int MAX_ERROR_LENGTH = 4000;
+  private static final int MAX_BATCH_ROWS = 500;
 
   protected static final String PENDING_STATUS_IN =
       "(" + EventStatus.NEW.code() + "," + EventStatus.RETRY.code() + ")";
@@ -114,6 +115,18 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
       }
       return;
     }
+    // Chunk large batches to stay within database statement size limits
+    if (events.size() > MAX_BATCH_ROWS) {
+      for (int start = 0; start < events.size(); start += MAX_BATCH_ROWS) {
+        int end = Math.min(start + MAX_BATCH_ROWS, events.size());
+        insertBatchChunk(conn, events.subList(start, end));
+      }
+    } else {
+      insertBatchChunk(conn, events);
+    }
+  }
+
+  private void insertBatchChunk(Connection conn, List<EventEnvelope> events) {
     // Pure SQL multi-row INSERT: VALUES (...), (...), ...
     String row = "(?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL)";
     StringBuilder sql = new StringBuilder("INSERT INTO " + tableName() + " (" +

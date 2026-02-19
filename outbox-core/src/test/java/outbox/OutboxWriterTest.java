@@ -314,6 +314,61 @@ class OutboxWriterTest {
   }
 
   @Test
+  void multipleWritesInSameTransactionFireAllCallbacks() {
+    StubTxContext txContext = new StubTxContext(true);
+    RecordingOutboxStore store = new RecordingOutboxStore();
+    RecordingHook hook = new RecordingHook();
+
+    OutboxWriter writer = new OutboxWriter(txContext, store, hook);
+
+    writer.write(EventEnvelope.ofJson("A", "{}"));
+    writer.write(EventEnvelope.ofJson("B", "{}"));
+
+    assertEquals(2, txContext.afterCommitCallbacks.size());
+    assertEquals(2, txContext.afterRollbackCallbacks.size());
+
+    // Fire all afterCommit callbacks
+    txContext.runAfterCommit();
+    assertEquals(2, hook.afterCommitCalls.get());
+  }
+
+  @Test
+  void afterCommitExceptionSwallowed() {
+    StubTxContext txContext = new StubTxContext(true);
+    RecordingOutboxStore store = new RecordingOutboxStore();
+
+    WriterHook throwingHook = new WriterHook() {
+      @Override
+      public void afterCommit(List<EventEnvelope> events) {
+        throw new RuntimeException("boom");
+      }
+    };
+
+    OutboxWriter writer = new OutboxWriter(txContext, store, throwingHook);
+    writer.write(EventEnvelope.ofJson("Test", "{}"));
+
+    assertDoesNotThrow(txContext::runAfterCommit);
+  }
+
+  @Test
+  void afterRollbackExceptionSwallowed() {
+    StubTxContext txContext = new StubTxContext(true);
+    RecordingOutboxStore store = new RecordingOutboxStore();
+
+    WriterHook throwingHook = new WriterHook() {
+      @Override
+      public void afterRollback(List<EventEnvelope> events) {
+        throw new RuntimeException("boom");
+      }
+    };
+
+    OutboxWriter writer = new OutboxWriter(txContext, store, throwingHook);
+    writer.write(EventEnvelope.ofJson("Test", "{}"));
+
+    assertDoesNotThrow(txContext::runAfterRollback);
+  }
+
+  @Test
   void noopHookDoesNotRegisterCallbacks() {
     StubTxContext txContext = new StubTxContext(true);
     RecordingOutboxStore store = new RecordingOutboxStore();

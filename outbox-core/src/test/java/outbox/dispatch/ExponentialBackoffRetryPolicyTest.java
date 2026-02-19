@@ -65,7 +65,7 @@ class ExponentialBackoffRetryPolicyTest {
     long delay = policy.computeDelayMs(100);
 
     assertTrue(delay > 0, "Delay should be positive");
-    assertTrue(delay <= 90000, "Delay should be capped at maxDelay * 1.5");
+    assertTrue(delay <= 60000, "Delay should be capped at maxDelay");
   }
 
   @Test
@@ -77,9 +77,9 @@ class ExponentialBackoffRetryPolicyTest {
     long delay32 = policy.computeDelayMs(32);
     long delay50 = policy.computeDelayMs(50);
 
-    assertTrue(delay31 > 0 && delay31 <= 90000);
-    assertTrue(delay32 > 0 && delay32 <= 90000);
-    assertTrue(delay50 > 0 && delay50 <= 90000);
+    assertTrue(delay31 > 0 && delay31 <= 60000);
+    assertTrue(delay32 > 0 && delay32 <= 60000);
+    assertTrue(delay50 > 0 && delay50 <= 60000);
   }
 
   @Test

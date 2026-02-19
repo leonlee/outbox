@@ -169,7 +169,7 @@ public final class Outbox implements AutoCloseable {
     int batchSize = 50;
     Duration skipRecent;
     long drainTimeoutMs = 5000;
-    private boolean built;
+    private volatile boolean built;
 
     AbstractBuilder() {}
 
@@ -275,6 +275,7 @@ public final class Outbox implements AutoCloseable {
      * @return this builder
      */
     public B interceptor(EventInterceptor interceptor) {
+      Objects.requireNonNull(interceptor, "interceptor");
       this.interceptors.add(interceptor);
       return self();
     }

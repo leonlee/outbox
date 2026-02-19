@@ -231,6 +231,34 @@ class OutboxTest {
     });
   }
 
+  // ── Double-build rejection ──────────────────────────────────────
+
+  @Test
+  void singleNode_doubleBuild_throwsISE() {
+    var builder = Outbox.singleNode()
+        .connectionProvider(STUB_CP).txContext(STUB_TX)
+        .outboxStore(STUB_STORE).listenerRegistry(STUB_REG)
+        .intervalMs(60_000);
+    try (Outbox ignored = builder.build()) {
+      assertThrows(IllegalStateException.class, builder::build);
+    }
+  }
+
+  @Test
+  void writerOnly_doubleBuild_throwsISE() {
+    var builder = Outbox.writerOnly()
+        .txContext(STUB_TX).outboxStore(STUB_STORE);
+    try (Outbox ignored = builder.build()) {
+      assertThrows(IllegalStateException.class, builder::build);
+    }
+  }
+
+  @Test
+  void singleNode_interceptorRejectsNull() {
+    assertThrows(NullPointerException.class, () ->
+        Outbox.singleNode().interceptor(null));
+  }
+
   // ── Fluent chaining returns correct type ─────────────────────────
 
   @Test

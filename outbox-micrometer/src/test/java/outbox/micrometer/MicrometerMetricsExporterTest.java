@@ -106,6 +106,37 @@ class MicrometerMetricsExporterTest {
     assertThrows(IllegalArgumentException.class, () -> new MicrometerMetricsExporter(registry, ""));
   }
 
+  @Test
+  void trailingDotPrefixThrows() {
+    assertThrows(IllegalArgumentException.class, () -> new MicrometerMetricsExporter(registry, "outbox."));
+  }
+
+  @Test
+  void closeRemovesAllMeters() {
+    exporter.incrementHotEnqueued();
+    exporter.recordQueueDepths(5, 3);
+    exporter.recordOldestLagMs(100L);
+
+    exporter.close();
+
+    assertNull(registry.find("outbox.enqueue.hot").counter());
+    assertNull(registry.find("outbox.queue.hot.depth").gauge());
+    assertNull(registry.find("outbox.lag.oldest.ms").gauge());
+  }
+
+  @Test
+  void newExporterAfterCloseReadsFreshGauges() {
+    exporter.recordQueueDepths(99, 88);
+    exporter.close();
+
+    var fresh = new MicrometerMetricsExporter(registry);
+    fresh.recordQueueDepths(1, 2);
+
+    assertEquals(1.0, gauge("outbox.queue.hot.depth").value());
+    assertEquals(2.0, gauge("outbox.queue.cold.depth").value());
+    fresh.close();
+  }
+
   private Counter counter(String name) {
     Counter c = registry.find(name).counter();
     assertNotNull(c, "Counter not found: " + name);

@@ -91,6 +91,9 @@ public final class OutboxPurgeScheduler implements AutoCloseable {
    * <p>May be invoked directly for testing or one-off purges.
    */
   public void runOnce() {
+    if (closed) {
+      return;
+    }
     try {
       Instant cutoff = Instant.now().minus(retention);
       long totalDeleted = 0;

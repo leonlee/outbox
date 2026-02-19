@@ -36,6 +36,10 @@ public final class SpringTxContext implements TxContext {
     if (!isTransactionActive()) {
       throw new IllegalStateException("No active transaction");
     }
+    if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+      throw new IllegalStateException(
+          "Transaction synchronization is not active; cannot obtain connection safely");
+    }
     return DataSourceUtils.getConnection(dataSource);
   }
 
@@ -58,7 +62,7 @@ public final class SpringTxContext implements TxContext {
     TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
       @Override
       public void afterCompletion(int status) {
-        if (status == STATUS_ROLLED_BACK) {
+        if (status != STATUS_COMMITTED) {
           callback.run();
         }
       }

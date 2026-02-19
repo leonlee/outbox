@@ -100,11 +100,12 @@ class OutboxDispatcherTest {
 
   @Test
   void enqueueColdReturnsFalseAfterClose() {
-    var d = newDispatcher(0, 10, 10);
-    d.close();
+    try (var d = newDispatcher(0, 10, 10)) {
+      d.close();
 
-    QueuedEvent event = new QueuedEvent(EventEnvelope.ofJson("A", "{}"), QueuedEvent.Source.COLD, 0);
-    assertFalse(d.enqueueCold(event));
+      QueuedEvent event = new QueuedEvent(EventEnvelope.ofJson("A", "{}"), QueuedEvent.Source.COLD, 0);
+      assertFalse(d.enqueueCold(event));
+    }
   }
 
   @Test
@@ -119,11 +120,12 @@ class OutboxDispatcherTest {
 
   @Test
   void closeIsIdempotent() {
-    var d = newDispatcher(0, 10, 10);
-    assertDoesNotThrow(() -> {
-      d.close();
-      d.close();
-    });
+    try (var d = newDispatcher(0, 10, 10)) {
+      assertDoesNotThrow(() -> {
+        d.close();
+        d.close();
+      });
+    }
   }
 
   // ── Dispatch paths ──────────────────────────────────────────────

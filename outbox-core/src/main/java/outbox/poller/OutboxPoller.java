@@ -108,6 +108,9 @@ public final class OutboxPoller implements AutoCloseable {
 
   /** Executes a single poll cycle. Called automatically by the scheduler, but may also be invoked directly for testing. */
   public void poll() {
+    if (closed) {
+      return;
+    }
     try {
       if (handler.availableCapacity() <= 0) {
         return;

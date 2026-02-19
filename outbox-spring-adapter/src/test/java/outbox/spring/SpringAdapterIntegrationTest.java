@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.DefaultTransactionDefinition;
+import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import javax.sql.DataSource;
@@ -27,6 +28,7 @@ import java.sql.SQLException;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -135,6 +137,44 @@ class SpringAdapterIntegrationTest {
           () -> txContext.afterRollback(() -> {})
       );
       assertTrue(ex.getMessage().contains("Transaction synchronization is not active"));
+    } finally {
+      TransactionSynchronizationManager.clear();
+    }
+  }
+
+  @Test
+  void afterRollbackFiresOnStatusUnknown() {
+    TransactionSynchronizationManager.setActualTransactionActive(true);
+    TransactionSynchronizationManager.initSynchronization();
+    try {
+      AtomicBoolean called = new AtomicBoolean();
+      txContext.afterRollback(() -> called.set(true));
+
+      // Simulate STATUS_UNKNOWN completion
+      for (TransactionSynchronization sync :
+          TransactionSynchronizationManager.getSynchronizations()) {
+        sync.afterCompletion(TransactionSynchronization.STATUS_UNKNOWN);
+      }
+      assertTrue(called.get(), "afterRollback should fire on STATUS_UNKNOWN");
+    } finally {
+      TransactionSynchronizationManager.clear();
+    }
+  }
+
+  @Test
+  void currentConnectionRequiresActiveTransaction() {
+    assertThrows(IllegalStateException.class, () -> txContext.currentConnection());
+  }
+
+  @Test
+  void currentConnectionRequiresSynchronizationActive() {
+    TransactionSynchronizationManager.setActualTransactionActive(true);
+    try {
+      IllegalStateException ex = assertThrows(
+          IllegalStateException.class,
+          () -> txContext.currentConnection()
+      );
+      assertTrue(ex.getMessage().contains("synchronization"));
     } finally {
       TransactionSynchronizationManager.clear();
     }

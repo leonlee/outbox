@@ -96,6 +96,9 @@ public final class DeadEventManager {
         break;
       }
       totalReplayed += batchReplayed;
+      if (!batch.isEmpty() && batchReplayed == 0) {
+        break; // all replays in this batch failed; stop to prevent infinite loop
+      }
     } while (batch.size() >= batchSize);
     return totalReplayed;
   }

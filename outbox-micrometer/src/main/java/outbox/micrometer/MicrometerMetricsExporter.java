@@ -1,6 +1,7 @@
 package outbox.micrometer;
 
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import outbox.spi.MetricsExporter;
 
@@ -33,14 +34,18 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * @see MetricsExporter
  */
-public final class MicrometerMetricsExporter implements MetricsExporter {
+public final class MicrometerMetricsExporter implements MetricsExporter, AutoCloseable {
 
+  private final MeterRegistry registry;
   private final Counter hotEnqueued;
   private final Counter hotDropped;
   private final Counter coldEnqueued;
   private final Counter dispatchSuccess;
   private final Counter dispatchFailure;
   private final Counter dispatchDead;
+  private final Gauge hotDepthGauge;
+  private final Gauge coldDepthGauge;
+  private final Gauge lagGauge;
 
   private final AtomicInteger hotDepth = new AtomicInteger();
   private final AtomicInteger coldDepth = new AtomicInteger();
@@ -71,6 +76,7 @@ public final class MicrometerMetricsExporter implements MetricsExporter {
       throw new IllegalArgumentException("namePrefix must not end with '.'");
     }
 
+    this.registry = registry;
     this.hotEnqueued = Counter.builder(namePrefix + ".enqueue.hot")
         .description("Events enqueued via hot path")
         .register(registry);
@@ -90,9 +96,12 @@ public final class MicrometerMetricsExporter implements MetricsExporter {
         .description("Events moved to DEAD")
         .register(registry);
 
-    registry.gauge(namePrefix + ".queue.hot.depth", hotDepth);
-    registry.gauge(namePrefix + ".queue.cold.depth", coldDepth);
-    registry.gauge(namePrefix + ".lag.oldest.ms", oldestLagMs);
+    this.hotDepthGauge = Gauge.builder(namePrefix + ".queue.hot.depth", hotDepth, AtomicInteger::get)
+        .register(registry);
+    this.coldDepthGauge = Gauge.builder(namePrefix + ".queue.cold.depth", coldDepth, AtomicInteger::get)
+        .register(registry);
+    this.lagGauge = Gauge.builder(namePrefix + ".lag.oldest.ms", oldestLagMs, AtomicLong::get)
+        .register(registry);
   }
 
   @Override
@@ -134,5 +143,24 @@ public final class MicrometerMetricsExporter implements MetricsExporter {
   @Override
   public void recordOldestLagMs(long lagMs) {
     this.oldestLagMs.set(lagMs);
+  }
+
+  /**
+   * Removes all meters registered by this exporter from the registry.
+   *
+   * <p>Call this when the exporter is no longer needed (e.g. when the
+   * {@link outbox.Outbox} is closed) to prevent stale gauges.
+   */
+  @Override
+  public void close() {
+    registry.remove(hotEnqueued);
+    registry.remove(hotDropped);
+    registry.remove(coldEnqueued);
+    registry.remove(dispatchSuccess);
+    registry.remove(dispatchFailure);
+    registry.remove(dispatchDead);
+    registry.remove(hotDepthGauge);
+    registry.remove(coldDepthGauge);
+    registry.remove(lagGauge);
   }
 }

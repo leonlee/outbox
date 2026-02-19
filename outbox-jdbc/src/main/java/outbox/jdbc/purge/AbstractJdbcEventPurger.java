@@ -45,6 +45,11 @@ public abstract class AbstractJdbcEventPurger implements EventPurger {
    *
    * <p>Default implementation uses a subquery to limit the batch size, which
    * works for H2 and PostgreSQL. MySQL overrides with {@code DELETE ... ORDER BY ... LIMIT}.
+   *
+   * <p><strong>Index note:</strong> The {@code COALESCE(done_at, created_at)} expression
+   * prevents the database from using a plain index on either column. For high-volume
+   * tables, consider adding a functional index (e.g. PostgreSQL:
+   * {@code CREATE INDEX ON outbox_event (COALESCE(done_at, created_at)) WHERE status IN (1,3)}).
    */
   @Override
   public int purge(Connection conn, Instant before, int limit) {

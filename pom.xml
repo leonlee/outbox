@@ -27,7 +27,7 @@
     <ulid-creator.version>5.2.3</ulid-creator.version>
     <micrometer.version>1.14.5</micrometer.version>
     <mysql-connector.version>8.3.0</mysql-connector.version>
-    <postgresql.version>42.7.3</postgresql.version>
+    <postgresql.version>42.7.10</postgresql.version>
     <hikaricp.version>5.1.0</hikaricp.version>
   </properties>
 

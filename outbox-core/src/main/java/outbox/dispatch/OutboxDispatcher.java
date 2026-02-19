@@ -301,26 +301,15 @@ public final class OutboxDispatcher implements AutoCloseable {
       workers.shutdownNow();
       Thread.currentThread().interrupt();
     }
-    // Best-effort: dispatch any events stranded in queues due to shutdown race
-    drainRemainingEvents();
-  }
-
-  private void drainRemainingEvents() {
-    QueuedEvent event;
-    while ((event = hotQueue.poll()) != null) {
-      try {
-        dispatchEvent(event);
-      } catch (Exception e) {
-        logger.log(Level.WARNING, "Failed to dispatch stranded event: " + event.envelope().eventId(), e);
-      }
+    // Log stranded events (poller will retry them on next cycle)
+    int strandedHot = hotQueue.size();
+    int strandedCold = coldQueue.size();
+    if (strandedHot > 0 || strandedCold > 0) {
+      logger.log(Level.INFO, "Shutdown complete with {0} hot and {1} cold events still queued; "
+          + "poller will retry them", new Object[]{strandedHot, strandedCold});
     }
-    while ((event = coldQueue.poll()) != null) {
-      try {
-        dispatchEvent(event);
-      } catch (Exception e) {
-        logger.log(Level.WARNING, "Failed to dispatch stranded event: " + event.envelope().eventId(), e);
-      }
-    }
+    hotQueue.clear();
+    coldQueue.clear();
   }
 
   /** Builder for {@link OutboxDispatcher}. */
@@ -496,6 +485,12 @@ public final class OutboxDispatcher implements AutoCloseable {
      * @return this builder
      */
     public Builder interceptors(List<EventInterceptor> interceptors) {
+      Objects.requireNonNull(interceptors, "interceptors");
+      for (int i = 0; i < interceptors.size(); i++) {
+        if (interceptors.get(i) == null) {
+          throw new NullPointerException("interceptors[" + i + "] is null");
+        }
+      }
       this.interceptors.addAll(interceptors);
       return this;
     }

@@ -118,6 +118,9 @@ public final class OutboxPoller implements AutoCloseable {
 
       Instant now = Instant.now();
       List<OutboxEvent> rows = fetchPendingRows(now);
+      if (rows == null) {
+        return; // fetch failed — don't reset lag metric
+      }
       if (rows.isEmpty()) {
         metrics.recordOldestLagMs(0);
         return;
@@ -133,6 +136,10 @@ public final class OutboxPoller implements AutoCloseable {
     }
   }
 
+  /**
+   * Fetches pending rows from the store. Returns {@code null} on failure
+   * (to distinguish from a successful empty result).
+   */
   private List<OutboxEvent> fetchPendingRows(Instant now) {
     int effectiveBatch = Math.min(batchSize, handler.availableCapacity());
     if (effectiveBatch <= 0) {
@@ -147,7 +154,7 @@ public final class OutboxPoller implements AutoCloseable {
       return outboxStore.pollPending(conn, now, skipRecent, effectiveBatch);
     } catch (SQLException e) {
       logger.log(Level.SEVERE, "Failed to fetch pending outbox rows", e);
-      return List.of();
+      return null;
     }
   }
 

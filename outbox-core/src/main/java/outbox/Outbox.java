@@ -301,6 +301,12 @@ public final class Outbox implements AutoCloseable {
      * @return this builder
      */
     public B interceptors(List<EventInterceptor> interceptors) {
+      Objects.requireNonNull(interceptors, "interceptors");
+      for (int i = 0; i < interceptors.size(); i++) {
+        if (interceptors.get(i) == null) {
+          throw new NullPointerException("interceptors[" + i + "] is null");
+        }
+      }
       this.interceptors.addAll(interceptors);
       return self();
     }

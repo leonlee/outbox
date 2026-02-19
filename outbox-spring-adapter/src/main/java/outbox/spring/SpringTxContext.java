@@ -17,6 +17,13 @@ import java.util.Objects;
  * Spring-managed transactions. After-commit and after-rollback callbacks are
  * registered as {@link TransactionSynchronization} instances.
  *
+ * <p><b>Compatibility note:</b> This implementation requires Spring's transaction
+ * synchronization to be active ({@code SYNCHRONIZATION_ALWAYS} or
+ * {@code SYNCHRONIZATION_ON_ACTUAL_TRANSACTION}, the defaults). Environments
+ * configured with {@code SYNCHRONIZATION_NEVER} are not supported and will
+ * cause {@link IllegalStateException} on {@code currentConnection()},
+ * {@code afterCommit()}, and {@code afterRollback()} calls.
+ *
  * @see TxContext
  */
 public final class SpringTxContext implements TxContext {

@@ -259,6 +259,20 @@ class OutboxTest {
         Outbox.singleNode().interceptor(null));
   }
 
+  @Test
+  void singleNode_interceptorsListRejectsNullList() {
+    assertThrows(NullPointerException.class, () ->
+        Outbox.singleNode().interceptors(null));
+  }
+
+  @Test
+  void singleNode_interceptorsListRejectsNullElement() {
+    List<outbox.dispatch.EventInterceptor> list = new java.util.ArrayList<>();
+    list.add(null);
+    assertThrows(NullPointerException.class, () ->
+        Outbox.singleNode().interceptors(list));
+  }
+
   // ── Fluent chaining returns correct type ─────────────────────────
 
   @Test

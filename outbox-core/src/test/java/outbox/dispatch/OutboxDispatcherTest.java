@@ -7,6 +7,7 @@ import outbox.spi.ConnectionProvider;
 import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -76,6 +77,20 @@ class OutboxDispatcherTest {
             .listenerRegistry(new DefaultListenerRegistry())
             .hotQueueCapacity(0)
             .build());
+  }
+
+  @Test
+  void builderRejectsNullInterceptorsList() {
+    assertThrows(NullPointerException.class, () ->
+        OutboxDispatcher.builder().interceptors(null));
+  }
+
+  @Test
+  void builderRejectsNullInterceptorsElement() {
+    List<EventInterceptor> list = new java.util.ArrayList<>();
+    list.add(null);
+    assertThrows(NullPointerException.class, () ->
+        OutboxDispatcher.builder().interceptors(list));
   }
 
   // ── Enqueue and lifecycle ───────────────────────────────────────

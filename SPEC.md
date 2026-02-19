@@ -1220,7 +1220,7 @@ Each `build()`:
 4. Builds `OutboxPoller` — wrapped in try-catch: if fails, dispatcher is closed before rethrowing. Skipped for `WriterOnlyBuilder`.
 5. Starts poller. Skipped for `WriterOnlyBuilder`.
 6. Creates `OutboxWriter` (with `DispatcherWriterHook` for single/multi-node, `NOOP` for ordered and writer-only).
-7. `WriterOnlyBuilder` optionally builds and starts `OutboxPurgeScheduler` if a purger is configured.
+7. `WriterOnlyBuilder` optionally builds and starts `OutboxPurgeScheduler` if a purger is configured — wrapped in try-catch: if `start()` fails, the scheduler is closed before rethrowing.
 8. Returns `Outbox`.
 
 ### 20.4 Shutdown

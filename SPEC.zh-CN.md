@@ -1213,7 +1213,7 @@ Outbox (final, AutoCloseable)
 4. 构建 `OutboxPoller` — 包裹在 try-catch 中：若失败则先关闭 Dispatcher 再重新抛出异常。`WriterOnlyBuilder` 跳过此步。
 5. 启动 Poller。`WriterOnlyBuilder` 跳过此步。
 6. 创建 `OutboxWriter`（单节点/多节点使用 `DispatcherWriterHook`，有序模式和仅写入模式使用 `NOOP`）。
-7. `WriterOnlyBuilder` 在配置了 purger 时可选构建并启动 `OutboxPurgeScheduler`。
+7. `WriterOnlyBuilder` 在配置了 purger 时可选构建并启动 `OutboxPurgeScheduler` — 包裹在 try-catch 中：若 `start()` 失败则先关闭调度器再重新抛出异常。
 8. 返回 `Outbox`。
 
 ### 20.4 关闭顺序

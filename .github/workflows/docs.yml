@@ -30,8 +30,12 @@ jobs:
       - name: Checkout latest release tag
         run: |
           LATEST_TAG=$(git tag --list 'v*' --sort=-version:refname | head -1)
-          echo "Building Javadoc from tag: $LATEST_TAG"
-          git checkout "$LATEST_TAG"
+          if [ -z "$LATEST_TAG" ]; then
+            echo "No release tags found, building from HEAD"
+          else
+            echo "Building Javadoc from tag: $LATEST_TAG"
+            git checkout "$LATEST_TAG"
+          fi
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5

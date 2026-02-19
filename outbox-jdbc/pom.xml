@@ -11,6 +11,8 @@
 
   <artifactId>outbox-jdbc</artifactId>
   <packaging>jar</packaging>
+  <name>Outbox JDBC</name>
+  <description>JDBC persistence for the outbox pattern framework (H2, MySQL, PostgreSQL)</description>
 
   <dependencies>
     <dependency>

@@ -6,7 +6,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 /**
  * Spring Boot demo for outbox framework.
  *
- * Run with: mvn -pl samples/outbox-spring-demo spring-boot:run
+ * Run with: mvn install -DskipTests && mvn -f samples/outbox-spring-demo/pom.xml spring-boot:run
  *
  * Endpoints:
  *   POST /events/user-created?name=Alice     - publish UserCreated event

@@ -11,6 +11,8 @@
 
   <artifactId>outbox-spring-adapter</artifactId>
   <packaging>jar</packaging>
+  <name>Outbox Spring Adapter</name>
+  <description>Spring transaction integration for the outbox pattern framework</description>
 
   <dependencies>
     <dependency>

@@ -14,6 +14,9 @@ import outbox.jdbc.tx.ThreadLocalTxContext;
 
 import org.h2.jdbcx.JdbcDataSource;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -159,32 +162,20 @@ public final class MultiDatasourceDemo {
     System.out.println("\nDemo complete.");
   }
 
-  private static void createSchema(JdbcDataSource dataSource) throws SQLException {
+  private static void createSchema(JdbcDataSource dataSource) throws SQLException, IOException {
+    String ddl;
+    try (InputStream is = MultiDatasourceDemo.class.getResourceAsStream("/schema/h2.sql")) {
+      if (is == null) throw new IllegalStateException("Schema resource /schema/h2.sql not found");
+      ddl = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+    }
     try (Connection conn = dataSource.getConnection();
-         var stmt1 = conn.createStatement();
-         var stmt2 = conn.createStatement()) {
-      stmt1.execute(
-          "CREATE TABLE outbox_event (" +
-              "event_id VARCHAR(36) PRIMARY KEY," +
-              "event_type VARCHAR(128) NOT NULL," +
-              "aggregate_type VARCHAR(64)," +
-              "aggregate_id VARCHAR(128)," +
-              "tenant_id VARCHAR(64)," +
-              "payload CLOB NOT NULL," +
-              "headers CLOB," +
-              "status TINYINT NOT NULL," +
-              "attempts INT NOT NULL DEFAULT 0," +
-              "available_at TIMESTAMP NOT NULL," +
-              "created_at TIMESTAMP NOT NULL," +
-              "done_at TIMESTAMP," +
-              "last_error CLOB," +
-              "locked_by VARCHAR(128)," +
-              "locked_at TIMESTAMP" +
-              ")"
-      );
-      stmt2.execute(
-          "CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_at)"
-      );
+         var stmt = conn.createStatement()) {
+      for (String sql : ddl.split(";")) {
+        String trimmed = sql.trim();
+        if (!trimmed.isEmpty()) {
+          stmt.execute(trimmed);
+        }
+      }
     }
   }
 

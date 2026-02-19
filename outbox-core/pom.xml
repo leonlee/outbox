@@ -11,6 +11,8 @@
 
   <artifactId>outbox-core</artifactId>
   <packaging>jar</packaging>
+  <name>Outbox Core</name>
+  <description>Core interfaces, dispatcher, poller, and registries for the outbox pattern framework</description>
 
   <dependencies>
     <dependency>

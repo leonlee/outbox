@@ -103,6 +103,26 @@ class OutboxWriterTest {
   }
 
   @Test
+  void writeAllCallsAfterWriteWithInsertedEvents() {
+    StubTxContext txContext = new StubTxContext(true);
+    RecordingOutboxStore store = new RecordingOutboxStore();
+    RecordingHook hook = new RecordingHook();
+
+    OutboxWriter writer = new OutboxWriter(txContext, store, hook);
+
+    List<EventEnvelope> events = List.of(
+        EventEnvelope.ofJson("A", "{}"),
+        EventEnvelope.ofJson("B", "{}")
+    );
+    writer.writeAll(events);
+
+    assertEquals(1, hook.afterWriteCalls.get());
+    assertEquals(2, hook.afterWriteEvents.get().size());
+    assertEquals("A", hook.afterWriteEvents.get().get(0).eventType());
+    assertEquals("B", hook.afterWriteEvents.get().get(1).eventType());
+  }
+
+  @Test
   void writeAllBeforeWriteCanTransform() {
     StubTxContext txContext = new StubTxContext(true);
     RecordingOutboxStore store = new RecordingOutboxStore();
@@ -388,6 +408,8 @@ class OutboxWriterTest {
 
   private static final class RecordingHook implements WriterHook {
     private final List<List<EventEnvelope>> beforeWriteEvents = new ArrayList<>();
+    private final AtomicInteger afterWriteCalls = new AtomicInteger();
+    private final AtomicReference<List<EventEnvelope>> afterWriteEvents = new AtomicReference<>();
     private final AtomicInteger afterCommitCalls = new AtomicInteger();
     private final AtomicReference<List<EventEnvelope>> afterCommitEvents = new AtomicReference<>();
     private final AtomicInteger afterRollbackCalls = new AtomicInteger();
@@ -397,6 +419,12 @@ class OutboxWriterTest {
     public List<EventEnvelope> beforeWrite(List<EventEnvelope> events) {
       beforeWriteEvents.add(List.copyOf(events));
       return events;
+    }
+
+    @Override
+    public void afterWrite(List<EventEnvelope> events) {
+      afterWriteCalls.incrementAndGet();
+      afterWriteEvents.set(List.copyOf(events));
     }
 
     @Override

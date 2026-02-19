@@ -35,10 +35,10 @@ class ExponentialBackoffRetryPolicyTest {
   void delayIsCappedAtMaxDelay() {
     ExponentialBackoffRetryPolicy policy = new ExponentialBackoffRetryPolicy(100, 500);
 
-    // After many attempts, delay should not exceed maxDelay * jitter (1.5)
+    // After many attempts, delay should not exceed maxDelay (final Math.min caps it)
     long delay = policy.computeDelayMs(10);
 
-    assertTrue(delay <= 750, "Delay should be capped around maxDelay, got: " + delay);
+    assertTrue(delay <= 500, "Delay should be capped at maxDelay, got: " + delay);
   }
 
   @Test

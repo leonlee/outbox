@@ -11,6 +11,8 @@
 
   <artifactId>outbox-micrometer</artifactId>
   <packaging>jar</packaging>
+  <name>Outbox Micrometer</name>
+  <description>Micrometer metrics bridge for the outbox pattern framework</description>
 
   <dependencies>
     <dependency>

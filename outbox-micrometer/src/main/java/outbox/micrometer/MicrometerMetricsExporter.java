@@ -67,13 +67,28 @@ public final class MicrometerMetricsExporter implements MetricsExporter {
     if (namePrefix.isEmpty()) {
       throw new IllegalArgumentException("namePrefix must not be empty");
     }
+    if (namePrefix.endsWith(".")) {
+      throw new IllegalArgumentException("namePrefix must not end with '.'");
+    }
 
-    this.hotEnqueued = registry.counter(namePrefix + ".enqueue.hot");
-    this.hotDropped = registry.counter(namePrefix + ".enqueue.hot.dropped");
-    this.coldEnqueued = registry.counter(namePrefix + ".enqueue.cold");
-    this.dispatchSuccess = registry.counter(namePrefix + ".dispatch.success");
-    this.dispatchFailure = registry.counter(namePrefix + ".dispatch.failure");
-    this.dispatchDead = registry.counter(namePrefix + ".dispatch.dead");
+    this.hotEnqueued = Counter.builder(namePrefix + ".enqueue.hot")
+        .description("Events enqueued via hot path")
+        .register(registry);
+    this.hotDropped = Counter.builder(namePrefix + ".enqueue.hot.dropped")
+        .description("Events dropped (hot queue full)")
+        .register(registry);
+    this.coldEnqueued = Counter.builder(namePrefix + ".enqueue.cold")
+        .description("Events enqueued via cold (poller) path")
+        .register(registry);
+    this.dispatchSuccess = Counter.builder(namePrefix + ".dispatch.success")
+        .description("Events dispatched successfully")
+        .register(registry);
+    this.dispatchFailure = Counter.builder(namePrefix + ".dispatch.failure")
+        .description("Events failed (will retry)")
+        .register(registry);
+    this.dispatchDead = Counter.builder(namePrefix + ".dispatch.dead")
+        .description("Events moved to DEAD")
+        .register(registry);
 
     registry.gauge(namePrefix + ".queue.hot.depth", hotDepth);
     registry.gauge(namePrefix + ".queue.cold.depth", coldDepth);

@@ -100,7 +100,55 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 
 ---
 
-## 2. Quick Start (Manual JDBC)
+## 2. Quick Start (Composite Builder)
+
+The simplest way to set up the outbox — `Outbox.singleNode()` wires the dispatcher,
+poller, and writer into a single `AutoCloseable`:
+
+```java
+import outbox.Outbox;
+import outbox.OutboxWriter;
+import outbox.EventEnvelope;
+import outbox.registry.DefaultListenerRegistry;
+import outbox.jdbc.DataSourceConnectionProvider;
+import outbox.jdbc.store.JdbcOutboxStores;
+import outbox.jdbc.tx.JdbcTransactionManager;
+import outbox.jdbc.tx.ThreadLocalTxContext;
+
+import javax.sql.DataSource;
+
+DataSource dataSource = /* your DataSource */;
+
+var outboxStore = JdbcOutboxStores.detect(dataSource);
+var connectionProvider = new DataSourceConnectionProvider(dataSource);
+var txContext = new ThreadLocalTxContext();
+var registry = new DefaultListenerRegistry()
+    .register("UserCreated", event -> {
+      // publish to MQ; include event.eventId() for dedupe
+    });
+
+try (Outbox outbox = Outbox.singleNode()
+    .connectionProvider(connectionProvider)
+    .txContext(txContext)
+    .outboxStore(outboxStore)
+    .listenerRegistry(registry)
+    .build()) {
+
+  var txManager = new JdbcTransactionManager(connectionProvider, txContext);
+  OutboxWriter writer = outbox.writer();
+
+  try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
+    writer.write("UserCreated", "{\"id\":123}");
+    tx.commit();
+  }
+}
+```
+
+<details>
+<summary>Manual wiring (advanced)</summary>
+
+For custom `InFlightTracker`, per-component lifecycle, or other advanced scenarios,
+wire the components individually:
 
 ```java
 import outbox.EventEnvelope;
@@ -156,6 +204,8 @@ try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
   tx.commit();
 }
 ```
+
+</details>
 
 ---
 
@@ -1074,10 +1124,9 @@ The dual hot+cold path architecture makes ordering hard — events for the same 
 
 **Caveat — retries break ordering.** If event A fails and enters backoff retry, its `available_at` is set to a future time. Event B (same aggregate, inserted later) will be polled and delivered while A waits — breaking order. Set `maxAttempts(1)` so failed events go straight to DEAD. Use [Dead Event Management](#11-dead-event-management) to replay them after fixing the issue.
 
-### Configuration
+### Configuration (Composite Builder)
 
 ```java
-// 1. Register listeners
 ListenerRegistry registry = new DefaultListenerRegistry();
 registry.register(
     new StringAggregateType("Order"),
@@ -1090,7 +1139,36 @@ registry.register(
     event -> System.out.println("Order shipped: " + event.payload())
 );
 
-// 2. Dispatcher with single worker — sequential dispatch preserves poll order
+// Outbox.ordered() forces workerCount=1, maxAttempts=1, no WriterHook
+try (Outbox outbox = Outbox.ordered()
+    .connectionProvider(connectionProvider)
+    .txContext(txContext)
+    .outboxStore(outboxStore)
+    .listenerRegistry(registry)
+    .intervalMs(1000)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+  // write events inside transactions...
+}
+```
+
+<details>
+<summary>Manual wiring</summary>
+
+```java
+ListenerRegistry registry = new DefaultListenerRegistry();
+registry.register(
+    new StringAggregateType("Order"),
+    new StringEventType("OrderCreated"),
+    event -> System.out.println("Order created: " + event.payload())
+);
+registry.register(
+    new StringAggregateType("Order"),
+    new StringEventType("OrderShipped"),
+    event -> System.out.println("Order shipped: " + event.payload())
+);
+
+// Dispatcher with single worker — sequential dispatch preserves poll order
 OutboxDispatcher dispatcher = OutboxDispatcher.builder()
     .connectionProvider(connectionProvider)
     .outboxStore(outboxStore)
@@ -1099,19 +1177,20 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
     .maxAttempts(1)    // no retry → strict ordering (failed events go DEAD)
     .build();
 
-// 3. No DispatcherWriterHook — hot path disabled
-//    WriterHook defaults to NOOP, so just omit it
-OutboxWriter writer = new OutboxWriter(outboxStore, txContext);
+// No DispatcherWriterHook — hot path disabled
+OutboxWriter writer = new OutboxWriter(txContext, outboxStore);
 
-// 4. Single-node poller reads in DB insertion order
+// Single-node poller reads in DB insertion order
 OutboxPoller poller = OutboxPoller.builder()
     .connectionProvider(connectionProvider)
     .outboxStore(outboxStore)
     .handler(new DispatcherPollerHandler(dispatcher))
-    .intervalSeconds(1)
+    .intervalMs(1000)
     .build();
 poller.start();
 ```
+
+</details>
 
 ### Trade-offs
 

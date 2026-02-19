@@ -18,7 +18,7 @@ Java 17 is the baseline. CI tests against Java 17 and 21.
 
 ## Architecture
 
-Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, and poller fallback. Delivers events **at-least-once**; downstream systems must dedupe by `eventId`.
+Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, and poller fallback. Delivers events **at-least-once**; downstream systems must dedupe by `eventId`. The `Outbox` composite builder (`singleNode`/`multiNode`/`ordered`) is the recommended entry point; individual builders (`OutboxDispatcher.builder()`, `OutboxPoller.builder()`) are available for advanced wiring.
 
 ### Modules
 
@@ -37,6 +37,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 outbox-core/src/main/java/
 └── outbox/
     │  # Main API (root package)
+    ├── Outbox.java (composite builder: singleNode/multiNode/ordered)
     ├── OutboxWriter.java
     ├── EventEnvelope.java
     ├── EventType.java (interface)
@@ -126,6 +127,7 @@ outbox-jdbc/src/main/java/
 - **OutboxStore**: Persistence contract (`insertNew`, `insertBatch`, `markDone`, `markRetry`, `markDead`, `pollPending`, `claimPending`, `queryDead`, `replayDead`, `countDead`). `insertBatch` defaults to looping `insertNew`; `AbstractJdbcOutboxStore` overrides with `addBatch/executeBatch`. Implemented by `AbstractJdbcOutboxStore` hierarchy in `outbox.jdbc.store`.
 - **AbstractJdbcOutboxStore** (`outbox.jdbc.store`): Base JDBC outbox store with shared SQL, row mapper, and H2-compatible default `claimPending`. Subclasses: `H2OutboxStore`, `MySqlOutboxStore` (UPDATE...ORDER BY...LIMIT), `PostgresOutboxStore` (FOR UPDATE SKIP LOCKED + RETURNING).
 - **JdbcOutboxStores** (`outbox.jdbc.store`): Static utility with ServiceLoader registry (`META-INF/services/outbox.jdbc.store.AbstractJdbcOutboxStore`) and `detect(DataSource)` auto-detection. Overloaded `detect(DataSource, JsonCodec)` creates new instances with a custom codec.
+- **Outbox**: Composite entry point that wires `OutboxDispatcher`, `OutboxPoller`, and `OutboxWriter` into a single `AutoCloseable`. Three scenario builders via sealed `AbstractBuilder<B>` (CRTP): `singleNode()` (hot path + poller), `multiNode()` (hot path + claim-based locking; `claimLocking()` required), `ordered()` (poller-only, forces `workerCount=1`, `maxAttempts=1`, no `WriterHook`). `close()` shuts down poller first, then dispatcher. Access the writer via `outbox.writer()`.
 - **OutboxDispatcher**: Dual-queue single-event processor with hot queue (afterCommit callbacks) and cold queue (poller fallback). Each event is dispatched individually: acquire in-flight → run interceptors → call listener → markDone/markRetry/markDead. Created via `OutboxDispatcher.builder()`. Uses `InFlightTracker` for deduplication, `RetryPolicy` for exponential backoff, `EventInterceptor` for cross-cutting hooks, fair 2:1 hot/cold queue draining, and graceful shutdown with configurable drain timeout.
 - **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails. Created via `OutboxPoller.builder()`. Uses an `OutboxPollerHandler` to forward events. Two modes: single-node (default, `pollPending`) and multi-node (`claimLocking()` enables `claimPending` with row-level locks). Accepts optional `JsonCodec` via `.jsonCodec()` builder method.
 - **JsonCodec**: Interface for `Map<String, String>` ↔ JSON encoding/decoding. `DefaultJsonCodec` is the built-in zero-dependency implementation (singleton via `JsonCodec.getDefault()`). Injectable into `AbstractJdbcOutboxStore`, `OutboxPoller`, and `JdbcOutboxStores.detect()` for users who prefer Jackson/Gson.

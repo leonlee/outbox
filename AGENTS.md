@@ -1,12 +1,12 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `outbox-core/src/main/java/outbox`: core APIs and runtime (writer, dispatcher, poller, registry, SPI contracts).
+- `outbox-core/src/main/java/outbox`: core APIs and runtime (Outbox composite builder, writer, dispatcher, poller, registry, SPI contracts).
 - `outbox-jdbc/src/main/java/outbox/jdbc`: JDBC implementations (event store, transaction helpers, connection providers).
 - `outbox-spring-adapter/src/main/java/outbox/spring`: Spring `TxContext` adapter.
 - Tests live in `*/src/test/java` (currently in `outbox-jdbc` and `outbox-spring-adapter`).
 - Generated build output is under `*/target`.
-- Reference docs: `README.md` (usage), `spec.md` (behavioral contract), `CODE_REVIEW.md` (prior review notes).
+- Reference docs: `README.md` (usage), `SPEC.md` (behavioral contract).
 
 ## Build, Test, and Development Commands
 - `mvn test`: run all module tests from the repo root.

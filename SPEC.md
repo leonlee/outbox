@@ -28,6 +28,7 @@ For tutorials and code examples, see [TUTORIAL.md](TUTORIAL.md).
 17. [Event Purge](#17-event-purge)
 18. [Dead Event Management](#18-dead-event-management)
 19. [Ordered Delivery](#19-ordered-delivery)
+20. [Outbox Composite Builder](#20-outbox-composite-builder)
 
 ---
 
@@ -37,6 +38,7 @@ For tutorials and code examples, see [TUTORIAL.md](TUTORIAL.md).
 
 | Component | Responsibility |
 |-----------|----------------|
+| **Outbox** | Composite builder (`singleNode`/`multiNode`/`ordered`) that wires dispatcher, poller, and writer into a single `AutoCloseable` |
 | **OutboxWriter** | API used by business code inside a transaction context |
 | **TxContext** | Abstraction for transaction lifecycle hooks (afterCommit/afterRollback) |
 | **OutboxStore** | Insert/update/query via `java.sql.Connection` |
@@ -94,7 +96,7 @@ OutboxDispatcher MUST prioritize:
 Core interfaces, hooks, dispatcher, poller, and registries. **Zero external dependencies.**
 
 Packages:
-- `outbox` - Main API: OutboxWriter, EventEnvelope, EventType, AggregateType, EventListener, WriterHook
+- `outbox` - Main API: Outbox (composite builder), OutboxWriter, EventEnvelope, EventType, AggregateType, EventListener, WriterHook
 - `outbox.spi` - Extension point interfaces: TxContext, ConnectionProvider, OutboxStore, EventPurger, MetricsExporter
 - `outbox.model` - Domain objects: OutboxEvent, EventStatus
 - `outbox.dispatch` - OutboxDispatcher, retry policy, inflight tracking
@@ -860,7 +862,7 @@ Workers execute listeners synchronously (blocking). This provides natural rate l
 
 ## 14. Configuration
 
-Configuration is embedded in `OutboxDispatcher.Builder` and `OutboxPoller` constructor parameters. There is no separate config object.
+The recommended way to configure the outbox is via the `Outbox` composite builder (`Outbox.singleNode()`, `Outbox.multiNode()`, `Outbox.ordered()`), which wires all components with correct defaults. For advanced use cases, `OutboxDispatcher.Builder` and `OutboxPoller.Builder` are available directly.
 
 ### 14.1 Dispatcher Defaults
 
@@ -874,7 +876,23 @@ Configuration is embedded in `OutboxDispatcher.Builder` and `OutboxPoller` const
 | drainTimeoutMs | 5000 |
 | metrics | MetricsExporter.NOOP |
 
-### 14.2 Builder Example
+### 14.2 Composite Builder Example
+
+```java
+try (Outbox outbox = Outbox.singleNode()
+    .connectionProvider(connectionProvider)
+    .txContext(txContext)
+    .outboxStore(outboxStore)
+    .listenerRegistry(registry)
+    .workerCount(8)
+    .hotQueueCapacity(2000)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+  // use writer inside transactions...
+}
+```
+
+### 14.3 Manual Builder Example
 
 ```java
 OutboxDispatcher dispatcher = OutboxDispatcher.builder()
@@ -1155,3 +1173,83 @@ underlying issue.
   DB poll is the bottleneck).
 - Ordering is per-node; no cross-node ordering guarantee.
 - Retries break ordering (see 19.3); use `maxAttempts(1)` for strict FIFO.
+
+---
+
+## 20. Outbox Composite Builder
+
+### 20.1 Overview
+
+The `Outbox` class is the recommended entry point for wiring the framework. It provides three scenario-specific builders that create an `OutboxDispatcher`, `OutboxPoller`, and `OutboxWriter` as a single `AutoCloseable` unit.
+
+| Builder | Hot Path | Poller Mode | workerCount | maxAttempts | WriterHook |
+|---------|----------|-------------|-------------|-------------|------------|
+| `Outbox.singleNode()` | Yes | `pollPending` | user-set (default 4) | user-set (default 10) | `DispatcherWriterHook` |
+| `Outbox.multiNode()` | Yes | `claimPending` | user-set (default 4) | user-set (default 10) | `DispatcherWriterHook` |
+| `Outbox.ordered()` | No | `pollPending` | 1 (forced) | 1 (forced) | `NOOP` (forced) |
+
+### 20.2 Sealed Builder Hierarchy
+
+```
+Outbox (final, AutoCloseable)
+├── singleNode()   → SingleNodeBuilder
+├── multiNode()    → MultiNodeBuilder
+├── ordered()      → OrderedBuilder
+│
+└── AbstractBuilder<B> (sealed, permits 3 concrete builders)
+    Required: connectionProvider, txContext, outboxStore, listenerRegistry
+    Optional: metrics, jsonCodec, interceptor(s), intervalMs, batchSize,
+              skipRecent, drainTimeoutMs
+```
+
+`SingleNodeBuilder` and `MultiNodeBuilder` add: `workerCount`, `hotQueueCapacity`, `coldQueueCapacity`, `maxAttempts`, `retryPolicy`. `MultiNodeBuilder` additionally requires `claimLocking(Duration)` or `claimLocking(String, Duration)`.
+
+`OrderedBuilder` exposes no additional parameters.
+
+### 20.3 Build Lifecycle
+
+Each `build()`:
+
+1. Validates required fields (`NullPointerException` if missing).
+2. `MultiNodeBuilder` checks `claimLocking()` was called (`IllegalStateException` if not).
+3. Builds `OutboxDispatcher` (workers start immediately).
+4. Builds `OutboxPoller` — wrapped in try-catch: if fails, dispatcher is closed before rethrowing.
+5. Starts poller.
+6. Creates `OutboxWriter` (with `DispatcherWriterHook` for single/multi-node, `NOOP` for ordered).
+7. Returns `Outbox`.
+
+### 20.4 Shutdown
+
+`Outbox.close()` shuts down in order:
+
+1. `poller.close()` — stop feeding cold queue.
+2. `dispatcher.close()` — drain remaining events within `drainTimeoutMs`.
+
+### 20.5 API
+
+```java
+// Single-node (hot + poller)
+try (Outbox outbox = Outbox.singleNode()
+    .connectionProvider(cp).txContext(tx).outboxStore(store).listenerRegistry(reg)
+    .workerCount(4)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+}
+
+// Multi-node (hot + poller + claim locking)
+try (Outbox outbox = Outbox.multiNode()
+    .connectionProvider(cp).txContext(tx).outboxStore(store).listenerRegistry(reg)
+    .claimLocking(Duration.ofMinutes(5))
+    .workerCount(8)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+}
+
+// Ordered delivery (poller-only, single worker, no retry)
+try (Outbox outbox = Outbox.ordered()
+    .connectionProvider(cp).txContext(tx).outboxStore(store).listenerRegistry(reg)
+    .intervalMs(1000)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+}
+```

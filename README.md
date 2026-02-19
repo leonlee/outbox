@@ -160,10 +160,44 @@ If clients need to archive events for audit, they should do so in their `EventLi
 - Listener exceptions trigger `RETRY` with backoff; after `maxAttempts`, events go `DEAD`.
 - If status updates fail, the event remains in DB and may be retried later.
 
+## Composite Builder
+
+The `Outbox` class provides scenario-specific builders that wire dispatcher, poller,
+and writer into a single `AutoCloseable` unit:
+
+```java
+// Single-node: hot path + poller fallback
+try (Outbox outbox = Outbox.singleNode()
+    .connectionProvider(connProvider).txContext(txContext)
+    .outboxStore(store).listenerRegistry(registry)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+  // write events inside transactions...
+}
+
+// Multi-node: hot path + claim-based locking
+try (Outbox outbox = Outbox.multiNode()
+    .connectionProvider(connProvider).txContext(txContext)
+    .outboxStore(store).listenerRegistry(registry)
+    .claimLocking(Duration.ofMinutes(5))
+    .build()) { ... }
+
+// Ordered delivery: poller-only, single worker, no retry
+try (Outbox outbox = Outbox.ordered()
+    .connectionProvider(connProvider).txContext(txContext)
+    .outboxStore(store).listenerRegistry(registry)
+    .intervalMs(1000)
+    .build()) { ... }
+```
+
+For advanced wiring (custom `InFlightTracker`, per-component lifecycle, etc.), use
+`OutboxDispatcher.builder()` and `OutboxPoller.builder()` directly.
+
 ## Ordered Delivery
 
 For use cases requiring per-aggregate event ordering (e.g., `OrderCreated` before
-`OrderShipped`), use the **poller-only** mode with a single dispatch worker:
+`OrderShipped`), use `Outbox.ordered()` or the manual **poller-only** mode with a
+single dispatch worker:
 
 1. **Omit `WriterHook`** — do not configure `DispatcherWriterHook` (disables the hot path).
 2. **Single-node `OutboxPoller`** — one poller instance reads events in DB insertion order.

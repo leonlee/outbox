@@ -24,15 +24,42 @@
  *       integration}</li>
  * </ul>
  *
- * <h2>Quick Start (plain JDBC, no Spring)</h2>
+ * <h2>Quick Start (composite builder)</h2>
  * <pre>{@code
- * // 1. Create core components
  * var outboxStore  = JdbcOutboxStores.detect(dataSource);
  * var connProvider = new DataSourceConnectionProvider(dataSource);
  * var txContext     = new ThreadLocalTxContext();
+ * var registry     = new DefaultListenerRegistry()
+ *     .register("OrderPlaced", event ->
+ *         System.out.println("Received: " + event.payloadJson()));
  *
- * // 2. Build dispatcher with listener
- * var registry = new DefaultListenerRegistry()
+ * try (Outbox outbox = Outbox.singleNode()
+ *     .connectionProvider(connProvider)
+ *     .txContext(txContext)
+ *     .outboxStore(outboxStore)
+ *     .listenerRegistry(registry)
+ *     .build()) {
+ *
+ *     var txManager = new JdbcTransactionManager(connProvider, txContext);
+ *     var writer    = outbox.writer();
+ *
+ *     try (var tx = txManager.begin()) {
+ *         writer.write(EventEnvelope.builder("OrderPlaced")
+ *             .aggregateType("Order")
+ *             .aggregateId("order-123")
+ *             .payloadJson("{\"orderId\":\"order-123\",\"amount\":99.99}")
+ *             .build());
+ *         tx.commit();
+ *     }
+ * }
+ * }</pre>
+ *
+ * <h2>Manual Wiring (advanced)</h2>
+ * <pre>{@code
+ * var outboxStore  = JdbcOutboxStores.detect(dataSource);
+ * var connProvider = new DataSourceConnectionProvider(dataSource);
+ * var txContext     = new ThreadLocalTxContext();
+ * var registry     = new DefaultListenerRegistry()
  *     .register("OrderPlaced", event ->
  *         System.out.println("Received: " + event.payloadJson()));
  *
@@ -40,10 +67,8 @@
  *     .connectionProvider(connProvider)
  *     .outboxStore(outboxStore)
  *     .listenerRegistry(registry)
- *     .inFlightTracker(new DefaultInFlightTracker(30_000))
  *     .build();
  *
- * // 3. Start poller fallback
  * var poller = OutboxPoller.builder()
  *     .connectionProvider(connProvider)
  *     .outboxStore(outboxStore)
@@ -51,7 +76,6 @@
  *     .build();
  * poller.start();
  *
- * // 4. Write events inside a transaction
  * var txManager = new JdbcTransactionManager(connProvider, txContext);
  * var writer    = new OutboxWriter(txContext, outboxStore,
  *                     new DispatcherWriterHook(dispatcher));
@@ -65,7 +89,6 @@
  *     tx.commit();
  * }
  *
- * // 5. Cleanup
  * poller.close();
  * dispatcher.close();
  * }</pre>
@@ -80,6 +103,7 @@
  *     .build());
  * }</pre>
  *
+ * @see outbox.Outbox
  * @see outbox.OutboxWriter
  * @see outbox.EventEnvelope
  * @see outbox.EventType

@@ -99,7 +99,54 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 
 ---
 
-## 2. 快速开始（纯 JDBC）
+## 2. 快速开始（组合构建器）
+
+最简单的接入方式 — `Outbox.singleNode()` 将 dispatcher、poller 和 writer
+组装为统一的 `AutoCloseable`：
+
+```java
+import outbox.Outbox;
+import outbox.OutboxWriter;
+import outbox.EventEnvelope;
+import outbox.registry.DefaultListenerRegistry;
+import outbox.jdbc.DataSourceConnectionProvider;
+import outbox.jdbc.store.JdbcOutboxStores;
+import outbox.jdbc.tx.JdbcTransactionManager;
+import outbox.jdbc.tx.ThreadLocalTxContext;
+
+import javax.sql.DataSource;
+
+DataSource dataSource = /* 你的 DataSource */;
+
+var outboxStore = JdbcOutboxStores.detect(dataSource);
+var connectionProvider = new DataSourceConnectionProvider(dataSource);
+var txContext = new ThreadLocalTxContext();
+var registry = new DefaultListenerRegistry()
+    .register("UserCreated", event -> {
+      // 发送到 MQ；用 event.eventId() 做去重
+    });
+
+try (Outbox outbox = Outbox.singleNode()
+    .connectionProvider(connectionProvider)
+    .txContext(txContext)
+    .outboxStore(outboxStore)
+    .listenerRegistry(registry)
+    .build()) {
+
+  var txManager = new JdbcTransactionManager(connectionProvider, txContext);
+  OutboxWriter writer = outbox.writer();
+
+  try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
+    writer.write("UserCreated", "{\"id\":123}");
+    tx.commit();
+  }
+}
+```
+
+<details>
+<summary>手动组装（高级用法）</summary>
+
+如需自定义 `InFlightTracker`、逐组件生命周期管理或其他高级场景，可手动组装各组件：
 
 ```java
 import outbox.EventEnvelope;
@@ -155,6 +202,8 @@ try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
   tx.commit();
 }
 ```
+
+</details>
 
 ---
 
@@ -1073,10 +1122,9 @@ var autoStore = JdbcOutboxStores.detect(dataSource, codec);
 
 **注意——重试会打破顺序。** 如果事件 A 失败并进入退避重试，其 `available_at` 被设为未来时间。同一聚合根的后续事件 B 会在 A 等待期间被轮询并投递——打破顺序。设置 `maxAttempts(1)` 使失败事件直接进入 DEAD。可通过[死信事件管理](#11-死信事件管理)在修复问题后手动重放。
 
-### 配置
+### 配置（组合构建器）
 
 ```java
-// 1. 注册 Listener
 ListenerRegistry registry = new DefaultListenerRegistry();
 registry.register(
     new StringAggregateType("Order"),
@@ -1089,7 +1137,36 @@ registry.register(
     event -> System.out.println("订单已发货: " + event.payload())
 );
 
-// 2. 单线程 Dispatcher — 顺序分发保持轮询顺序
+// Outbox.ordered() 强制 workerCount=1、maxAttempts=1、无 WriterHook
+try (Outbox outbox = Outbox.ordered()
+    .connectionProvider(connectionProvider)
+    .txContext(txContext)
+    .outboxStore(outboxStore)
+    .listenerRegistry(registry)
+    .intervalMs(1000)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+  // 在事务中写入事件...
+}
+```
+
+<details>
+<summary>手动组装</summary>
+
+```java
+ListenerRegistry registry = new DefaultListenerRegistry();
+registry.register(
+    new StringAggregateType("Order"),
+    new StringEventType("OrderCreated"),
+    event -> System.out.println("订单已创建: " + event.payload())
+);
+registry.register(
+    new StringAggregateType("Order"),
+    new StringEventType("OrderShipped"),
+    event -> System.out.println("订单已发货: " + event.payload())
+);
+
+// 单线程 Dispatcher — 顺序分发保持轮询顺序
 OutboxDispatcher dispatcher = OutboxDispatcher.builder()
     .connectionProvider(connectionProvider)
     .outboxStore(outboxStore)
@@ -1098,19 +1175,20 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
     .maxAttempts(1)    // 不重试 → 严格有序（失败事件进入 DEAD）
     .build();
 
-// 3. 不配置 DispatcherWriterHook — 禁用热路径
-//    WriterHook 默认为 NOOP，直接省略即可
-OutboxWriter writer = new OutboxWriter(outboxStore, txContext);
+// 不配置 DispatcherWriterHook — 禁用热路径
+OutboxWriter writer = new OutboxWriter(txContext, outboxStore);
 
-// 4. 单节点 Poller 按 DB 插入顺序读取事件
+// 单节点 Poller 按 DB 插入顺序读取事件
 OutboxPoller poller = OutboxPoller.builder()
     .connectionProvider(connectionProvider)
     .outboxStore(outboxStore)
     .handler(new DispatcherPollerHandler(dispatcher))
-    .intervalSeconds(1)
+    .intervalMs(1000)
     .build();
 poller.start();
 ```
+
+</details>
 
 ### 权衡
 

@@ -28,6 +28,7 @@ API 契约、数据模型、行为规则、配置与可观测性的完整技术�
 17. [事件清理](#17-事件清理)
 18. [死信事件管理](#18-死信事件管理)
 19. [有序投递](#19-有序投递)
+20. [Outbox 组合构建器](#20-outbox-组合构建器)
 
 ---
 
@@ -37,6 +38,7 @@ API 契约、数据模型、行为规则、配置与可观测性的完整技术�
 
 | 组件 | 职责 |
 |------|------|
+| **Outbox** | 组合构建器（`singleNode`/`multiNode`/`ordered`），将 Dispatcher、Poller 和 Writer 组装为统一的 `AutoCloseable` |
 | **OutboxWriter** | 业务代码在事务中调用的写入 API |
 | **TxContext** | 事务生命周期抽象（afterCommit / afterRollback） |
 | **OutboxStore** | 通过 `java.sql.Connection` 完成事件的增删改查 |
@@ -94,7 +96,7 @@ OutboxDispatcher 的优先级策略：
 核心接口、Hook、Dispatcher、Poller 和注册中心。**零外部依赖。**
 
 包结构：
-- `outbox` — 主 API：OutboxWriter、EventEnvelope、EventType、AggregateType、EventListener、WriterHook
+- `outbox` — 主 API：Outbox（组合构建器）、OutboxWriter、EventEnvelope、EventType、AggregateType、EventListener、WriterHook
 - `outbox.spi` — 扩展点接口：TxContext、ConnectionProvider、OutboxStore、EventPurger、MetricsExporter
 - `outbox.model` — 领域对象：OutboxEvent、EventStatus
 - `outbox.dispatch` — OutboxDispatcher、重试策略、InFlight 追踪
@@ -858,7 +860,7 @@ Worker 同步（阻塞）执行 Listener，天然实现限流：
 
 ## 14. 配置
 
-配置直接内嵌在 `OutboxDispatcher.Builder` 和 `OutboxPoller` 构造参数中，没有独立的配置对象。
+推荐通过 `Outbox` 组合构建器（`Outbox.singleNode()`、`Outbox.multiNode()`、`Outbox.ordered()`）进行配置，它会以正确的默认值组装所有组件。高级场景可直接使用 `OutboxDispatcher.Builder` 和 `OutboxPoller.Builder`。
 
 ### 14.1 Dispatcher 默认值
 
@@ -872,7 +874,23 @@ Worker 同步（阻塞）执行 Listener，天然实现限流：
 | drainTimeoutMs | 5000 |
 | metrics | MetricsExporter.NOOP |
 
-### 14.2 Builder 示例
+### 14.2 组合构建器示例
+
+```java
+try (Outbox outbox = Outbox.singleNode()
+    .connectionProvider(connectionProvider)
+    .txContext(txContext)
+    .outboxStore(outboxStore)
+    .listenerRegistry(registry)
+    .workerCount(8)
+    .hotQueueCapacity(2000)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+  // 在事务中使用 writer...
+}
+```
+
+### 14.3 手动构建器示例
 
 ```java
 OutboxDispatcher dispatcher = OutboxDispatcher.builder()
@@ -1148,3 +1166,83 @@ Poller 按 `ORDER BY created_at` 顺序读取事件。单个分发线程依次�
 - 吞吐量受限于单线程顺序处理（当 DB 轮询为瓶颈时，单线程足以应对）。
 - 顺序保证仅限单节点；无跨节点顺序保证。
 - 重试会打破顺序（见 19.3）；严格 FIFO 需设置 `maxAttempts(1)`。
+
+---
+
+## 20. Outbox 组合构建器
+
+### 20.1 概述
+
+`Outbox` 类是推荐的框架接入入口。它提供三个场景化构建器，将 `OutboxDispatcher`、`OutboxPoller` 和 `OutboxWriter` 组装为统一的 `AutoCloseable` 单元。
+
+| 构建器 | 热路径 | Poller 模式 | workerCount | maxAttempts | WriterHook |
+|--------|--------|-------------|-------------|-------------|------------|
+| `Outbox.singleNode()` | 是 | `pollPending` | 用户设置（默认 4） | 用户设置（默认 10） | `DispatcherWriterHook` |
+| `Outbox.multiNode()` | 是 | `claimPending` | 用户设置（默认 4） | 用户设置（默认 10） | `DispatcherWriterHook` |
+| `Outbox.ordered()` | 否 | `pollPending` | 1（强制） | 1（强制） | `NOOP`（强制） |
+
+### 20.2 密封构建器层次
+
+```
+Outbox (final, AutoCloseable)
+├── singleNode()   → SingleNodeBuilder
+├── multiNode()    → MultiNodeBuilder
+├── ordered()      → OrderedBuilder
+│
+└── AbstractBuilder<B> (sealed, permits 3 个具体构建器)
+    必填：connectionProvider, txContext, outboxStore, listenerRegistry
+    可选：metrics, jsonCodec, interceptor(s), intervalMs, batchSize,
+          skipRecent, drainTimeoutMs
+```
+
+`SingleNodeBuilder` 和 `MultiNodeBuilder` 额外支持：`workerCount`、`hotQueueCapacity`、`coldQueueCapacity`、`maxAttempts`、`retryPolicy`。`MultiNodeBuilder` 还必须调用 `claimLocking(Duration)` 或 `claimLocking(String, Duration)`。
+
+`OrderedBuilder` 不暴露额外参数。
+
+### 20.3 构建生命周期
+
+每个 `build()` 执行以下步骤：
+
+1. 校验必填字段（缺失则抛 `NullPointerException`）。
+2. `MultiNodeBuilder` 检查是否已调用 `claimLocking()`（未调用则抛 `IllegalStateException`）。
+3. 构建 `OutboxDispatcher`（Worker 立即启动）。
+4. 构建 `OutboxPoller` — 包裹在 try-catch 中：若失败则先关闭 Dispatcher 再重新抛出异常。
+5. 启动 Poller。
+6. 创建 `OutboxWriter`（单节点/多节点使用 `DispatcherWriterHook`，有序模式使用 `NOOP`）。
+7. 返回 `Outbox`。
+
+### 20.4 关闭顺序
+
+`Outbox.close()` 按顺序关闭：
+
+1. `poller.close()` — 停止向冷队列喂数据。
+2. `dispatcher.close()` — 在 `drainTimeoutMs` 内排空剩余事件。
+
+### 20.5 API
+
+```java
+// 单节点（热路径 + Poller）
+try (Outbox outbox = Outbox.singleNode()
+    .connectionProvider(cp).txContext(tx).outboxStore(store).listenerRegistry(reg)
+    .workerCount(4)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+}
+
+// 多节点（热路径 + Poller + claim 锁）
+try (Outbox outbox = Outbox.multiNode()
+    .connectionProvider(cp).txContext(tx).outboxStore(store).listenerRegistry(reg)
+    .claimLocking(Duration.ofMinutes(5))
+    .workerCount(8)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+}
+
+// 有序投递（仅 Poller，单线程，不重试）
+try (Outbox outbox = Outbox.ordered()
+    .connectionProvider(cp).txContext(tx).outboxStore(store).listenerRegistry(reg)
+    .intervalMs(1000)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+}
+```

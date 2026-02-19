@@ -160,10 +160,44 @@ purgeScheduler.start();
 - Listener 异常触发 `RETRY`，超过 `maxAttempts` 进入 `DEAD`。
 - 状态更新失败时事件仍保留在 DB，之后可重试。
 
+## 组合构建器
+
+`Outbox` 类提供场景化构建器，将 dispatcher、poller 和 writer 组装为统一的
+`AutoCloseable` 单元：
+
+```java
+// 单节点：热路径 + Poller 兜底
+try (Outbox outbox = Outbox.singleNode()
+    .connectionProvider(connProvider).txContext(txContext)
+    .outboxStore(store).listenerRegistry(registry)
+    .build()) {
+  OutboxWriter writer = outbox.writer();
+  // 在事务中写入事件...
+}
+
+// 多节点：热路径 + 基于 claim 的锁
+try (Outbox outbox = Outbox.multiNode()
+    .connectionProvider(connProvider).txContext(txContext)
+    .outboxStore(store).listenerRegistry(registry)
+    .claimLocking(Duration.ofMinutes(5))
+    .build()) { ... }
+
+// 有序投递：仅 Poller，单线程，不重试
+try (Outbox outbox = Outbox.ordered()
+    .connectionProvider(connProvider).txContext(txContext)
+    .outboxStore(store).listenerRegistry(registry)
+    .intervalMs(1000)
+    .build()) { ... }
+```
+
+如需高级配置（自定义 `InFlightTracker`、逐组件生命周期管理等），可直接使用
+`OutboxDispatcher.builder()` 和 `OutboxPoller.builder()`。
+
 ## 有序投递
 
 当业务场景要求同一聚合根的事件按顺序投递时（例如 `OrderCreated` 必须先于
-`OrderShipped`），可使用**仅 Poller** 模式配合单分发线程：
+`OrderShipped`），可使用 `Outbox.ordered()` 或手动配置**仅 Poller** 模式
+配合单分发线程：
 
 1. **不配置 `WriterHook`** — 不注入 `DispatcherWriterHook`（禁用热路径）。
 2. **单节点 `OutboxPoller`** — 由一个 Poller 实例按 DB 插入顺序读取事件。

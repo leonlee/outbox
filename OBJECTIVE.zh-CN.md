@@ -14,6 +14,7 @@ outbox-java 框架的项目目标、约束与验收标准。
 4. 处理成功则标记 DONE，失败则标记 RETRY 或 DEAD。
 5. OutboxPoller（可选）作为兜底，低频扫表捡漏（宕机、入队失败等场景），将未完成事件交给 Handler 处理；也可用 CDC 替代。
 6. 投递语义 **at-least-once**——允许重复投递，下游需按 `eventId` 自行去重。
+7. `Outbox` 组合构建器（`singleNode`/`multiNode`/`ordered`）是推荐入口，为每种部署拓扑以正确默认值组装 Dispatcher、Poller 和 Writer。
 
 ## 约束
 

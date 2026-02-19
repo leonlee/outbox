@@ -91,7 +91,7 @@ jobs:
             "$BENCH_FILTER"
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: jmh-results-${{ steps.params.outputs.database }}
           path: benchmarks/target/jmh-result.json

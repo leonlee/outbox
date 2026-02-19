@@ -78,8 +78,15 @@ public final class DeadEventManager {
       throw new IllegalArgumentException("batchSize must be > 0");
     }
     int totalReplayed = 0;
+    int maxIterations = 10_000; // safety bound to prevent infinite loops
+    int iteration = 0;
     List<OutboxEvent> batch;
     do {
+      if (++iteration > maxIterations) {
+        logger.log(Level.WARNING, "replayAll stopped after {0} iterations; replayed {1} events",
+            new Object[]{maxIterations, totalReplayed});
+        break;
+      }
       int batchReplayed = 0;
       try (Connection conn = connectionProvider.getConnection()) {
         conn.setAutoCommit(true);

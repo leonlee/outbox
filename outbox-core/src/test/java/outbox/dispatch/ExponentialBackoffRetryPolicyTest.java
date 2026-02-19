@@ -83,12 +83,9 @@ class ExponentialBackoffRetryPolicyTest {
   }
 
   @Test
-  void zeroBaseDelayReturnsZero() {
-    ExponentialBackoffRetryPolicy policy = new ExponentialBackoffRetryPolicy(0, 1000);
-
-    long delay = policy.computeDelayMs(1);
-
-    assertEquals(0, delay);
+  void zeroBaseDelayIsRejected() {
+    assertThrows(IllegalArgumentException.class,
+        () -> new ExponentialBackoffRetryPolicy(0, 1000));
   }
 
   @Test

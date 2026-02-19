@@ -20,6 +20,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Composite entry point that wires an {@link OutboxDispatcher}, {@link OutboxPoller},
@@ -52,18 +55,22 @@ import java.util.UUID;
  * @see OutboxPoller
  */
 public final class Outbox implements AutoCloseable {
+  private static final Logger logger = Logger.getLogger(Outbox.class.getName());
 
   private final OutboxWriter writer;
   private final OutboxPoller poller;
   private final OutboxDispatcher dispatcher;
   private final OutboxPurgeScheduler purgeScheduler;
+  private final MetricsExporter metrics;
 
   private Outbox(OutboxWriter writer, OutboxPoller poller,
-      OutboxDispatcher dispatcher, OutboxPurgeScheduler purgeScheduler) {
+      OutboxDispatcher dispatcher, OutboxPurgeScheduler purgeScheduler,
+      MetricsExporter metrics) {
     this.writer = writer;
     this.poller = poller;
     this.dispatcher = dispatcher;
     this.purgeScheduler = purgeScheduler;
+    this.metrics = metrics;
   }
 
   /**
@@ -101,6 +108,14 @@ public final class Outbox implements AutoCloseable {
         dispatcher.close();
       } catch (RuntimeException e) {
         if (first == null) first = e; else first.addSuppressed(e);
+      }
+    }
+    if (metrics instanceof AutoCloseable closeable) {
+      try {
+        closeable.close();
+      } catch (Exception e) {
+        RuntimeException re = (e instanceof RuntimeException r) ? r : new RuntimeException(e);
+        if (first == null) first = re; else first.addSuppressed(re);
       }
     }
     if (first != null) {
@@ -169,7 +184,7 @@ public final class Outbox implements AutoCloseable {
     int batchSize = 50;
     Duration skipRecent;
     long drainTimeoutMs = 5000;
-    private volatile boolean built;
+    private final AtomicBoolean built = new AtomicBoolean(false);
 
     AbstractBuilder() {}
 
@@ -179,10 +194,9 @@ public final class Outbox implements AutoCloseable {
      * @throws IllegalStateException if build() was already called
      */
     void markBuilt() {
-      if (built) {
+      if (!built.compareAndSet(false, true)) {
         throw new IllegalStateException("build() already called on this builder");
       }
-      built = true;
     }
 
     @SuppressWarnings("unchecked")
@@ -420,7 +434,7 @@ public final class Outbox implements AutoCloseable {
       } else {
         writer = new OutboxWriter(txContext, outboxStore);
       }
-      return new Outbox(writer, poller, dispatcher, null);
+      return new Outbox(writer, poller, dispatcher, null, metrics);
     }
 
     /**
@@ -767,7 +781,7 @@ public final class Outbox implements AutoCloseable {
           throw e;
         }
       }
-      return new Outbox(writer, null, null, scheduler);
+      return new Outbox(writer, null, null, scheduler, null);
     }
   }
 }

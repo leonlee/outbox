@@ -301,6 +301,26 @@ public final class OutboxDispatcher implements AutoCloseable {
       workers.shutdownNow();
       Thread.currentThread().interrupt();
     }
+    // Best-effort: dispatch any events stranded in queues due to shutdown race
+    drainRemainingEvents();
+  }
+
+  private void drainRemainingEvents() {
+    QueuedEvent event;
+    while ((event = hotQueue.poll()) != null) {
+      try {
+        dispatchEvent(event);
+      } catch (Exception e) {
+        logger.log(Level.WARNING, "Failed to dispatch stranded event: " + event.envelope().eventId(), e);
+      }
+    }
+    while ((event = coldQueue.poll()) != null) {
+      try {
+        dispatchEvent(event);
+      } catch (Exception e) {
+        logger.log(Level.WARNING, "Failed to dispatch stranded event: " + event.envelope().eventId(), e);
+      }
+    }
   }
 
   /** Builder for {@link OutboxDispatcher}. */

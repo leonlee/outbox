@@ -51,6 +51,9 @@ public final class EventEnvelope {
     if (headerCopy.containsKey(null)) {
       throw new IllegalArgumentException("headers cannot contain null keys");
     }
+    if (headerCopy.containsValue(null)) {
+      throw new IllegalArgumentException("headers cannot contain null values");
+    }
     this.headers = headerCopy;
 
     if (builder.payloadJson == null && builder.payloadBytes == null) {

@@ -41,7 +41,7 @@ public final class OutboxPurgeScheduler implements AutoCloseable {
   private final int batchSize;
   private final long intervalSeconds;
 
-  private final ScheduledExecutorService scheduler;
+  private ScheduledExecutorService scheduler;
   private volatile ScheduledFuture<?> purgeTask;
   private volatile boolean closed;
 
@@ -62,8 +62,6 @@ public final class OutboxPurgeScheduler implements AutoCloseable {
     this.retention = builder.retention != null ? builder.retention : Duration.ofDays(7);
     this.batchSize = builder.batchSize;
     this.intervalSeconds = builder.intervalSeconds;
-    this.scheduler = Executors.newSingleThreadScheduledExecutor(
-        new DaemonThreadFactory("outbox-purge-"));
   }
 
   public static Builder builder() {
@@ -80,6 +78,8 @@ public final class OutboxPurgeScheduler implements AutoCloseable {
     if (purgeTask != null) {
       return;
     }
+    scheduler = Executors.newSingleThreadScheduledExecutor(
+        new DaemonThreadFactory("outbox-purge-"));
     purgeTask = scheduler.scheduleWithFixedDelay(
         this::runOnce, intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
   }
@@ -129,11 +129,13 @@ public final class OutboxPurgeScheduler implements AutoCloseable {
       purgeTask.cancel(false);
       purgeTask = null;
     }
-    scheduler.shutdownNow();
-    try {
-      scheduler.awaitTermination(5, TimeUnit.SECONDS);
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
+    if (scheduler != null) {
+      scheduler.shutdownNow();
+      try {
+        scheduler.awaitTermination(5, TimeUnit.SECONDS);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
     }
   }
 

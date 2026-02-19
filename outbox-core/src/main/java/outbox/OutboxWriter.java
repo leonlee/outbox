@@ -118,22 +118,21 @@ public final class OutboxWriter {
     if (transformed == null || transformed.isEmpty()) {
       return List.of();
     }
+    // Defensive copy once to prevent mutations by hook between insert and callbacks
+    List<EventEnvelope> written = List.copyOf(transformed);
 
     // Insert batch
     Connection conn = txContext.currentConnection();
-    outboxStore.insertBatch(conn, transformed);
+    outboxStore.insertBatch(conn, written);
 
     // afterWrite: observational
-    runSafely("afterWrite", () -> writerHook.afterWrite(List.copyOf(transformed)));
+    runSafely("afterWrite", () -> writerHook.afterWrite(written));
 
     // Collect IDs
-    List<String> ids = new ArrayList<>(transformed.size());
-    for (EventEnvelope event : transformed) {
+    List<String> ids = new ArrayList<>(written.size());
+    for (EventEnvelope event : written) {
       ids.add(event.eventId());
     }
-
-    // Register ONE afterCommit and ONE afterRollback for the whole batch
-    List<EventEnvelope> written = List.copyOf(transformed);
     if (writerHook != WriterHook.NOOP) {
       txContext.afterCommit(() -> runSafely("afterCommit", () -> writerHook.afterCommit(written)));
       txContext.afterRollback(() -> runSafely("afterRollback", () -> writerHook.afterRollback(written)));

@@ -120,7 +120,15 @@ public final class JdbcTransactionManager {
             LOG.log(Level.WARNING, "Failed to reset autoCommit", e);
           }
         } finally {
-          connection.close();
+          try {
+            connection.close();
+          } catch (SQLException e) {
+            if (callbackException != null) {
+              callbackException.addSuppressed(e);
+            } else {
+              LOG.log(Level.WARNING, "Failed to close connection", e);
+            }
+          }
         }
       }
       if (callbackException != null) {

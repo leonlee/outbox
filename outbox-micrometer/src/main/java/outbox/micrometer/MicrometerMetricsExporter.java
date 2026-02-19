@@ -2,9 +2,11 @@ package outbox.micrometer;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
 import outbox.spi.MetricsExporter;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -153,14 +155,16 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
    */
   @Override
   public void close() {
-    registry.remove(hotEnqueued);
-    registry.remove(hotDropped);
-    registry.remove(coldEnqueued);
-    registry.remove(dispatchSuccess);
-    registry.remove(dispatchFailure);
-    registry.remove(dispatchDead);
-    registry.remove(hotDepthGauge);
-    registry.remove(coldDepthGauge);
-    registry.remove(lagGauge);
+    RuntimeException first = null;
+    for (Meter meter : List.of(hotEnqueued, hotDropped, coldEnqueued,
+        dispatchSuccess, dispatchFailure, dispatchDead,
+        hotDepthGauge, coldDepthGauge, lagGauge)) {
+      try {
+        registry.remove(meter);
+      } catch (RuntimeException e) {
+        if (first == null) first = e; else first.addSuppressed(e);
+      }
+    }
+    if (first != null) throw first;
   }
 }

@@ -5,6 +5,7 @@ import outbox.spi.TxContext;
 import java.sql.Connection;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * {@link TxContext} implementation that stores transaction state in a {@link ThreadLocal}.
@@ -35,6 +36,7 @@ public final class ThreadLocalTxContext implements TxContext {
 
   @Override
   public void afterCommit(Runnable callback) {
+    Objects.requireNonNull(callback, "callback");
     TxState current = state.get();
     if (current == null) {
       throw new IllegalStateException("No active transaction");
@@ -44,6 +46,7 @@ public final class ThreadLocalTxContext implements TxContext {
 
   @Override
   public void afterRollback(Runnable callback) {
+    Objects.requireNonNull(callback, "callback");
     TxState current = state.get();
     if (current == null) {
       throw new IllegalStateException("No active transaction");

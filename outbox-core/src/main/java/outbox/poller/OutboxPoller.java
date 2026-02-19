@@ -56,7 +56,7 @@ public final class OutboxPoller implements AutoCloseable {
   private final Duration lockTimeout;
   private final JsonCodec jsonCodec;
 
-  private final ScheduledExecutorService scheduler;
+  private ScheduledExecutorService scheduler;
   private volatile ScheduledFuture<?> pollTask;
   private volatile boolean closed;
 
@@ -86,7 +86,6 @@ public final class OutboxPoller implements AutoCloseable {
     this.ownerId = builder.ownerId;
     this.lockTimeout = builder.lockTimeout;
     this.jsonCodec = builder.jsonCodec != null ? builder.jsonCodec : JsonCodec.getDefault();
-    this.scheduler = Executors.newSingleThreadScheduledExecutor(new DaemonThreadFactory("outbox-poller-"));
   }
 
   public static Builder builder() {
@@ -103,6 +102,7 @@ public final class OutboxPoller implements AutoCloseable {
     if (pollTask != null) {
       return;
     }
+    scheduler = Executors.newSingleThreadScheduledExecutor(new DaemonThreadFactory("outbox-poller-"));
     pollTask = scheduler.scheduleWithFixedDelay(this::poll, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
   }
 
@@ -209,11 +209,13 @@ public final class OutboxPoller implements AutoCloseable {
       pollTask.cancel(false);
       pollTask = null;
     }
-    scheduler.shutdownNow();
-    try {
-      scheduler.awaitTermination(5, TimeUnit.SECONDS);
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
+    if (scheduler != null) {
+      scheduler.shutdownNow();
+      try {
+        scheduler.awaitTermination(5, TimeUnit.SECONDS);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
     }
   }
 

@@ -158,6 +158,63 @@ class DeadEventManagerTest {
     assertEquals(0, manager.count(null));
   }
 
+  // ── Store-level RuntimeException (e.g. OutboxStoreException) ────
+
+  @Test
+  void queryReturnsEmptyOnStoreRuntimeException() {
+    OutboxStore store = new StubOutboxStore() {
+      @Override
+      public List<OutboxEvent> queryDead(Connection conn, String eventType,
+          String aggregateType, int limit) {
+        throw new RuntimeException("store failure");
+      }
+    };
+    DeadEventManager manager = new DeadEventManager(dummyProvider(), store);
+
+    List<OutboxEvent> result = manager.query(null, null, 10);
+    assertTrue(result.isEmpty());
+  }
+
+  @Test
+  void replayReturnsFalseOnStoreRuntimeException() {
+    OutboxStore store = new StubOutboxStore() {
+      @Override
+      public int replayDead(Connection conn, String eventId) {
+        throw new RuntimeException("store failure");
+      }
+    };
+    DeadEventManager manager = new DeadEventManager(dummyProvider(), store);
+
+    assertFalse(manager.replay("evt-1"));
+  }
+
+  @Test
+  void countReturnsZeroOnStoreRuntimeException() {
+    OutboxStore store = new StubOutboxStore() {
+      @Override
+      public int countDead(Connection conn, String eventType) {
+        throw new RuntimeException("store failure");
+      }
+    };
+    DeadEventManager manager = new DeadEventManager(dummyProvider(), store);
+
+    assertEquals(0, manager.count(null));
+  }
+
+  @Test
+  void replayAllReturnsZeroOnStoreRuntimeException() {
+    OutboxStore store = new StubOutboxStore() {
+      @Override
+      public List<OutboxEvent> queryDead(Connection conn, String eventType,
+          String aggregateType, int limit) {
+        throw new RuntimeException("store failure");
+      }
+    };
+    DeadEventManager manager = new DeadEventManager(dummyProvider(), store);
+
+    assertEquals(0, manager.replayAll(null, null, 10));
+  }
+
   private static OutboxStore stubStore(List<OutboxEvent> queryResult,
       int replayResult, int countResult) {
     return new StubOutboxStore() {

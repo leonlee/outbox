@@ -119,6 +119,7 @@ public final class OutboxPoller implements AutoCloseable {
       Instant now = Instant.now();
       List<OutboxEvent> rows = fetchPendingRows(now);
       if (rows.isEmpty()) {
+        metrics.recordOldestLagMs(0);
         return;
       }
 

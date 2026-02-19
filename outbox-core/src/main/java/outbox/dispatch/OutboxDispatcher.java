@@ -172,6 +172,7 @@ public final class OutboxDispatcher implements AutoCloseable {
           continue;
         }
         dispatchEvent(event);
+        metrics.recordQueueDepths(hotQueue.size(), coldQueue.size());
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
       } catch (Throwable t) {

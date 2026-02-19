@@ -5,7 +5,6 @@ import outbox.spi.ConnectionProvider;
 import outbox.spi.OutboxStore;
 
 import java.sql.Connection;
-import java.sql.SQLException;
 import java.util.List;
 import java.util.Objects;
 import java.util.logging.Level;
@@ -44,7 +43,7 @@ public final class DeadEventManager {
     try (Connection conn = connectionProvider.getConnection()) {
       conn.setAutoCommit(true);
       return outboxStore.queryDead(conn, eventType, aggregateType, limit);
-    } catch (SQLException e) {
+    } catch (Exception e) {
       logger.log(Level.SEVERE, "Failed to query dead events", e);
       return List.of();
     }
@@ -60,7 +59,7 @@ public final class DeadEventManager {
     try (Connection conn = connectionProvider.getConnection()) {
       conn.setAutoCommit(true);
       return outboxStore.replayDead(conn, eventId) > 0;
-    } catch (SQLException e) {
+    } catch (Exception e) {
       logger.log(Level.SEVERE, "Failed to replay dead event: " + eventId, e);
       return false;
     }
@@ -90,7 +89,7 @@ public final class DeadEventManager {
             batchReplayed++;
           }
         }
-      } catch (SQLException e) {
+      } catch (Exception e) {
         logger.log(Level.SEVERE, "Failed to replay dead events batch; replayed "
             + totalReplayed + " so far", e);
         break;
@@ -113,7 +112,7 @@ public final class DeadEventManager {
     try (Connection conn = connectionProvider.getConnection()) {
       conn.setAutoCommit(true);
       return outboxStore.countDead(conn, eventType);
-    } catch (SQLException e) {
+    } catch (Exception e) {
       logger.log(Level.SEVERE, "Failed to count dead events", e);
       return 0;
     }

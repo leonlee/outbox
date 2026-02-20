@@ -260,7 +260,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
   public int replayDead(Connection conn, String eventId) {
     String sql = "UPDATE " + tableName() +
         " SET status=" + EventStatus.NEW.code() +
-        ", attempts=0, available_at=?, last_error=NULL, locked_by=NULL, locked_at=NULL" +
+        ", attempts=0, available_at=?, done_at=NULL, last_error=NULL, locked_by=NULL, locked_at=NULL" +
         " WHERE event_id=? AND status=" + EventStatus.DEAD.code();
     return JdbcTemplate.update(conn, sql, Timestamp.from(Instant.now()), eventId);
   }

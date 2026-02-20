@@ -146,11 +146,20 @@ public final class OutboxPoller implements AutoCloseable {
       return List.of();
     }
     try (Connection conn = connectionProvider.getConnection()) {
-      conn.setAutoCommit(true);
       if (ownerId != null) {
-        Instant lockExpiry = now.minus(lockTimeout);
-        return outboxStore.claimPending(conn, ownerId, now, lockExpiry, skipRecent, effectiveBatch);
+        // Two-phase claim (UPDATE then SELECT) must run in a single transaction
+        conn.setAutoCommit(false);
+        try {
+          Instant lockExpiry = now.minus(lockTimeout);
+          List<OutboxEvent> claimed = outboxStore.claimPending(conn, ownerId, now, lockExpiry, skipRecent, effectiveBatch);
+          conn.commit();
+          return claimed;
+        } catch (SQLException | RuntimeException e) {
+          conn.rollback();
+          throw e;
+        }
       }
+      conn.setAutoCommit(true);
       return outboxStore.pollPending(conn, now, skipRecent, effectiveBatch);
     } catch (SQLException e) {
       logger.log(Level.SEVERE, "Failed to fetch pending outbox rows", e);

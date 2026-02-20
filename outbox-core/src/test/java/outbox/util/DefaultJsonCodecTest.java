@@ -79,15 +79,19 @@ class DefaultJsonCodecTest {
   }
 
   @Test
-  void roundTripPreservesNullValue() {
+  void parseObjectSkipsNullValues() {
+    // toJson encodes null values as JSON null
     Map<String, String> original = new LinkedHashMap<>();
     original.put("present", "value");
     original.put("absent", null);
-
     String json = codec.toJson(original);
-    Map<String, String> parsed = codec.parseObject(json);
+    assertEquals("{\"present\":\"value\",\"absent\":null}", json);
 
-    assertEquals(original, parsed);
+    // parseObject skips null values (EventEnvelope rejects null header values)
+    Map<String, String> parsed = codec.parseObject(json);
+    assertEquals(1, parsed.size());
+    assertEquals("value", parsed.get("present"));
+    assertFalse(parsed.containsKey("absent"));
   }
 
   @Test

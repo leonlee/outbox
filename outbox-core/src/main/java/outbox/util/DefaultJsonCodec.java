@@ -79,7 +79,7 @@ public final class DefaultJsonCodec implements JsonCodec {
       }
       idx = skipWhitespace(trimmed, idx + 1);
       if (idx + 3 < len && trimmed.startsWith("null", idx)) {
-        result.put(key.value, null);
+        // Skip null values — EventEnvelope rejects null header values
         idx += 4;
       } else if (idx >= len || trimmed.charAt(idx) != '"') {
         throw new IllegalArgumentException("Expected string value or null");

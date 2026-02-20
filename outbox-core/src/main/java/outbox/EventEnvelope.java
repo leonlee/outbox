@@ -231,6 +231,7 @@ public final class EventEnvelope {
      * @return this builder
      */
     public Builder aggregateType(AggregateType aggregateType) {
+      Objects.requireNonNull(aggregateType, "aggregateType");
       this.aggregateType = aggregateType.name();
       return this;
     }

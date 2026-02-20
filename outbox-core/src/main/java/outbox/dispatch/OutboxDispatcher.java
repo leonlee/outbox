@@ -471,6 +471,7 @@ public final class OutboxDispatcher implements AutoCloseable {
      * @return this builder
      */
     public Builder interceptor(EventInterceptor interceptor) {
+      Objects.requireNonNull(interceptor, "interceptor");
       this.interceptors.add(interceptor);
       return this;
     }

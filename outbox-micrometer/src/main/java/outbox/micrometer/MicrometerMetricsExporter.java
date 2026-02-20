@@ -52,6 +52,7 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
   private final AtomicInteger hotDepth = new AtomicInteger();
   private final AtomicInteger coldDepth = new AtomicInteger();
   private final AtomicLong oldestLagMs = new AtomicLong();
+  private volatile boolean closed;
 
   /**
    * Creates an exporter with the default metric name prefix {@code "outbox"}.
@@ -108,42 +109,50 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
 
   @Override
   public void incrementHotEnqueued() {
+    if (closed) return;
     hotEnqueued.increment();
   }
 
   @Override
   public void incrementHotDropped() {
+    if (closed) return;
     hotDropped.increment();
   }
 
   @Override
   public void incrementColdEnqueued() {
+    if (closed) return;
     coldEnqueued.increment();
   }
 
   @Override
   public void incrementDispatchSuccess() {
+    if (closed) return;
     dispatchSuccess.increment();
   }
 
   @Override
   public void incrementDispatchFailure() {
+    if (closed) return;
     dispatchFailure.increment();
   }
 
   @Override
   public void incrementDispatchDead() {
+    if (closed) return;
     dispatchDead.increment();
   }
 
   @Override
   public void recordQueueDepths(int hotDepth, int coldDepth) {
+    if (closed) return;
     this.hotDepth.set(hotDepth);
     this.coldDepth.set(coldDepth);
   }
 
   @Override
   public void recordOldestLagMs(long lagMs) {
+    if (closed) return;
     this.oldestLagMs.set(lagMs);
   }
 
@@ -155,6 +164,7 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
    */
   @Override
   public void close() {
+    closed = true;
     RuntimeException first = null;
     for (Meter meter : List.of(hotEnqueued, hotDropped, coldEnqueued,
         dispatchSuccess, dispatchFailure, dispatchDead,

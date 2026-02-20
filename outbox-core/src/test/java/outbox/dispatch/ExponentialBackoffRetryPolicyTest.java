@@ -89,6 +89,12 @@ class ExponentialBackoffRetryPolicyTest {
   }
 
   @Test
+  void zeroMaxDelayIsRejected() {
+    assertThrows(IllegalArgumentException.class,
+        () -> new ExponentialBackoffRetryPolicy(100, 0));
+  }
+
+  @Test
   void zeroAttemptsReturnsZero() {
     ExponentialBackoffRetryPolicy policy = new ExponentialBackoffRetryPolicy(100, 10000);
 

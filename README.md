@@ -9,42 +9,42 @@ Minimal, Spring-free outbox framework with JDBC persistence, optional hot-path e
 
 ## Installation
 
-Artifacts are published to [Maven Central](https://central.sonatype.com/namespace/io.github.leonlee). Current release: **0.8.0**.
+Artifacts are published to [Maven Central](https://central.sonatype.com/namespace/io.github.leonlee). Current release: **0.8.1**.
 
 ```xml
 <!-- Core APIs, dispatcher, poller, registries (required) -->
 <dependency>
   <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-core</artifactId>
-  <version>0.8.0</version>
+  <version>0.8.1</version>
 </dependency>
 
 <!-- JDBC outbox store and transaction helpers (required for persistence) -->
 <dependency>
   <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-jdbc</artifactId>
-  <version>0.8.0</version>
+  <version>0.8.1</version>
 </dependency>
 
 <!-- Spring Boot Starter — auto-configures everything (recommended for Spring Boot) -->
 <dependency>
   <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-spring-boot-starter</artifactId>
-  <version>0.8.0</version>
+  <version>0.8.1</version>
 </dependency>
 
 <!-- Spring transaction integration (optional, only if using Spring without Boot) -->
 <dependency>
   <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-spring-adapter</artifactId>
-  <version>0.8.0</version>
+  <version>0.8.1</version>
 </dependency>
 
 <!-- Micrometer metrics bridge for Prometheus/Grafana (optional) -->
 <dependency>
   <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-micrometer</artifactId>
-  <version>0.8.0</version>
+  <version>0.8.1</version>
 </dependency>
 ```
 
@@ -232,7 +232,7 @@ For Spring Boot applications, just add the starter dependency — no manual `@Co
 <dependency>
   <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-spring-boot-starter</artifactId>
-  <version>0.8.0</version>
+  <version>0.8.1</version>
 </dependency>
 ```
 

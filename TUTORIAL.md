@@ -350,7 +350,7 @@ The `outbox-spring-boot-starter` auto-configures the entire outbox framework fro
 <dependency>
   <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-spring-boot-starter</artifactId>
-  <version>0.8.0</version>
+  <version>0.8.1</version>
 </dependency>
 ```
 
@@ -478,7 +478,7 @@ When `spring-boot-starter-actuator` and `outbox-micrometer` are on the classpath
 <dependency>
   <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-micrometer</artifactId>
-  <version>0.8.0</version>
+  <version>0.8.1</version>
 </dependency>
 <dependency>
   <groupId>org.springframework.boot</groupId>
@@ -1168,7 +1168,7 @@ The `outbox-micrometer` module provides `MicrometerMetricsExporter`, which regis
 <dependency>
   <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-micrometer</artifactId>
-  <version>0.8.0</version>
+  <version>0.8.1</version>
 </dependency>
 ```
 

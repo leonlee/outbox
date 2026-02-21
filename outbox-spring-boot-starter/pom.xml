@@ -6,7 +6,7 @@
   <parent>
     <groupId>io.github.leonlee</groupId>
     <artifactId>outbox-parent</artifactId>
-    <version>0.8.1-SNAPSHOT</version>
+    <version>0.8.1</version>
   </parent>
 
   <artifactId>outbox-spring-boot-starter</artifactId>

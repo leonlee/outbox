@@ -8,6 +8,8 @@ import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -320,6 +322,134 @@ class OutboxDispatcherTest {
       assertEquals(1, secondAfterAt.get());
       assertEquals(2, firstAfterAt.get());
     }
+  }
+
+  // ── Multi-worker and shutdown ──────────────────────────────────
+
+  @Test
+  void multiWorkerDispatchesAllEventsExactlyOnce() throws Exception {
+    int eventCount = 50;
+    CountDownLatch latch = new CountDownLatch(eventCount);
+    Set<String> processed = ConcurrentHashMap.newKeySet();
+
+    var registry = new DefaultListenerRegistry()
+        .register("MW", event -> {
+          processed.add(event.eventId());
+          latch.countDown();
+        });
+
+    try (var d = OutboxDispatcher.builder()
+        .connectionProvider(stubCp())
+        .outboxStore(new StubOutboxStore())
+        .listenerRegistry(registry)
+        .workerCount(4)
+        .hotQueueCapacity(100)
+        .coldQueueCapacity(100)
+        .drainTimeoutMs(5000)
+        .build()) {
+
+      for (int i = 0; i < eventCount; i++) {
+        EventEnvelope event = EventEnvelope.builder("MW")
+            .eventId("mw-" + i)
+            .payloadJson("{}")
+            .build();
+        d.enqueueHot(new QueuedEvent(event, QueuedEvent.Source.HOT, 0));
+      }
+
+      assertTrue(latch.await(5, TimeUnit.SECONDS), "All events should be processed");
+      assertEquals(eventCount, processed.size(), "Each event processed exactly once");
+    }
+  }
+
+  @Test
+  void multiWorkerProcessesBothQueues() throws Exception {
+    int hotCount = 20;
+    int coldCount = 10;
+    CountDownLatch latch = new CountDownLatch(hotCount + coldCount);
+    Set<String> processed = ConcurrentHashMap.newKeySet();
+
+    var registry = new DefaultListenerRegistry()
+        .register("MWQ", event -> {
+          processed.add(event.eventId());
+          latch.countDown();
+        });
+
+    try (var d = OutboxDispatcher.builder()
+        .connectionProvider(stubCp())
+        .outboxStore(new StubOutboxStore())
+        .listenerRegistry(registry)
+        .workerCount(2)
+        .hotQueueCapacity(100)
+        .coldQueueCapacity(100)
+        .drainTimeoutMs(5000)
+        .build()) {
+
+      for (int i = 0; i < hotCount; i++) {
+        d.enqueueHot(new QueuedEvent(
+            EventEnvelope.builder("MWQ").eventId("hot-" + i).payloadJson("{}").build(),
+            QueuedEvent.Source.HOT, 0));
+      }
+      for (int i = 0; i < coldCount; i++) {
+        d.enqueueCold(new QueuedEvent(
+            EventEnvelope.builder("MWQ").eventId("cold-" + i).payloadJson("{}").build(),
+            QueuedEvent.Source.COLD, 0));
+      }
+
+      assertTrue(latch.await(5, TimeUnit.SECONDS), "All hot+cold events should be processed");
+      assertEquals(hotCount + coldCount, processed.size());
+    }
+  }
+
+  @Test
+  void shutdownDrainsQueuedEvents() throws Exception {
+    int eventCount = 10;
+    CountDownLatch latch = new CountDownLatch(eventCount);
+    Set<String> processed = ConcurrentHashMap.newKeySet();
+
+    var registry = new DefaultListenerRegistry()
+        .register("Drain", event -> {
+          processed.add(event.eventId());
+          latch.countDown();
+        });
+
+    var d = OutboxDispatcher.builder()
+        .connectionProvider(stubCp())
+        .outboxStore(new StubOutboxStore())
+        .listenerRegistry(registry)
+        .workerCount(2)
+        .hotQueueCapacity(100)
+        .coldQueueCapacity(100)
+        .drainTimeoutMs(5000)
+        .build();
+
+    for (int i = 0; i < eventCount; i++) {
+      d.enqueueHot(new QueuedEvent(
+          EventEnvelope.builder("Drain").eventId("drain-" + i).payloadJson("{}").build(),
+          QueuedEvent.Source.HOT, 0));
+    }
+
+    // Close should drain remaining events within timeout
+    d.close();
+
+    assertTrue(latch.await(1, TimeUnit.SECONDS),
+        "Events enqueued before close should be drained");
+    assertEquals(eventCount, processed.size());
+  }
+
+  @Test
+  void enqueueRejectedAfterClose() {
+    var d = newDispatcher(1, 10, 10);
+    d.close();
+
+    EventEnvelope event = EventEnvelope.ofJson("Test", "{}");
+    assertFalse(d.enqueueHot(new QueuedEvent(event, QueuedEvent.Source.HOT, 0)));
+    assertFalse(d.enqueueCold(new QueuedEvent(event, QueuedEvent.Source.COLD, 0)));
+  }
+
+  @Test
+  void builderRejectsNullInterceptor() {
+    assertThrows(NullPointerException.class, () ->
+        OutboxDispatcher.builder().interceptor(null));
   }
 
   // ── Helpers ─────────────────────────────────────────────────────

@@ -542,6 +542,125 @@ class JdbcOutboxStoreTest {
   }
 
   @Test
+  void insertBatchWithSingleEvent() throws SQLException {
+    EventEnvelope event = EventEnvelope.builder("SingleBatch")
+        .payloadJson("{\"n\":1}")
+        .build();
+
+    try (Connection conn = dataSource.getConnection()) {
+      outboxStore.insertBatch(conn, List.of(event));
+    }
+
+    try (Connection conn = dataSource.getConnection();
+         PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM outbox_event")) {
+      ResultSet rs = ps.executeQuery();
+      assertTrue(rs.next());
+      assertEquals(1, rs.getInt(1));
+    }
+  }
+
+  @Test
+  void insertBatchWithMultipleEvents() throws SQLException {
+    List<EventEnvelope> events = new java.util.ArrayList<>();
+    for (int i = 0; i < 5; i++) {
+      events.add(EventEnvelope.builder("BatchEvent")
+          .eventId("batch-" + i)
+          .aggregateType("Order")
+          .aggregateId("order-" + i)
+          .payloadJson("{\"n\":" + i + "}")
+          .build());
+    }
+
+    try (Connection conn = dataSource.getConnection()) {
+      outboxStore.insertBatch(conn, events);
+    }
+
+    try (Connection conn = dataSource.getConnection();
+         PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM outbox_event")) {
+      ResultSet rs = ps.executeQuery();
+      assertTrue(rs.next());
+      assertEquals(5, rs.getInt(1));
+    }
+
+    // Verify each event is stored correctly
+    for (int i = 0; i < 5; i++) {
+      try (Connection conn = dataSource.getConnection();
+           PreparedStatement ps = conn.prepareStatement(
+               "SELECT event_type, aggregate_id, payload FROM outbox_event WHERE event_id = ?")) {
+        ps.setString(1, "batch-" + i);
+        ResultSet rs = ps.executeQuery();
+        assertTrue(rs.next(), "Event batch-" + i + " should exist");
+        assertEquals("BatchEvent", rs.getString("event_type"));
+        assertEquals("order-" + i, rs.getString("aggregate_id"));
+        assertEquals("{\"n\":" + i + "}", rs.getString("payload"));
+      }
+    }
+  }
+
+  @Test
+  void insertBatchWithEmptyList() throws SQLException {
+    try (Connection conn = dataSource.getConnection()) {
+      outboxStore.insertBatch(conn, List.of());
+    }
+
+    try (Connection conn = dataSource.getConnection();
+         PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM outbox_event")) {
+      ResultSet rs = ps.executeQuery();
+      assertTrue(rs.next());
+      assertEquals(0, rs.getInt(1));
+    }
+  }
+
+  @Test
+  void insertBatchChunksLargeBatches() throws SQLException {
+    // Insert > 500 events to trigger chunking (MAX_BATCH_ROWS = 500)
+    int count = 510;
+    List<EventEnvelope> events = new java.util.ArrayList<>(count);
+    for (int i = 0; i < count; i++) {
+      events.add(EventEnvelope.builder("Chunk")
+          .eventId("chunk-" + i)
+          .payloadJson("{}")
+          .build());
+    }
+
+    try (Connection conn = dataSource.getConnection()) {
+      outboxStore.insertBatch(conn, events);
+    }
+
+    try (Connection conn = dataSource.getConnection();
+         PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM outbox_event")) {
+      ResultSet rs = ps.executeQuery();
+      assertTrue(rs.next());
+      assertEquals(count, rs.getInt(1));
+    }
+  }
+
+  @Test
+  void insertBatchPreservesHeaders() throws SQLException {
+    EventEnvelope event = EventEnvelope.builder("HeaderBatch")
+        .eventId("hdr-batch-1")
+        .headers(Map.of("trace-id", "abc123"))
+        .payloadJson("{}")
+        .build();
+
+    try (Connection conn = dataSource.getConnection()) {
+      outboxStore.insertBatch(conn, List.of(event, EventEnvelope.builder("HeaderBatch")
+          .eventId("hdr-batch-2")
+          .payloadJson("{}")
+          .build()));
+    }
+
+    try (Connection conn = dataSource.getConnection();
+         PreparedStatement ps = conn.prepareStatement(
+             "SELECT headers FROM outbox_event WHERE event_id = ?")) {
+      ps.setString(1, "hdr-batch-1");
+      ResultSet rs = ps.executeQuery();
+      assertTrue(rs.next());
+      assertTrue(rs.getString("headers").contains("trace-id"));
+    }
+  }
+
+  @Test
   void claimPendingRejectsNullOwnerId() throws SQLException {
     try (Connection conn = dataSource.getConnection()) {
       assertThrows(NullPointerException.class, () ->

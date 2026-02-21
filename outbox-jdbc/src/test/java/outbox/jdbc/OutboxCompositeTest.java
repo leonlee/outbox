@@ -21,7 +21,9 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -194,6 +196,101 @@ class OutboxCompositeTest {
         .purgeIntervalSeconds(3600)
         .build()) {
       assertNotNull(outbox.writer());
+    }
+  }
+
+  @Test
+  void ordered_preservesEventOrder() throws Exception {
+    int eventCount = 10;
+    CountDownLatch latch = new CountDownLatch(eventCount);
+    List<String> receivedOrder = new CopyOnWriteArrayList<>();
+
+    DefaultListenerRegistry registry = new DefaultListenerRegistry()
+        .register("Ordered", event -> {
+          receivedOrder.add(event.eventId());
+          latch.countDown();
+        });
+
+    try (Outbox outbox = Outbox.ordered()
+        .connectionProvider(connectionProvider)
+        .txContext(txContext)
+        .outboxStore(outboxStore)
+        .listenerRegistry(registry)
+        .intervalMs(50)
+        .batchSize(20)
+        .build()) {
+
+      OutboxWriter writer = outbox.writer();
+      List<String> expectedOrder = new java.util.ArrayList<>();
+
+      try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
+        for (int i = 0; i < eventCount; i++) {
+          String eventId = writer.write(EventEnvelope.builder("Ordered")
+              .eventId("ord-" + String.format("%03d", i))
+              .payloadJson("{\"seq\":" + i + "}")
+              .build());
+          expectedOrder.add(eventId);
+        }
+        tx.commit();
+      }
+
+      assertTrue(latch.await(5, TimeUnit.SECONDS), "All events should be processed");
+      assertEquals(expectedOrder, receivedOrder,
+          "Events should be received in creation order");
+    }
+  }
+
+  @Test
+  void multiNode_twoInstancesProcessAllEvents() throws Exception {
+    int eventCount = 10;
+    CountDownLatch latch = new CountDownLatch(eventCount);
+    java.util.Set<String> processed = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    DefaultListenerRegistry registry = new DefaultListenerRegistry()
+        .register("MultiClaim", event -> {
+          processed.add(event.eventId());
+          latch.countDown();
+        });
+
+    try (Outbox node1 = Outbox.multiNode()
+        .connectionProvider(connectionProvider)
+        .txContext(txContext)
+        .outboxStore(outboxStore)
+        .listenerRegistry(registry)
+        .claimLocking("node-1", Duration.ofMinutes(5))
+        .intervalMs(50)
+        .batchSize(5)
+        .build();
+         Outbox node2 = Outbox.multiNode()
+        .connectionProvider(connectionProvider)
+        .txContext(txContext)
+        .outboxStore(outboxStore)
+        .listenerRegistry(registry)
+        .claimLocking("node-2", Duration.ofMinutes(5))
+        .intervalMs(50)
+        .batchSize(5)
+        .build()) {
+
+      OutboxWriter writer = node1.writer();
+      try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
+        for (int i = 0; i < eventCount; i++) {
+          writer.write(EventEnvelope.builder("MultiClaim")
+              .eventId("mc-" + i)
+              .payloadJson("{}")
+              .build());
+        }
+        tx.commit();
+      }
+
+      assertTrue(latch.await(5, TimeUnit.SECONDS),
+          "All events should be processed across both nodes");
+      assertEquals(eventCount, processed.size(),
+          "Each event should be processed exactly once");
+
+      // Verify all events reached DONE status
+      for (int i = 0; i < eventCount; i++) {
+        awaitStatus("mc-" + i, EventStatus.DONE, 2_000);
+      }
     }
   }
 

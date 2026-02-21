@@ -29,6 +29,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -295,6 +296,147 @@ class OutboxPollerTest {
     assertEquals("abc", capturedHeaders.get().get("trace"));
     assertEquals("injected", capturedHeaders.get().get("custom"));
 
+    dispatcher.close();
+  }
+
+  @Test
+  void startIsIdempotent() {
+    OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .outboxStore(outboxStore)
+        .listenerRegistry(new DefaultListenerRegistry())
+        .workerCount(0)
+        .hotQueueCapacity(10)
+        .coldQueueCapacity(10)
+        .build();
+
+    try (OutboxPoller poller = OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .outboxStore(outboxStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .batchSize(10)
+        .intervalMs(60_000)
+        .build()) {
+      poller.start();
+      poller.start(); // second call should be a no-op
+    }
+
+    dispatcher.close();
+  }
+
+  @Test
+  void startAfterCloseThrows() {
+    OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .outboxStore(outboxStore)
+        .listenerRegistry(new DefaultListenerRegistry())
+        .workerCount(0)
+        .hotQueueCapacity(10)
+        .coldQueueCapacity(10)
+        .build();
+
+    OutboxPoller poller = OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .outboxStore(outboxStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .batchSize(10)
+        .intervalMs(60_000)
+        .build();
+
+    poller.close();
+    assertThrows(IllegalStateException.class, poller::start);
+    dispatcher.close();
+  }
+
+  @Test
+  void closeBeforeStartDoesNotThrow() {
+    OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .outboxStore(outboxStore)
+        .listenerRegistry(new DefaultListenerRegistry())
+        .workerCount(0)
+        .hotQueueCapacity(10)
+        .coldQueueCapacity(10)
+        .build();
+
+    OutboxPoller poller = OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .outboxStore(outboxStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .batchSize(10)
+        .intervalMs(60_000)
+        .build();
+
+    assertDoesNotThrow(poller::close);
+    dispatcher.close();
+  }
+
+  @Test
+  void pollAfterCloseIsNoOp() throws Exception {
+    Instant createdAt = Instant.now().minusSeconds(5);
+    insertEvent(EventEnvelope.builder("Test").eventId("evt-nop")
+        .occurredAt(createdAt).payloadJson("{}").build());
+
+    RecordingMetrics metrics = new RecordingMetrics();
+    OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .outboxStore(outboxStore)
+        .listenerRegistry(new DefaultListenerRegistry())
+        .workerCount(0)
+        .hotQueueCapacity(10)
+        .coldQueueCapacity(10)
+        .build();
+
+    OutboxPoller poller = OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .outboxStore(outboxStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .skipRecent(Duration.ZERO)
+        .batchSize(10)
+        .intervalMs(60_000)
+        .metrics(metrics)
+        .build();
+
+    poller.close();
+    poller.poll(); // should be a no-op
+
+    assertEquals(0, metrics.coldEnqueued.get());
+    dispatcher.close();
+  }
+
+  @Test
+  void pollSkipsWhenHandlerCapacityIsZero() throws Exception {
+    Instant createdAt = Instant.now().minusSeconds(5);
+    insertEvent(EventEnvelope.builder("Test").eventId("evt-cap0")
+        .occurredAt(createdAt).payloadJson("{}").build());
+
+    // Dispatcher with cold queue capacity=1, pre-fill it
+    OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+        .connectionProvider(connectionProvider)
+        .outboxStore(outboxStore)
+        .listenerRegistry(new DefaultListenerRegistry())
+        .workerCount(0)
+        .hotQueueCapacity(10)
+        .coldQueueCapacity(1)
+        .build();
+    // Fill the cold queue
+    dispatcher.enqueueCold(new outbox.dispatch.QueuedEvent(
+        EventEnvelope.ofJson("Fill", "{}"), outbox.dispatch.QueuedEvent.Source.COLD, 0));
+
+    RecordingMetrics metrics = new RecordingMetrics();
+    try (OutboxPoller poller = OutboxPoller.builder()
+        .connectionProvider(connectionProvider)
+        .outboxStore(outboxStore)
+        .handler(new DispatcherPollerHandler(dispatcher))
+        .skipRecent(Duration.ZERO)
+        .batchSize(10)
+        .intervalMs(60_000)
+        .metrics(metrics)
+        .build()) {
+      poller.poll(); // should skip because handler capacity is 0
+    }
+
+    assertEquals(0, metrics.coldEnqueued.get());
     dispatcher.close();
   }
 

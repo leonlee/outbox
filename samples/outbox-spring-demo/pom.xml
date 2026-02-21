@@ -14,7 +14,7 @@
 
   <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-spring-demo</artifactId>
-  <version>0.8.1</version>
+  <version>0.8.2-SNAPSHOT</version>
   <name>outbox-spring-demo</name>
   <description>Spring Boot demo of outbox framework</description>
 

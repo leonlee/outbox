@@ -178,12 +178,12 @@ outbox-jdbc/src/main/java/
 
 Published to Maven Central (`io.github.leonlee` groupId). CI workflow (`.github/workflows/publish.yml`) auto-deploys on `v*` tags with GPG signing, validates tag matches POM version, and creates a GitHub Release with auto-generated notes.
 
-Uses `versions-maven-plugin` for version updates. **Caveat**: `versions:set` won't update `samples/outbox-spring-demo/pom.xml` (uses Spring Boot parent) — must update manually.
+Uses `versions-maven-plugin` for version updates. **Caveat**: `versions:set` won't update `samples/outbox-spring-demo/pom.xml` or `samples/outbox-spring-boot-starter-demo/pom.xml` (both use Spring Boot parent) — must update manually.
 
 ```bash
-# 1. Set release version (updates 7 of 8 pom.xml)
+# 1. Set release version (updates 8 of 10 pom.xml)
 mvn versions:set -DnewVersion=X -DgenerateBackupPoms=false
-# 2. Manually update samples/outbox-spring-demo/pom.xml <version>
+# 2. Manually update samples/outbox-spring-demo/pom.xml and samples/outbox-spring-boot-starter-demo/pom.xml <version>
 # 3. Verify
 mvn clean test
 # 4. Commit and tag
@@ -191,7 +191,7 @@ git commit -am "release: X"
 git tag vX
 # 5. Bump to next dev version
 mvn versions:set -DnewVersion=Y-SNAPSHOT -DgenerateBackupPoms=false
-# 6. Manually update samples/outbox-spring-demo/pom.xml <version>
+# 6. Manually update samples/outbox-spring-demo/pom.xml and samples/outbox-spring-boot-starter-demo/pom.xml <version>
 git commit -am "chore: bump version to Y-SNAPSHOT"
 # 7. Push (tag triggers publish workflow → deploy to Maven Central + GitHub release)
 git push && git push origin vX

@@ -970,9 +970,9 @@ The `outbox-micrometer` module provides `MicrometerMetricsExporter`, which regis
 
 ```xml
 <dependency>
-  <groupId>outbox</groupId>
+  <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-micrometer</artifactId>
-  <version>0.7.2</version>
+  <version>0.8.0</version>
 </dependency>
 ```
 

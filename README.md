@@ -1,5 +1,5 @@
 [![CI](https://github.com/leonlee/outbox/actions/workflows/ci.yml/badge.svg)](https://github.com/leonlee/outbox/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/leonlee/outbox)](https://github.com/leonlee/outbox/releases/latest)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.leonlee/outbox-core)](https://central.sonatype.com/namespace/io.github.leonlee)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Java 17+](https://img.shields.io/badge/Java-17%2B-blue)](https://openjdk.org/projects/jdk/17/)
 [![Javadoc](https://img.shields.io/badge/Javadoc-latest-green)](https://leonlee.github.io/outbox/)
@@ -9,52 +9,37 @@ Minimal, Spring-free outbox framework with JDBC persistence, optional hot-path e
 
 ## Installation
 
-Artifacts are published to [GitHub Packages](https://github.com/leonlee/outbox/packages). Current release: **0.7.2**.
-
-Add the GitHub Packages repository to your `pom.xml`:
-
-```xml
-<repositories>
-  <repository>
-    <id>github</id>
-    <url>https://maven.pkg.github.com/leonlee/outbox</url>
-  </repository>
-</repositories>
-```
-
-Then add the dependencies you need:
+Artifacts are published to [Maven Central](https://central.sonatype.com/namespace/io.github.leonlee). Current release: **0.8.0**.
 
 ```xml
 <!-- Core APIs, dispatcher, poller, registries (required) -->
 <dependency>
-  <groupId>outbox</groupId>
+  <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-core</artifactId>
-  <version>0.7.2</version>
+  <version>0.8.0</version>
 </dependency>
 
 <!-- JDBC outbox store and transaction helpers (required for persistence) -->
 <dependency>
-  <groupId>outbox</groupId>
+  <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-jdbc</artifactId>
-  <version>0.7.2</version>
+  <version>0.8.0</version>
 </dependency>
 
 <!-- Spring transaction integration (optional, only if using Spring) -->
 <dependency>
-  <groupId>outbox</groupId>
+  <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-spring-adapter</artifactId>
-  <version>0.7.2</version>
+  <version>0.8.0</version>
 </dependency>
 
 <!-- Micrometer metrics bridge for Prometheus/Grafana (optional) -->
 <dependency>
-  <groupId>outbox</groupId>
+  <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-micrometer</artifactId>
-  <version>0.7.2</version>
+  <version>0.8.0</version>
 </dependency>
 ```
-
-> **Note:** GitHub Packages requires authentication. See [GitHub's guide](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-apache-maven-registry#authenticating-to-github-packages) for configuring your `~/.m2/settings.xml`.
 
 ## Modules
 

@@ -1,6 +1,7 @@
 package outbox.micrometer;
 
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -34,6 +35,12 @@ import java.util.concurrent.atomic.AtomicLong;
  *   <li>{@code outbox.lag.oldest.ms} — lag of oldest pending event in milliseconds</li>
  * </ul>
  *
+ * <h3>Distribution Summaries</h3>
+ * <ul>
+ *   <li>{@code outbox.dispatch.latency.ms} — end-to-end dispatch latency (occurredAt → done)</li>
+ *   <li>{@code outbox.dispatch.listener.duration.ms} — listener execution time only</li>
+ * </ul>
+ *
  * @see MetricsExporter
  */
 public final class MicrometerMetricsExporter implements MetricsExporter, AutoCloseable {
@@ -48,6 +55,8 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
   private final Gauge hotDepthGauge;
   private final Gauge coldDepthGauge;
   private final Gauge lagGauge;
+  private final DistributionSummary dispatchLatency;
+  private final DistributionSummary listenerDuration;
 
   private final AtomicInteger hotDepth = new AtomicInteger();
   private final AtomicInteger coldDepth = new AtomicInteger();
@@ -105,6 +114,13 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
         .register(registry);
     this.lagGauge = Gauge.builder(namePrefix + ".lag.oldest.ms", oldestLagMs, AtomicLong::get)
         .register(registry);
+
+    this.dispatchLatency = DistributionSummary.builder(namePrefix + ".dispatch.latency.ms")
+        .description("End-to-end dispatch latency in milliseconds")
+        .register(registry);
+    this.listenerDuration = DistributionSummary.builder(namePrefix + ".dispatch.listener.duration.ms")
+        .description("Listener execution time in milliseconds")
+        .register(registry);
   }
 
   @Override
@@ -156,6 +172,18 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
     this.oldestLagMs.set(lagMs);
   }
 
+  @Override
+  public void recordDispatchLatencyMs(long latencyMs) {
+    if (closed) return;
+    dispatchLatency.record(latencyMs);
+  }
+
+  @Override
+  public void recordListenerDurationMs(long durationMs) {
+    if (closed) return;
+    listenerDuration.record(durationMs);
+  }
+
   /**
    * Removes all meters registered by this exporter from the registry.
    *
@@ -168,7 +196,8 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
     RuntimeException first = null;
     for (Meter meter : List.of(hotEnqueued, hotDropped, coldEnqueued,
         dispatchSuccess, dispatchFailure, dispatchDead,
-        hotDepthGauge, coldDepthGauge, lagGauge)) {
+        hotDepthGauge, coldDepthGauge, lagGauge,
+        dispatchLatency, listenerDuration)) {
       try {
         registry.remove(meter);
       } catch (RuntimeException e) {

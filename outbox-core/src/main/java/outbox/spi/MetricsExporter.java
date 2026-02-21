@@ -44,6 +44,20 @@ public interface MetricsExporter {
    */
   void recordOldestLagMs(long lagMs);
 
+  /**
+   * Records end-to-end dispatch latency: from {@code occurredAt} to dispatch completion.
+   *
+   * @param latencyMs latency in milliseconds (always non-negative)
+   */
+  default void recordDispatchLatencyMs(long latencyMs) {}
+
+  /**
+   * Records the time spent executing the event listener only.
+   *
+   * @param durationMs listener execution time in milliseconds (always non-negative)
+   */
+  default void recordListenerDurationMs(long durationMs) {}
+
   /** Default no-op implementation that discards all metrics. */
   final class Noop implements MetricsExporter {
     @Override

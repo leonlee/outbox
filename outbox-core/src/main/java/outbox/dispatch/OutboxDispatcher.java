@@ -187,7 +187,16 @@ public final class OutboxDispatcher implements AutoCloseable {
       return;
     }
     try {
+      long listenerStartNs = System.nanoTime();
       deliverEvent(event.envelope());
+      long listenerDurationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - listenerStartNs);
+      metrics.recordListenerDurationMs(listenerDurationMs);
+
+      long latencyMs = Instant.now().toEpochMilli() - event.envelope().occurredAt().toEpochMilli();
+      if (latencyMs >= 0) {
+        metrics.recordDispatchLatencyMs(latencyMs);
+      }
+
       markDone(eventId);
       metrics.incrementDispatchSuccess();
     } catch (Exception e) {

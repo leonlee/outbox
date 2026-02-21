@@ -1,4 +1,4 @@
-name: Publish to GitHub Packages
+name: Publish to Maven Central
 
 on:
   push:
@@ -9,7 +9,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      packages: write
 
     steps:
       - uses: actions/checkout@v6
@@ -20,7 +19,11 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
           cache: maven
-          server-id: github
+          server-id: central
+          server-username: MAVEN_CENTRAL_USERNAME
+          server-password: MAVEN_CENTRAL_PASSWORD
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-passphrase: GPG_PASSPHRASE
 
       - name: Validate tag matches POM version
         run: |
@@ -34,10 +37,12 @@ jobs:
       - name: Build and Test
         run: mvn -B verify
 
-      - name: Publish to GitHub Packages
-        run: mvn -B -pl outbox-core,outbox-jdbc,outbox-spring-adapter,outbox-micrometer -am deploy -DskipTests
+      - name: Publish to Maven Central
+        run: mvn -B -pl outbox-core,outbox-jdbc,outbox-spring-adapter,outbox-micrometer deploy -Prelease -DskipTests
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
 
       - name: Create GitHub Release
         run: gh release create ${{ github.ref_name }} --generate-notes

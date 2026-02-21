@@ -12,7 +12,7 @@
     <relativePath/>
   </parent>
 
-  <groupId>outbox</groupId>
+  <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-spring-demo</artifactId>
   <version>0.7.3-SNAPSHOT</version>
   <name>outbox-spring-demo</name>
@@ -24,17 +24,17 @@
 
   <dependencies>
     <dependency>
-      <groupId>outbox</groupId>
+      <groupId>io.github.leonlee</groupId>
       <artifactId>outbox-core</artifactId>
       <version>${project.version}</version>
     </dependency>
     <dependency>
-      <groupId>outbox</groupId>
+      <groupId>io.github.leonlee</groupId>
       <artifactId>outbox-jdbc</artifactId>
       <version>${project.version}</version>
     </dependency>
     <dependency>
-      <groupId>outbox</groupId>
+      <groupId>io.github.leonlee</groupId>
       <artifactId>outbox-spring-adapter</artifactId>
       <version>${project.version}</version>
     </dependency>

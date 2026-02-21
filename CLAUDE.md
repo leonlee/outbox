@@ -173,7 +173,7 @@ outbox-jdbc/src/main/java/
 
 ## Release Process
 
-Published to GitHub Packages. CI workflow (`.github/workflows/publish.yml`) auto-deploys on `v*` tags, validates tag matches POM version, and creates a GitHub Release with auto-generated notes.
+Published to Maven Central (`io.github.leonlee` groupId). CI workflow (`.github/workflows/publish.yml`) auto-deploys on `v*` tags with GPG signing, validates tag matches POM version, and creates a GitHub Release with auto-generated notes.
 
 Uses `versions-maven-plugin` for version updates. **Caveat**: `versions:set` won't update `samples/outbox-spring-demo/pom.xml` (uses Spring Boot parent) — must update manually.
 
@@ -190,11 +190,17 @@ git tag vX
 mvn versions:set -DnewVersion=Y-SNAPSHOT -DgenerateBackupPoms=false
 # 6. Manually update samples/outbox-spring-demo/pom.xml <version>
 git commit -am "chore: bump version to Y-SNAPSHOT"
-# 7. Push (tag triggers publish workflow → deploy + GitHub release)
+# 7. Push (tag triggers publish workflow → deploy to Maven Central + GitHub release)
 git push && git push origin vX
 ```
 
 Only library modules are published: `outbox-core`, `outbox-jdbc`, `outbox-spring-adapter`, `outbox-micrometer` (not samples or benchmarks).
+
+### Maven Central Prerequisites (one-time setup)
+
+1. Register `io.github.leonlee` namespace on [central.sonatype.com](https://central.sonatype.com)
+2. Generate GPG key and upload public key to `keyserver.ubuntu.com`
+3. Add GitHub repository secrets: `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD`, `GPG_PRIVATE_KEY`, `GPG_PASSPHRASE`
 
 ## Documentation
 

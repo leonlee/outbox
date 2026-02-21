@@ -3,10 +3,34 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>outbox</groupId>
+  <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-parent</artifactId>
   <version>0.7.3-SNAPSHOT</version>
   <packaging>pom</packaging>
+
+  <name>Outbox Framework</name>
+  <description>Minimal, Spring-free transactional outbox framework for Java</description>
+  <url>https://github.com/leonlee/outbox</url>
+
+  <licenses>
+    <license>
+      <name>MIT License</name>
+      <url>https://opensource.org/licenses/MIT</url>
+    </license>
+  </licenses>
+
+  <scm>
+    <connection>scm:git:git://github.com/leonlee/outbox.git</connection>
+    <developerConnection>scm:git:ssh://github.com:leonlee/outbox.git</developerConnection>
+    <url>https://github.com/leonlee/outbox</url>
+  </scm>
+
+  <developers>
+    <developer>
+      <name>Leon Lee</name>
+      <url>https://github.com/leonlee</url>
+    </developer>
+  </developers>
 
   <modules>
     <module>outbox-core</module>
@@ -90,13 +114,6 @@
     </dependencies>
   </dependencyManagement>
 
-  <distributionManagement>
-    <repository>
-      <id>github</id>
-      <url>https://maven.pkg.github.com/leonlee/outbox</url>
-    </repository>
-  </distributionManagement>
-
   <build>
     <pluginManagement>
       <plugins>
@@ -149,4 +166,42 @@
       </plugins>
     </pluginManagement>
   </build>
+
+  <profiles>
+    <profile>
+      <id>release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>3.2.7</version>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals><goal>sign</goal></goals>
+                <configuration>
+                  <gpgArguments>
+                    <arg>--pinentry-mode</arg>
+                    <arg>loopback</arg>
+                  </gpgArguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>0.6.0</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+              <autoPublish>true</autoPublish>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

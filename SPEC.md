@@ -1,4 +1,3 @@
-[English](SPEC.md) | [中文](SPEC.zh-CN.md)
 
 # Outbox Framework Technical Specification
 

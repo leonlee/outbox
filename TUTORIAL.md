@@ -1,4 +1,3 @@
-[English](TUTORIAL.md) | [中文](TUTORIAL.zh-CN.md)
 
 # Outbox Framework Tutorial
 
@@ -973,7 +972,7 @@ The `outbox-micrometer` module provides `MicrometerMetricsExporter`, which regis
 <dependency>
   <groupId>outbox</groupId>
   <artifactId>outbox-micrometer</artifactId>
-  <version>0.6.0</version>
+  <version>0.7.2</version>
 </dependency>
 ```
 

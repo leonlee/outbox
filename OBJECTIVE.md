@@ -1,4 +1,3 @@
-[English](OBJECTIVE.md) | [中文](OBJECTIVE.zh-CN.md)
 
 # Outbox Framework Objectives
 

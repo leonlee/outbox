@@ -26,6 +26,7 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 - **outbox-jdbc**: JDBC outbox store hierarchy (`AbstractJdbcOutboxStore` with H2/MySQL/PostgreSQL subclasses), `JdbcTemplate` utility, manual transaction helpers (`JdbcTransactionManager`, `ThreadLocalTxContext`).
 - **outbox-spring-adapter**: Optional `SpringTxContext` for Spring transaction integration.
 - **outbox-micrometer**: Micrometer metrics bridge (`MicrometerMetricsExporter`) for Prometheus/Grafana.
+- **outbox-spring-boot-starter**: Spring Boot auto-configuration starter. Auto-wires `Outbox`, `OutboxWriter`, store, poller, dispatcher from `application.properties`. `@OutboxListener` annotation for declarative listener registration.
 - **benchmarks**: JMH benchmarks for write throughput, dispatch latency, and poller throughput (not published).
 - **samples/outbox-demo**: Simple runnable demo with H2 (no Spring).
 - **samples/outbox-spring-demo**: Spring Boot demo with REST API (standalone).
@@ -194,7 +195,7 @@ git commit -am "chore: bump version to Y-SNAPSHOT"
 git push && git push origin vX
 ```
 
-Only library modules are published: `outbox-core`, `outbox-jdbc`, `outbox-spring-adapter`, `outbox-micrometer` (not samples or benchmarks).
+Only library modules are published: `outbox-core`, `outbox-jdbc`, `outbox-spring-adapter`, `outbox-micrometer`, `outbox-spring-boot-starter` (not samples or benchmarks).
 
 ### Maven Central Prerequisites (one-time setup)
 

@@ -37,6 +37,7 @@
     <module>outbox-jdbc</module>
     <module>outbox-spring-adapter</module>
     <module>outbox-micrometer</module>
+    <module>outbox-spring-boot-starter</module>
     <module>benchmarks</module>
     <module>samples</module>
   </modules>
@@ -49,6 +50,7 @@
     <h2.version>2.2.224</h2.version>
     <spring.version>6.2.15</spring.version>
     <ulid-creator.version>5.2.3</ulid-creator.version>
+    <spring-boot.version>3.4.2</spring-boot.version>
     <micrometer.version>1.14.5</micrometer.version>
     <mysql-connector.version>8.3.0</mysql-connector.version>
     <postgresql.version>42.7.3</postgresql.version>
@@ -98,6 +100,13 @@
         <groupId>org.testcontainers</groupId>
         <artifactId>testcontainers-bom</artifactId>
         <version>${testcontainers.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring-boot.version}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>

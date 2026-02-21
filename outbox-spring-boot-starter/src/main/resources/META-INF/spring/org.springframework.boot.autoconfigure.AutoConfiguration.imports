@@ -1,0 +1,2 @@
+outbox.spring.boot.OutboxAutoConfiguration
+outbox.spring.boot.OutboxMicrometerAutoConfiguration

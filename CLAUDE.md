@@ -11,6 +11,7 @@ mvn -pl outbox-core -am package    # Build core module and dependencies
 mvn -DskipTests package            # Build all jars without tests
 mvn install -DskipTests && mvn -pl samples/outbox-demo exec:java  # Run demo
 mvn install -DskipTests && mvn -f samples/outbox-spring-demo/pom.xml spring-boot:run  # Run Spring Boot demo
+mvn install -DskipTests && mvn -f samples/outbox-spring-boot-starter-demo/pom.xml spring-boot:run  # Run Starter demo
 mvn install -DskipTests && mvn -pl samples/outbox-multi-ds-demo exec:java  # Run multi-datasource demo
 ```
 
@@ -29,7 +30,8 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 - **outbox-spring-boot-starter**: Spring Boot auto-configuration starter. Auto-wires `Outbox`, `OutboxWriter`, store, poller, dispatcher from `application.properties`. `@OutboxListener` annotation for declarative listener registration.
 - **benchmarks**: JMH benchmarks for write throughput, dispatch latency, and poller throughput (not published).
 - **samples/outbox-demo**: Simple runnable demo with H2 (no Spring).
-- **samples/outbox-spring-demo**: Spring Boot demo with REST API (standalone).
+- **samples/outbox-spring-demo**: Spring Boot demo with REST API (manual wiring).
+- **samples/outbox-spring-boot-starter-demo**: Spring Boot Starter demo (zero-config auto-configuration).
 - **samples/outbox-multi-ds-demo**: Multi-datasource demo with two H2 databases (Orders + Inventory).
 
 ### Package Structure (JDBI-inspired)

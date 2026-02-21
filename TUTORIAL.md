@@ -517,6 +517,22 @@ outbox.purge.enabled=true               # optional age-based purge
 outbox.purge.retention=P1D
 ```
 
+### Running the Demo
+
+The `samples/outbox-spring-boot-starter-demo` app demonstrates zero-config auto-configuration — compare with `outbox-spring-demo` which requires a manual `OutboxConfiguration` class with 7+ bean definitions.
+
+```bash
+# Build and run
+mvn install -DskipTests && mvn -f samples/outbox-spring-boot-starter-demo/pom.xml spring-boot:run
+
+# In another terminal:
+curl -X POST 'http://localhost:8080/events/user-created?name=Alice'
+curl -X POST 'http://localhost:8080/events/order-placed?orderId=123'
+curl http://localhost:8080/events
+```
+
+The entire app consists of `Application.java` (just `@SpringBootApplication`), two `@OutboxListener`-annotated listeners, a REST controller, and `application.properties` with two outbox settings.
+
 ---
 
 ## 6. Spring Integration (Manual)

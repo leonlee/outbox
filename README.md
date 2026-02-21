@@ -56,7 +56,8 @@ Artifacts are published to [Maven Central](https://central.sonatype.com/namespac
 - `outbox-spring-adapter`: optional `TxContext` implementation for Spring (without Boot).
 - `outbox-micrometer`: Micrometer metrics bridge for Prometheus/Grafana.
 - `samples/outbox-demo`: minimal, non-Spring demo (H2).
-- `samples/outbox-spring-demo`: Spring demo app.
+- `samples/outbox-spring-demo`: Spring demo app (manual wiring).
+- `samples/outbox-spring-boot-starter-demo`: Spring Boot Starter demo (zero-config auto-configuration).
 - `samples/outbox-multi-ds-demo`: multi-datasource demo (two H2 databases).
 
 ## Architecture

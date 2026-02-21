@@ -29,6 +29,7 @@
     <mysql-connector.version>8.3.0</mysql-connector.version>
     <postgresql.version>42.7.3</postgresql.version>
     <hikaricp.version>5.1.0</hikaricp.version>
+    <testcontainers.version>1.19.7</testcontainers.version>
   </properties>
 
   <dependencyManagement>
@@ -68,6 +69,13 @@
         <groupId>com.zaxxer</groupId>
         <artifactId>HikariCP</artifactId>
         <version>${hikaricp.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>testcontainers-bom</artifactId>
+        <version>${testcontainers.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
       </dependency>
       <dependency>
         <groupId>org.springframework</groupId>

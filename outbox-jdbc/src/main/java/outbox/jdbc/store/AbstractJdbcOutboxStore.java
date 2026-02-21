@@ -92,13 +92,25 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     return jsonCodec;
   }
 
+  /**
+   * Returns the SQL placeholder expression for JSON/JSONB columns.
+   *
+   * <p>Defaults to {@code "?"} which works for H2 (CLOB) and MySQL (JSON).
+   * PostgreSQL overrides with {@code "CAST(? AS jsonb)"} because the JDBC driver
+   * rejects implicit VARCHAR-to-JSONB coercion.
+   */
+  protected String jsonPlaceholder() {
+    return "?";
+  }
+
   @Override
   public void insertNew(Connection conn, EventEnvelope event) {
+    String jp = jsonPlaceholder();
     String sql = "INSERT INTO " + tableName() + " (" +
         "event_id, event_type, aggregate_type, aggregate_id, tenant_id, " +
         "payload, headers, status, attempts, available_at, created_at, done_at, last_error, " +
         "locked_by, locked_at" +
-        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL)";
+        ") VALUES (?,?,?,?,?," + jp + "," + jp + ",?,?,?,?,NULL,NULL,NULL,NULL)";
     Timestamp now = Timestamp.from(event.occurredAt());
     JdbcTemplate.update(conn, sql,
         event.eventId(), event.eventType(), event.aggregateType(),
@@ -128,7 +140,8 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
 
   private void insertBatchChunk(Connection conn, List<EventEnvelope> events) {
     // Pure SQL multi-row INSERT: VALUES (...), (...), ...
-    String row = "(?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL)";
+    String jp = jsonPlaceholder();
+    String row = "(?,?,?,?,?," + jp + "," + jp + ",?,?,?,?,NULL,NULL,NULL,NULL)";
     StringBuilder sql = new StringBuilder("INSERT INTO " + tableName() + " (" +
         "event_id, event_type, aggregate_type, aggregate_id, tenant_id, " +
         "payload, headers, status, attempts, available_at, created_at, done_at, last_error, " +

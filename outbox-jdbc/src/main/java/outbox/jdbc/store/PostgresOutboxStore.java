@@ -48,6 +48,11 @@ public final class PostgresOutboxStore extends AbstractJdbcOutboxStore {
   }
 
   @Override
+  protected String jsonPlaceholder() {
+    return "CAST(? AS jsonb)";
+  }
+
+  @Override
   public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
       Instant lockExpiry, Duration skipRecent, int limit) {
     Objects.requireNonNull(ownerId, "ownerId");

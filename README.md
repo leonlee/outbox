@@ -26,7 +26,14 @@ Artifacts are published to [Maven Central](https://central.sonatype.com/namespac
   <version>0.8.0</version>
 </dependency>
 
-<!-- Spring transaction integration (optional, only if using Spring) -->
+<!-- Spring Boot Starter — auto-configures everything (recommended for Spring Boot) -->
+<dependency>
+  <groupId>io.github.leonlee</groupId>
+  <artifactId>outbox-spring-boot-starter</artifactId>
+  <version>0.8.0</version>
+</dependency>
+
+<!-- Spring transaction integration (optional, only if using Spring without Boot) -->
 <dependency>
   <groupId>io.github.leonlee</groupId>
   <artifactId>outbox-spring-adapter</artifactId>
@@ -45,7 +52,8 @@ Artifacts are published to [Maven Central](https://central.sonatype.com/namespac
 
 - `outbox-core`: core APIs, hooks, dispatcher, poller, and registries.
 - `outbox-jdbc`: JDBC outbox store and transaction helpers.
-- `outbox-spring-adapter`: optional `TxContext` implementation for Spring.
+- `outbox-spring-boot-starter`: Spring Boot auto-configuration with `@OutboxListener` annotation.
+- `outbox-spring-adapter`: optional `TxContext` implementation for Spring (without Boot).
 - `outbox-micrometer`: Micrometer metrics bridge for Prometheus/Grafana.
 - `samples/outbox-demo`: minimal, non-Spring demo (H2).
 - `samples/outbox-spring-demo`: Spring demo app.
@@ -209,11 +217,47 @@ not in-memory dispatch — a single worker easily keeps up.
 **Caveat — retries break ordering.** If event A fails and is retried with backoff,
 event B (same aggregate, inserted later) can be polled and delivered while A waits.
 To preserve strict ordering, set `maxAttempts(1)` so failed events go straight to
-DEAD without retry. Use [Dead Event Management](TUTORIAL.md#11-dead-event-management)
+DEAD without retry. Use [Dead Event Management](TUTORIAL.md#12-dead-event-management)
 to inspect and replay them manually.
 
 Trade-off: higher latency (poll interval vs. immediate hot-path delivery). For
 unordered events, use the default hot + poller mode for lowest latency.
+
+## Spring Boot Starter
+
+For Spring Boot applications, just add the starter dependency — no manual `@Configuration` needed:
+
+```xml
+<dependency>
+  <groupId>io.github.leonlee</groupId>
+  <artifactId>outbox-spring-boot-starter</artifactId>
+  <version>0.8.0</version>
+</dependency>
+```
+
+Annotate your listeners with `@OutboxListener`:
+
+```java
+@Component
+@OutboxListener(eventType = "OrderPlaced", aggregateType = "Order")
+public class OrderListener implements EventListener {
+  public void onEvent(EventEnvelope event) {
+    // publish to MQ, update cache, etc.
+  }
+}
+```
+
+Configure via `application.properties`:
+
+```properties
+outbox.mode=single-node
+outbox.dispatcher.worker-count=4
+outbox.poller.interval-ms=5000
+```
+
+The starter auto-detects your database (H2, MySQL, PostgreSQL), wires `SpringTxContext`, and creates an `Outbox` composite with graceful shutdown. Micrometer metrics are enabled automatically when `spring-boot-starter-actuator` is on the classpath.
+
+See [TUTORIAL.md](TUTORIAL.md#5-spring-boot-starter) for the full guide with all configuration properties.
 
 ## Requirements
 

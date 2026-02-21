@@ -153,15 +153,37 @@ Micrometer metrics bridge for Prometheus, Grafana, Datadog, and other monitoring
 Classes:
 - `MicrometerMetricsExporter` - Implements `MetricsExporter` using Micrometer `MeterRegistry`
 
-### 2.5 samples/outbox-demo
+### 2.5 outbox-spring-boot-starter
+
+Spring Boot auto-configuration for the outbox framework. Eliminates manual bean wiring — users add the dependency, annotate listeners, and configure via `application.properties`.
+
+Classes:
+- `OutboxAutoConfiguration` - Main auto-configuration: wires `OutboxStore`, `ConnectionProvider`, `TxContext`, `ListenerRegistry`, `Outbox`, and `OutboxWriter` from a `DataSource` and `OutboxProperties`
+- `OutboxMicrometerAutoConfiguration` - Conditional auto-configuration for Micrometer metrics (enabled by default when Micrometer is on classpath)
+- `OutboxProperties` - `@ConfigurationProperties(prefix = "outbox")` with nested classes for dispatcher, retry, poller, claim-locking, purge, and metrics settings
+- `OutboxListener` - Type-level annotation for declaring event listeners with string-based or type-safe class-based event/aggregate type specification
+- `OutboxListenerRegistrar` - `SmartInitializingSingleton` that scans `@OutboxListener` beans and registers them in the `DefaultListenerRegistry`
+
+Conditions:
+- `@ConditionalOnClass(Outbox.class)` — only activates when outbox-core is on classpath
+- `@ConditionalOnBean(DataSource.class)` — requires a DataSource
+- All beans are `@ConditionalOnMissingBean` — users can override any component
+
+Operating modes (via `outbox.mode` property):
+- `SINGLE_NODE` (default) — hot path + poller fallback
+- `MULTI_NODE` — hot path + claim-based locking (requires `outbox.claim-locking.enabled=true`)
+- `ORDERED` — poller-only, single worker, no retry
+- `WRITER_ONLY` — CDC mode, no dispatcher/poller; optional age-based purge
+
+### 2.6 samples/outbox-demo
 
 Standalone H2 demonstration (no Spring).
 
-### 2.6 samples/outbox-spring-demo
+### 2.7 samples/outbox-spring-demo
 
 Spring Boot REST API demonstration.
 
-### 2.7 samples/outbox-multi-ds-demo
+### 2.8 samples/outbox-multi-ds-demo
 
 Multi-datasource demo (two H2 databases).
 

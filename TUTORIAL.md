@@ -17,19 +17,20 @@ For the full technical specification, see [SPEC.md](SPEC.md).
 **Core Features**
 
 4. [Type-Safe Event + Aggregate Types](#4-type-safe-event--aggregate-types)
-5. [Spring Integration](#5-spring-integration)
+5. [Spring Boot Starter](#5-spring-boot-starter)
+6. [Spring Integration (Manual)](#6-spring-integration-manual)
 
 **Advanced Topics**
 
-6. [Poller Event Locking](#6-poller-event-locking)
-7. [CDC Consumption (High QPS)](#7-cdc-consumption-high-qps)
-8. [Multi-Datasource](#8-multi-datasource)
-9. [Event Purge](#9-event-purge)
-10. [Distributed Tracing (OpenTelemetry)](#10-distributed-tracing-opentelemetry)
-11. [Dead Event Management](#11-dead-event-management)
-12. [Micrometer Metrics](#12-micrometer-metrics)
-13. [Custom JsonCodec](#13-custom-jsoncodec)
-14. [Ordered Delivery](#14-ordered-delivery)
+7. [Poller Event Locking](#7-poller-event-locking)
+8. [CDC Consumption (High QPS)](#8-cdc-consumption-high-qps)
+9. [Multi-Datasource](#9-multi-datasource)
+10. [Event Purge](#10-event-purge)
+11. [Distributed Tracing (OpenTelemetry)](#11-distributed-tracing-opentelemetry)
+12. [Dead Event Management](#12-dead-event-management)
+13. [Micrometer Metrics](#13-micrometer-metrics)
+14. [Custom JsonCodec](#14-custom-jsoncodec)
+15. [Ordered Delivery](#15-ordered-delivery)
 
 ---
 
@@ -339,9 +340,188 @@ Header keys must be non-null when setting `headers(...)`.
 
 ---
 
-## 5. Spring Integration
+## 5. Spring Boot Starter
 
-The `outbox-spring-adapter` module provides `SpringTxContext`, which hooks into Spring's transaction lifecycle so that `afterCommit` callbacks fire naturally after `@Transactional` methods complete.
+The `outbox-spring-boot-starter` auto-configures the entire outbox framework from a `DataSource`. No manual `@Configuration` class needed.
+
+### Add Dependency
+
+```xml
+<dependency>
+  <groupId>io.github.leonlee</groupId>
+  <artifactId>outbox-spring-boot-starter</artifactId>
+  <version>0.8.0</version>
+</dependency>
+```
+
+This transitively brings in `outbox-core`, `outbox-jdbc`, and `outbox-spring-adapter`.
+
+### Create the Outbox Table
+
+Create the `outbox_event` table in your database (see [Section 1](#1-outbox-table-schemas) for schemas). For Spring Boot, you can place the DDL in `src/main/resources/schema.sql` and set:
+
+```properties
+spring.sql.init.mode=always
+spring.sql.init.schema-locations=classpath:schema.sql
+```
+
+### Define Event Listeners
+
+Annotate Spring beans with `@OutboxListener`. Each listener must implement `EventListener`:
+
+```java
+@Component
+@OutboxListener(eventType = "UserCreated")
+public class UserCreatedListener implements EventListener {
+  @Override
+  public void onEvent(EventEnvelope event) {
+    System.out.println("User created: " + event.payloadJson());
+  }
+}
+
+@Component
+@OutboxListener(eventType = "OrderPlaced", aggregateType = "Order")
+public class OrderPlacedListener implements EventListener {
+  @Override
+  public void onEvent(EventEnvelope event) {
+    System.out.println("Order placed: " + event.payloadJson());
+  }
+}
+```
+
+Type-safe class-based registration is also supported:
+
+```java
+public record OrderPlaced() implements EventType {
+  public String name() { return "OrderPlaced"; }
+}
+
+@Component
+@OutboxListener(eventTypeClass = OrderPlaced.class)
+public class OrderListener implements EventListener { ... }
+```
+
+### Publish Events
+
+Inject `OutboxWriter` and call `write()` inside `@Transactional` methods:
+
+```java
+@Service
+public class OrderService {
+  private final OutboxWriter outboxWriter;
+
+  public OrderService(OutboxWriter outboxWriter) {
+    this.outboxWriter = outboxWriter;
+  }
+
+  @Transactional
+  public String placeOrder(String item, int qty) {
+    // ... business logic ...
+    return outboxWriter.write(
+        EventEnvelope.builder("OrderPlaced")
+            .aggregateType("Order")
+            .aggregateId(orderId)
+            .payloadJson("{\"item\":\"" + item + "\",\"qty\":" + qty + "}")
+            .build());
+  }
+}
+```
+
+### Configuration Properties
+
+All properties are optional — defaults work out of the box:
+
+```properties
+# Operating mode: single-node (default), multi-node, ordered, writer-only
+outbox.mode=single-node
+
+# Table name (default: outbox_event)
+outbox.table-name=outbox_event
+
+# Dispatcher settings
+outbox.dispatcher.worker-count=4
+outbox.dispatcher.hot-queue-capacity=1000
+outbox.dispatcher.cold-queue-capacity=1000
+outbox.dispatcher.max-attempts=10
+outbox.dispatcher.drain-timeout-ms=5000
+
+# Retry backoff
+outbox.retry.base-delay-ms=200
+outbox.retry.max-delay-ms=60000
+
+# Poller settings
+outbox.poller.interval-ms=5000
+outbox.poller.batch-size=50
+outbox.poller.skip-recent-ms=0
+
+# Multi-node claim locking (requires outbox.mode=multi-node)
+outbox.claim-locking.enabled=false
+outbox.claim-locking.owner-id=          # auto-generated if empty
+outbox.claim-locking.lock-timeout=PT5M
+
+# Age-based purge (for writer-only/CDC mode)
+outbox.purge.enabled=false
+outbox.purge.retention=P7D
+outbox.purge.batch-size=500
+outbox.purge.interval-seconds=3600
+
+# Micrometer metrics (auto-enabled when micrometer is on classpath)
+outbox.metrics.enabled=true
+outbox.metrics.name-prefix=outbox
+```
+
+### Micrometer Metrics (Automatic)
+
+When `spring-boot-starter-actuator` and `outbox-micrometer` are on the classpath, metrics are auto-configured. No extra beans needed:
+
+```xml
+<dependency>
+  <groupId>io.github.leonlee</groupId>
+  <artifactId>outbox-micrometer</artifactId>
+  <version>0.8.0</version>
+</dependency>
+<dependency>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-actuator</artifactId>
+</dependency>
+```
+
+Metrics are then available at `/actuator/prometheus`. Disable with `outbox.metrics.enabled=false`.
+
+### Overriding Auto-Configured Beans
+
+All beans are `@ConditionalOnMissingBean`. Define your own to override:
+
+```java
+@Bean
+public AbstractJdbcOutboxStore outboxStore(DataSource dataSource) {
+  // Custom store with custom table name and JSON codec
+  return new MySqlOutboxStore("my_outbox", new JacksonJsonCodec());
+}
+```
+
+### Multi-Node Mode
+
+```properties
+outbox.mode=multi-node
+outbox.claim-locking.enabled=true
+outbox.claim-locking.lock-timeout=PT5M
+outbox.claim-locking.owner-id=node-1    # optional, auto-generated if empty
+```
+
+### Writer-Only Mode (CDC)
+
+```properties
+outbox.mode=writer-only
+outbox.purge.enabled=true               # optional age-based purge
+outbox.purge.retention=P1D
+```
+
+---
+
+## 6. Spring Integration (Manual)
+
+The `outbox-spring-adapter` module provides `SpringTxContext`, which hooks into Spring's transaction lifecycle so that `afterCommit` callbacks fire naturally after `@Transactional` methods complete. Use this approach if you need full control over bean wiring or are not using Spring Boot.
 `SpringTxContext` requires Spring transaction synchronization to be active when registering `afterCommit`/`afterRollback` callbacks.
 
 ### Configuration
@@ -486,7 +666,7 @@ curl http://localhost:8080/events
 
 ---
 
-## 6. Poller Event Locking
+## 7. Poller Event Locking
 
 For multi-instance deployments, enable claim-based locking so pollers don't compete for the same events. OutboxPoller requires a handler; use `DispatcherPollerHandler` with the built-in dispatcher.
 
@@ -509,7 +689,7 @@ OutboxPoller poller = OutboxPoller.builder()
 
 ---
 
-## 7. CDC Consumption (High QPS)
+## 8. CDC Consumption (High QPS)
 
 For high-throughput workloads, you can disable the in-process poller and use CDC to consume the outbox table.
 
@@ -557,7 +737,7 @@ If you enable both `DispatcherWriterHook` and CDC, you must dedupe downstream or
 
 ---
 
-## 8. Multi-Datasource
+## 9. Multi-Datasource
 
 The outbox pattern requires the `outbox_event` table to live in the **same database** as the business data so that publishes are transactionally atomic. When your system spans multiple databases, each datasource needs its own full outbox stack. Stateless `EventListener` and `EventInterceptor` instances can be shared across stacks, but each stack gets its own `ListenerRegistry` (the per-stack routing table).
 
@@ -670,7 +850,7 @@ mvn install -DskipTests && mvn -pl samples/outbox-multi-ds-demo exec:java
 
 ---
 
-## 9. Event Purge
+## 10. Event Purge
 
 The outbox table is a transient buffer, not an outbox store. Over time, terminal events (DONE, DEAD) accumulate and degrade poller query performance. `OutboxPurgeScheduler` periodically deletes these old events.
 
@@ -768,7 +948,7 @@ public OutboxPurgeScheduler purgeScheduler(
 
 ---
 
-## 10. Distributed Tracing (OpenTelemetry)
+## 11. Distributed Tracing (OpenTelemetry)
 
 The outbox framework does not bundle OpenTelemetry dependencies, but the existing `EventEnvelope.headers` map and `EventInterceptor` hook provide everything needed to propagate trace context across the async boundary.
 
@@ -889,7 +1069,7 @@ This gives you end-to-end traces from the writer through the async outbox dispat
 
 ---
 
-## 11. Dead Event Management
+## 12. Dead Event Management
 
 Events that exceed `maxAttempts` or have no registered listener end up in DEAD status. `DeadEventManager` provides a connection-managed facade to query, replay, and count these events.
 
@@ -962,7 +1142,7 @@ All methods handle `SQLException` internally — they log at SEVERE and return s
 
 ---
 
-## 12. Micrometer Metrics
+## 13. Micrometer Metrics
 
 The `outbox-micrometer` module provides `MicrometerMetricsExporter`, which registers counters and gauges with a Micrometer `MeterRegistry` for export to Prometheus, Grafana, Datadog, etc.
 
@@ -1066,7 +1246,7 @@ This produces metrics like `orders.outbox.dispatch.success` and `inventory.outbo
 
 ---
 
-## 13. Custom JsonCodec
+## 14. Custom JsonCodec
 
 The framework uses `JsonCodec` to encode/decode event header maps (`Map<String, String>`) to/from JSON. The built-in `DefaultJsonCodec` is a lightweight, zero-dependency implementation. If you already have Jackson or Gson on your classpath, you can replace it for better performance or compatibility.
 
@@ -1140,7 +1320,7 @@ If you don't inject a codec, `JsonCodec.getDefault()` (the built-in `DefaultJson
 
 ---
 
-## 14. Ordered Delivery
+## 15. Ordered Delivery
 
 For use cases requiring per-aggregate FIFO ordering (e.g., `OrderCreated` must be delivered before `OrderShipped`), use the **poller-only** mode with a single dispatch worker.
 
@@ -1148,7 +1328,7 @@ For use cases requiring per-aggregate FIFO ordering (e.g., `OrderCreated` must b
 
 The dual hot+cold path architecture makes ordering hard — events for the same aggregate can arrive via different paths in unpredictable order. By disabling the hot path and using a single worker, the poller reads events in `ORDER BY created_at` order and the worker delivers them sequentially. Since DB I/O (polling) is the throughput bottleneck, a single worker easily keeps up.
 
-**Caveat — retries break ordering.** If event A fails and enters backoff retry, its `available_at` is set to a future time. Event B (same aggregate, inserted later) will be polled and delivered while A waits — breaking order. Set `maxAttempts(1)` so failed events go straight to DEAD. Use [Dead Event Management](#11-dead-event-management) to replay them after fixing the issue.
+**Caveat — retries break ordering.** If event A fails and enters backoff retry, its `available_at` is set to a future time. Event B (same aggregate, inserted later) will be polled and delivered while A waits — breaking order. Set `maxAttempts(1)` so failed events go straight to DEAD. Use [Dead Event Management](#12-dead-event-management) to replay them after fixing the issue.
 
 ### Configuration (Composite Builder)
 

@@ -6,11 +6,11 @@ package outbox.jdbc.purge;
  */
 public final class H2EventPurger extends AbstractJdbcEventPurger {
 
-  public H2EventPurger() {
-    super();
-  }
+    public H2EventPurger() {
+        super();
+    }
 
-  public H2EventPurger(String tableName) {
-    super(tableName);
-  }
+    public H2EventPurger(String tableName) {
+        super(tableName);
+    }
 }

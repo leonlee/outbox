@@ -6,11 +6,11 @@ package outbox.jdbc.purge;
  */
 public final class H2AgeBasedPurger extends AbstractJdbcAgeBasedPurger {
 
-  public H2AgeBasedPurger() {
-    super();
-  }
+    public H2AgeBasedPurger() {
+        super();
+    }
 
-  public H2AgeBasedPurger(String tableName) {
-    super(tableName);
-  }
+    public H2AgeBasedPurger(String tableName) {
+        super(tableName);
+    }
 }

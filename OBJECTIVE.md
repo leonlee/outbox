@@ -1,4 +1,3 @@
-
 # Outbox Framework Objectives
 
 Project goals, constraints, and acceptance criteria for the outbox-java framework.
@@ -11,9 +10,11 @@ Build a framework that:
 2. After successful transaction commit, optionally invokes an WriterHook (fast path).
 3. OutboxDispatcher executes registered EventListeners (send to MQ, update caches, call APIs, etc.).
 4. On success, OutboxDispatcher updates outbox status to DONE; on failure updates to RETRY/DEAD.
-5. A low-frequency OutboxPoller (optional) scans DB as fallback only (node crash, enqueue downgrade, missed enqueue) and forwards unfinished events to a handler; CDC can also serve as the fallback path.
+5. A low-frequency OutboxPoller (optional) scans DB as fallback only (node crash, enqueue downgrade, missed enqueue) and
+   forwards unfinished events to a handler; CDC can also serve as the fallback path.
 6. Delivery semantics: **at-least-once**; duplicates are allowed and must be handled downstream by `eventId`.
-7. `Outbox` composite builder (`singleNode`/`multiNode`/`ordered`) is the recommended entry point, wiring dispatcher, poller, and writer with correct defaults for each deployment topology.
+7. `Outbox` composite builder (`singleNode`/`multiNode`/`ordered`) is the recommended entry point, wiring dispatcher,
+   poller, and writer with correct defaults for each deployment topology.
 
 ## Constraints
 

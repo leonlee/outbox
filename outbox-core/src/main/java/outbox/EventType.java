@@ -20,11 +20,13 @@ package outbox;
  */
 public interface EventType {
 
-  /**
-   * Returns the string representation of this event type.
-   * This value is persisted to the database and used for routing.
-   *
-   * @return the event type name, never null
-   */
-  String name();
+    /**
+     * Returns the string representation of this event type.
+     * This value is persisted to the database and used for routing.
+     *
+     * @return the event type name, never null
+     */
+    default String name() {
+        return this.getClass().getName();
+    }
 }

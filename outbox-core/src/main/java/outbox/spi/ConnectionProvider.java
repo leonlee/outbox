@@ -13,11 +13,11 @@ import java.sql.SQLException;
  */
 public interface ConnectionProvider {
 
-  /**
-   * Obtains a new JDBC connection.
-   *
-   * @return an open connection; the caller must close it
-   * @throws SQLException if a connection cannot be obtained
-   */
-  Connection getConnection() throws SQLException;
+    /**
+     * Obtains a new JDBC connection.
+     *
+     * @return an open connection; the caller must close it
+     * @throws SQLException if a connection cannot be obtained
+     */
+    Connection getConnection() throws SQLException;
 }

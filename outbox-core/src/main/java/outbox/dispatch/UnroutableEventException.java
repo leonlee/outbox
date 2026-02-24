@@ -9,7 +9,7 @@ package outbox.dispatch;
  */
 public final class UnroutableEventException extends Exception {
 
-  public UnroutableEventException(String message) {
-    super(message);
-  }
+    public UnroutableEventException(String message) {
+        super(message);
+    }
 }

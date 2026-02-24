@@ -13,20 +13,20 @@ import java.util.Objects;
  * @see OutboxPollerHandler
  */
 public final class DispatcherPollerHandler implements OutboxPollerHandler {
-  private final OutboxDispatcher dispatcher;
+    private final OutboxDispatcher dispatcher;
 
-  public DispatcherPollerHandler(OutboxDispatcher dispatcher) {
-    this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
-  }
+    public DispatcherPollerHandler(OutboxDispatcher dispatcher) {
+        this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
+    }
 
-  @Override
-  public int availableCapacity() {
-    return dispatcher.coldQueueRemainingCapacity();
-  }
+    @Override
+    public int availableCapacity() {
+        return dispatcher.coldQueueRemainingCapacity();
+    }
 
-  @Override
-  public boolean handle(EventEnvelope event, int attempts) {
-    QueuedEvent queuedEvent = new QueuedEvent(event, QueuedEvent.Source.COLD, attempts);
-    return dispatcher.enqueueCold(queuedEvent);
-  }
+    @Override
+    public boolean handle(EventEnvelope event, int attempts) {
+        QueuedEvent queuedEvent = new QueuedEvent(event, QueuedEvent.Source.COLD, attempts);
+        return dispatcher.enqueueCold(queuedEvent);
+    }
 }

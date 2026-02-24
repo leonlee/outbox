@@ -19,32 +19,32 @@ import java.util.Objects;
  */
 public record StringAggregateType(String name) implements AggregateType {
 
-  /**
-   * @param name the aggregate type name
-   * @throws NullPointerException if name is null
-   * @throws IllegalArgumentException if name is empty
-   */
-  public StringAggregateType {
-    Objects.requireNonNull(name, "name");
-    if (name.isEmpty()) {
-      throw new IllegalArgumentException("Aggregate type name cannot be empty");
+    /**
+     * @param name the aggregate type name
+     * @throws NullPointerException     if name is null
+     * @throws IllegalArgumentException if name is empty
+     */
+    public StringAggregateType {
+        Objects.requireNonNull(name, "name");
+        if (name.isEmpty()) {
+            throw new IllegalArgumentException("Aggregate type name cannot be empty");
+        }
     }
-  }
 
-  /**
-   * Creates an aggregate type from a string.
-   *
-   * @param name the aggregate type name
-   * @return the aggregate type
-   * @throws NullPointerException if name is null
-   * @throws IllegalArgumentException if name is empty
-   */
-  public static StringAggregateType of(String name) {
-    return new StringAggregateType(name);
-  }
+    /**
+     * Creates an aggregate type from a string.
+     *
+     * @param name the aggregate type name
+     * @return the aggregate type
+     * @throws NullPointerException     if name is null
+     * @throws IllegalArgumentException if name is empty
+     */
+    public static StringAggregateType of(String name) {
+        return new StringAggregateType(name);
+    }
 
-  @Override
-  public String toString() {
-    return name;
-  }
+    @Override
+    public String toString() {
+        return name;
+    }
 }

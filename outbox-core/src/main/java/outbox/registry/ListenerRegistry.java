@@ -14,13 +14,13 @@ import outbox.EventListener;
  */
 public interface ListenerRegistry {
 
-  /**
-   * Returns the single listener for the given (aggregateType, eventType),
-   * or null if none registered.
-   *
-   * @param aggregateType the aggregate type
-   * @param eventType the event type
-   * @return the listener, or null if unregistered
-   */
-  EventListener listenerFor(String aggregateType, String eventType);
+    /**
+     * Returns the single listener for the given (aggregateType, eventType),
+     * or null if none registered.
+     *
+     * @param aggregateType the aggregate type
+     * @param eventType     the event type
+     * @return the listener, or null if unregistered
+     */
+    EventListener listenerFor(String aggregateType, String eventType);
 }

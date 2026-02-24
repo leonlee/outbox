@@ -5,7 +5,7 @@ package outbox.jdbc;
  * and its subclasses.
  */
 public final class OutboxStoreException extends RuntimeException {
-  public OutboxStoreException(String message, Throwable cause) {
-    super(message, cause);
-  }
+    public OutboxStoreException(String message, Throwable cause) {
+        super(message, cause);
+    }
 }

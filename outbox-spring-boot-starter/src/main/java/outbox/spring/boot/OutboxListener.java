@@ -47,25 +47,25 @@ import java.lang.annotation.Target;
 @Documented
 public @interface OutboxListener {
 
-  /**
-   * Event type name (string-based).
-   */
-  String eventType() default "";
+    /**
+     * Event type name (string-based).
+     */
+    String eventType() default "";
 
-  /**
-   * Aggregate type name (string-based). Defaults to GLOBAL.
-   */
-  String aggregateType() default "__GLOBAL__";
+    /**
+     * Aggregate type name (string-based). Defaults to GLOBAL.
+     */
+    String aggregateType() default "__GLOBAL__";
 
-  /**
-   * Event type class (type-safe). Takes precedence over {@link #eventType()}.
-   * Must have a no-arg constructor (or be an enum).
-   */
-  Class<? extends EventType> eventTypeClass() default EventType.class;
+    /**
+     * Event type class (type-safe). Takes precedence over {@link #eventType()}.
+     * Must have a no-arg constructor (or be an enum).
+     */
+    Class<? extends EventType> eventTypeClass() default EventType.class;
 
-  /**
-   * Aggregate type class (type-safe). Takes precedence over {@link #aggregateType()}.
-   * Must have a no-arg constructor (or be an enum).
-   */
-  Class<? extends AggregateType> aggregateTypeClass() default AggregateType.class;
+    /**
+     * Aggregate type class (type-safe). Takes precedence over {@link #aggregateType()}.
+     * Must have a no-arg constructor (or be an enum).
+     */
+    Class<? extends AggregateType> aggregateTypeClass() default AggregateType.class;
 }

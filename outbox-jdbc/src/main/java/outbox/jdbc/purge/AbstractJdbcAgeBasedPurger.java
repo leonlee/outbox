@@ -25,34 +25,34 @@ import java.time.Instant;
  * @see PostgresAgeBasedPurger
  */
 public abstract class AbstractJdbcAgeBasedPurger implements EventPurger {
-  protected static final String DEFAULT_TABLE = TableNames.DEFAULT_TABLE;
+    protected static final String DEFAULT_TABLE = TableNames.DEFAULT_TABLE;
 
-  private final String tableName;
+    private final String tableName;
 
-  protected AbstractJdbcAgeBasedPurger() {
-    this(DEFAULT_TABLE);
-  }
+    protected AbstractJdbcAgeBasedPurger() {
+        this(DEFAULT_TABLE);
+    }
 
-  protected AbstractJdbcAgeBasedPurger(String tableName) {
-    this.tableName = TableNames.validate(tableName);
-  }
+    protected AbstractJdbcAgeBasedPurger(String tableName) {
+        this.tableName = TableNames.validate(tableName);
+    }
 
-  protected String tableName() {
-    return tableName;
-  }
+    protected String tableName() {
+        return tableName;
+    }
 
-  /**
-   * Deletes all events older than {@code before}, up to {@code limit} rows.
-   *
-   * <p>Default implementation uses a subquery to limit the batch size, which
-   * works for H2 and PostgreSQL. MySQL overrides with {@code DELETE ... ORDER BY ... LIMIT}.
-   */
-  @Override
-  public int purge(Connection conn, Instant before, int limit) {
-    String sql = "DELETE FROM " + tableName() + " WHERE event_id IN (" +
-        "SELECT event_id FROM " + tableName() +
-        " WHERE created_at < ?" +
-        " ORDER BY created_at LIMIT ?)";
-    return JdbcTemplate.update(conn, sql, Timestamp.from(before), limit);
-  }
+    /**
+     * Deletes all events older than {@code before}, up to {@code limit} rows.
+     *
+     * <p>Default implementation uses a subquery to limit the batch size, which
+     * works for H2 and PostgreSQL. MySQL overrides with {@code DELETE ... ORDER BY ... LIMIT}.
+     */
+    @Override
+    public int purge(Connection conn, Instant before, int limit) {
+        String sql = "DELETE FROM " + tableName() + " WHERE event_id IN (" +
+                "SELECT event_id FROM " + tableName() +
+                " WHERE created_at < ?" +
+                " ORDER BY created_at LIMIT ?)";
+        return JdbcTemplate.update(conn, sql, Timestamp.from(before), limit);
+    }
 }

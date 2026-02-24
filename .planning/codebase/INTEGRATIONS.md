@@ -6,27 +6,29 @@
 
 **None explicitly configured**
 
-The outbox framework is designed as a minimal, self-contained library with no external service dependencies. Integration points are abstracted through SPI (Service Provider Interface) contracts, allowing downstream applications to plug in their own implementations.
+The outbox framework is designed as a minimal, self-contained library with no external service dependencies. Integration
+points are abstracted through SPI (Service Provider Interface) contracts, allowing downstream applications to plug in
+their own implementations.
 
 ## Data Storage
 
 **Databases:**
 
 - **H2** 2.2.224
-  - Supported: In-memory or file-based
-  - Used by: All tests, `outbox-demo`, `outbox-spring-demo`
-  - Client: JDBC via `AbstractJdbcOutboxStore` (H2 subclass: `H2OutboxStore`)
-  - Connection: Via `javax.sql.DataSource` abstraction
+    - Supported: In-memory or file-based
+    - Used by: All tests, `outbox-demo`, `outbox-spring-demo`
+    - Client: JDBC via `AbstractJdbcOutboxStore` (H2 subclass: `H2OutboxStore`)
+    - Connection: Via `javax.sql.DataSource` abstraction
 
 - **MySQL** 5.7+
-  - JDBC Driver: `mysql-connector-j` 8.3.0
-  - Client: JDBC via `AbstractJdbcOutboxStore` (MySQL subclass: `MySqlOutboxStore`)
-  - Specialization: `DELETE...ORDER BY...LIMIT` support for efficient row claiming
+    - JDBC Driver: `mysql-connector-j` 8.3.0
+    - Client: JDBC via `AbstractJdbcOutboxStore` (MySQL subclass: `MySqlOutboxStore`)
+    - Specialization: `DELETE...ORDER BY...LIMIT` support for efficient row claiming
 
 - **PostgreSQL** 10+
-  - JDBC Driver: `postgresql` 42.7.3
-  - Client: JDBC via `AbstractJdbcOutboxStore` (PostgreSQL subclass: `PostgresOutboxStore`)
-  - Specialization: `FOR UPDATE SKIP LOCKED` + `RETURNING` for row locking
+    - JDBC Driver: `postgresql` 42.7.3
+    - Client: JDBC via `AbstractJdbcOutboxStore` (PostgreSQL subclass: `PostgresOutboxStore`)
+    - Specialization: `FOR UPDATE SKIP LOCKED` + `RETURNING` for row locking
 
 **Connection Management:**
 
@@ -39,7 +41,8 @@ The outbox framework is designed as a minimal, self-contained library with no ex
 
 - Auto-created on startup (samples use Spring's `spring.sql.init.mode=always`)
 - Schema SQL: `samples/outbox-spring-demo/src/main/resources/schema.sql`
-- Single table: `OUTBOX` with columns: `event_id`, `event_type`, `aggregate_type`, `aggregate_id`, `tenant_id`, `occurred_at`, `payload`, `headers`, `status`, `created_at`, `updated_at`
+- Single table: `OUTBOX` with columns: `event_id`, `event_type`, `aggregate_type`, `aggregate_id`, `tenant_id`,
+  `occurred_at`, `payload`, `headers`, `status`, `created_at`, `updated_at`
 - Status enum: PENDING, DISPATCHING, DONE, RETRY, DEAD
 
 ## File Storage
@@ -52,7 +55,8 @@ Events are persisted only to the configured relational database. No file storage
 
 **None configured**
 
-No caching layer or distributed cache integration. In-flight event deduplication uses in-memory `DefaultInFlightTracker` (duration-based TTL, periodic eviction).
+No caching layer or distributed cache integration. In-flight event deduplication uses in-memory
+`DefaultInFlightTracker` (duration-based TTL, periodic eviction).
 
 ## Authentication & Identity
 
@@ -76,9 +80,11 @@ No caching layer or distributed cache integration. In-flight event deduplication
 
 - Interface: `outbox.spi.TxContext`
 - Implementations:
-  - `outbox.jdbc.tx.ThreadLocalTxContext` - Manual JDBC transaction management (ThreadLocal storage of active connection + transaction state)
-  - `outbox.jdbc.tx.JdbcTransactionManager` - Executor for manual commit/rollback
-  - `outbox.spring.SpringTxContext` - Spring Framework integration (`TransactionSynchronizationManager`, `DataSourceUtils`)
+    - `outbox.jdbc.tx.ThreadLocalTxContext` - Manual JDBC transaction management (ThreadLocal storage of active
+      connection + transaction state)
+    - `outbox.jdbc.tx.JdbcTransactionManager` - Executor for manual commit/rollback
+    - `outbox.spring.SpringTxContext` - Spring Framework integration (`TransactionSynchronizationManager`,
+      `DataSourceUtils`)
 
 **Lifecycle:**
 
@@ -92,7 +98,8 @@ No caching layer or distributed cache integration. In-flight event deduplication
 - Class: `outbox.spring.SpringTxContext`
 - Depends on: `org.springframework:spring-jdbc`, `org.springframework:spring-tx` (provided scope)
 - Usage: Registered in Spring config (see `OutboxConfiguration` in samples)
-- Bridges: Obtains connections via `DataSourceUtils.getConnection()` and registers callbacks via `TransactionSynchronizationManager.registerSynchronization()`
+- Bridges: Obtains connections via `DataSourceUtils.getConnection()` and registers callbacks via
+  `TransactionSynchronizationManager.registerSynchronization()`
 
 ## Monitoring & Observability
 
@@ -105,6 +112,7 @@ No caching layer or distributed cache integration. In-flight event deduplication
 **Exported Metrics:**
 
 **Counters:**
+
 - `outbox.enqueue.hot` - Events enqueued via hot path (afterCommit)
 - `outbox.enqueue.hot.dropped` - Events dropped (hot queue full, fallback to poller)
 - `outbox.enqueue.cold` - Events enqueued via cold path (poller discovery)
@@ -113,6 +121,7 @@ No caching layer or distributed cache integration. In-flight event deduplication
 - `outbox.dispatch.dead` - Events moved to DEAD (unroutable or max retries exceeded)
 
 **Gauges:**
+
 - `outbox.queue.hot.depth` - Current hot queue size (integer)
 - `outbox.queue.cold.depth` - Current cold queue size (integer)
 - `outbox.lag.oldest.ms` - Age of oldest pending event in milliseconds
@@ -146,28 +155,28 @@ No caching layer or distributed cache integration. In-flight event deduplication
 **CI Workflows:**
 
 - **ci.yml** - Triggered on push/PR
-  - Java 17 and 21 matrix
-  - Runs: `mvn -B verify` (all tests)
-  - Actions: `actions/checkout@v6`, `actions/setup-java@v5`
+    - Java 17 and 21 matrix
+    - Runs: `mvn -B verify` (all tests)
+    - Actions: `actions/checkout@v6`, `actions/setup-java@v5`
 
 - **publish.yml** - Triggered on `v*` tags
-  - Validates: Tag version matches POM version
-  - Builds: `mvn -B verify`
-  - Publishes: `mvn -B -pl outbox-core,outbox-jdbc,outbox-spring-adapter,outbox-micrometer -am deploy -DskipTests`
-  - Creates: GitHub Release with auto-generated notes via `gh release create`
-  - Env: `GITHUB_TOKEN` secret
+    - Validates: Tag version matches POM version
+    - Builds: `mvn -B verify`
+    - Publishes: `mvn -B -pl outbox-core,outbox-jdbc,outbox-spring-adapter,outbox-micrometer -am deploy -DskipTests`
+    - Creates: GitHub Release with auto-generated notes via `gh release create`
+    - Env: `GITHUB_TOKEN` secret
 
 - **benchmark.yml** - Manual or scheduled
-  - Runs: JMH benchmarks
-  - Generates: Performance reports
-  - Artifacts: Published to GitHub
+    - Runs: JMH benchmarks
+    - Generates: Performance reports
+    - Artifacts: Published to GitHub
 
 - **docs.yml** - Triggered on changes to docs files
-  - Path-filtered for efficiency
-  - Builds and publishes documentation
+    - Path-filtered for efficiency
+    - Builds and publishes documentation
 
 - **schema-diff.yml** - Schema validation
-  - Compares database schemas across versions
+    - Compares database schemas across versions
 
 **Dependabot:**
 
@@ -207,6 +216,7 @@ No caching layer or distributed cache integration. In-flight event deduplication
 None for the framework itself. Applications using the framework configure via:
 
 **Spring Boot Applications (e.g., outbox-spring-demo):**
+
 - `spring.datasource.url` - JDBC connection string
 - `spring.datasource.driver-class-name` - Driver class
 - `spring.datasource.username` - DB username
@@ -214,6 +224,7 @@ None for the framework itself. Applications using the framework configure via:
 - `server.port` - HTTP server port (default 8080)
 
 **GitHub Actions (CI/CD):**
+
 - `GITHUB_TOKEN` - Auto-provided by Actions, used for publishing and releasing
 
 **Secrets Location:**
@@ -227,41 +238,49 @@ None for the framework itself. Applications using the framework configure via:
 The framework defines several extension interfaces for custom implementations:
 
 **`outbox.spi.TxContext`**
+
 - Purpose: Abstract transaction lifecycle
 - Used by: `OutboxWriter`, `OutboxDispatcher`
 - Implementations: `ThreadLocalTxContext`, `SpringTxContext`
 
 **`outbox.spi.ConnectionProvider`**
+
 - Purpose: Abstract connection acquisition
 - Used by: `OutboxDispatcher`, `OutboxPoller`, `DeadEventManager`
 - Implementation: `DataSourceConnectionProvider`
 
 **`outbox.spi.OutboxStore`**
+
 - Purpose: Persistence contract (insert, mark done/retry/dead, poll, claim)
 - Used by: `OutboxWriter`, `OutboxDispatcher`, `OutboxPoller`
 - Implementation: `AbstractJdbcOutboxStore` hierarchy (H2, MySQL, PostgreSQL)
 
 **`outbox.spi.EventPurger`**
+
 - Purpose: Purge old/terminal events
 - Used by: `OutboxPurgeScheduler`
 - Implementations: `AbstractJdbcEventPurger` hierarchy (status-based), `AbstractJdbcAgeBasedPurger` hierarchy (CDC mode)
 
 **`outbox.spi.MetricsExporter`**
+
 - Purpose: Export metrics
 - Used by: `OutboxDispatcher`, `OutboxPoller`, `DispatcherWriterHook`
 - Implementation: `MicrometerMetricsExporter`
 
 **`outbox.util.JsonCodec`**
+
 - Purpose: Serialize/deserialize event headers (Map<String,String> ↔ JSON)
 - Used by: `AbstractJdbcOutboxStore`, `OutboxPoller`
 - Implementation: `DefaultJsonCodec` (built-in, zero-dependency)
 
 **`outbox.EventListener`**
+
 - Purpose: Handle dispatched events
 - Used by: `OutboxDispatcher` (via `ListenerRegistry`)
 - User-provided: Applications implement to handle events
 
 **`outbox.dispatch.EventInterceptor`**
+
 - Purpose: Cross-cutting hooks (audit, logging, metrics)
 - Used by: `OutboxDispatcher` (before/after dispatch)
 - User-provided: Applications implement for custom behaviors

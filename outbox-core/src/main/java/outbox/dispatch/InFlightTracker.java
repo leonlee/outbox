@@ -7,18 +7,18 @@ package outbox.dispatch;
  */
 public interface InFlightTracker {
 
-  /**
-   * Attempts to acquire exclusive processing rights for the given event.
-   *
-   * @param eventId the event ID to acquire
-   * @return {@code true} if acquired, {@code false} if already in flight
-   */
-  boolean tryAcquire(String eventId);
+    /**
+     * Attempts to acquire exclusive processing rights for the given event.
+     *
+     * @param eventId the event ID to acquire
+     * @return {@code true} if acquired, {@code false} if already in flight
+     */
+    boolean tryAcquire(String eventId);
 
-  /**
-   * Releases processing rights, allowing the event to be dispatched again.
-   *
-   * @param eventId the event ID to release
-   */
-  void release(String eventId);
+    /**
+     * Releases processing rights, allowing the event to be dispatched again.
+     *
+     * @param eventId the event ID to release
+     */
+    void release(String eventId);
 }

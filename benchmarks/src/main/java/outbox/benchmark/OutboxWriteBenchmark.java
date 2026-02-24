@@ -1,8 +1,20 @@
 package outbox.benchmark;
 
-import outbox.benchmark.BenchmarkDataSourceFactory.DatabaseSetup;
-import org.openjdk.jmh.annotations.*;
+import org.openjdk.jmh.annotations.Benchmark;
+import org.openjdk.jmh.annotations.BenchmarkMode;
+import org.openjdk.jmh.annotations.Fork;
+import org.openjdk.jmh.annotations.Level;
+import org.openjdk.jmh.annotations.Measurement;
+import org.openjdk.jmh.annotations.Mode;
+import org.openjdk.jmh.annotations.OutputTimeUnit;
+import org.openjdk.jmh.annotations.Param;
+import org.openjdk.jmh.annotations.Scope;
+import org.openjdk.jmh.annotations.Setup;
+import org.openjdk.jmh.annotations.State;
+import org.openjdk.jmh.annotations.TearDown;
+import org.openjdk.jmh.annotations.Warmup;
 import outbox.OutboxWriter;
+import outbox.benchmark.BenchmarkDataSourceFactory.DatabaseSetup;
 import outbox.jdbc.DataSourceConnectionProvider;
 import outbox.jdbc.tx.JdbcTransactionManager;
 import outbox.jdbc.tx.ThreadLocalTxContext;
@@ -24,49 +36,49 @@ import java.util.concurrent.TimeUnit;
 @Fork(1)
 public class OutboxWriteBenchmark {
 
-  private DataSource dataSource;
-  private DataSourceConnectionProvider connectionProvider;
-  private ThreadLocalTxContext txContext;
-  private JdbcTransactionManager txManager;
-  private OutboxWriter writer;
+    private DataSource dataSource;
+    private DataSourceConnectionProvider connectionProvider;
+    private ThreadLocalTxContext txContext;
+    private JdbcTransactionManager txManager;
+    private OutboxWriter writer;
 
-  @Param({"h2"})
-  private String database;
+    @Param({"h2"})
+    private String database;
 
-  @Param({"100", "1000", "10000"})
-  private int payloadSize;
+    @Param({"100", "1000", "10000"})
+    private int payloadSize;
 
-  private String payload;
+    private String payload;
 
-  @Setup(Level.Trial)
-  public void setup() {
-    DatabaseSetup db = BenchmarkDataSourceFactory.create(database, "bench_write");
-    BenchmarkDataSourceFactory.truncate(db.dataSource());
+    @Setup(Level.Trial)
+    public void setup() {
+        DatabaseSetup db = BenchmarkDataSourceFactory.create(database, "bench_write");
+        BenchmarkDataSourceFactory.truncate(db.dataSource());
 
-    dataSource = db.dataSource();
-    connectionProvider = new DataSourceConnectionProvider(dataSource);
-    txContext = new ThreadLocalTxContext();
-    txManager = new JdbcTransactionManager(connectionProvider, txContext);
-    writer = new OutboxWriter(txContext, db.store());
-    payload = "{\"data\":\"" + "x".repeat(Math.max(0, payloadSize - 11)) + "\"}";
-  }
-
-  @Setup(Level.Iteration)
-  public void truncate() {
-    BenchmarkDataSourceFactory.truncate(dataSource);
-  }
-
-  @Benchmark
-  public String writeEvent() throws Exception {
-    try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
-      String eventId = writer.write("BenchEvent", payload);
-      tx.commit();
-      return eventId;
+        dataSource = db.dataSource();
+        connectionProvider = new DataSourceConnectionProvider(dataSource);
+        txContext = new ThreadLocalTxContext();
+        txManager = new JdbcTransactionManager(connectionProvider, txContext);
+        writer = new OutboxWriter(txContext, db.store());
+        payload = "{\"data\":\"" + "x".repeat(Math.max(0, payloadSize - 11)) + "\"}";
     }
-  }
 
-  @TearDown(Level.Trial)
-  public void tearDown() throws Exception {
-    if (dataSource instanceof AutoCloseable ac) ac.close();
-  }
+    @Setup(Level.Iteration)
+    public void truncate() {
+        BenchmarkDataSourceFactory.truncate(dataSource);
+    }
+
+    @Benchmark
+    public String writeEvent() throws Exception {
+        try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
+            String eventId = writer.write("BenchEvent", payload);
+            tx.commit();
+            return eventId;
+        }
+    }
+
+    @TearDown(Level.Trial)
+    public void tearDown() throws Exception {
+        if (dataSource instanceof AutoCloseable ac) ac.close();
+    }
 }

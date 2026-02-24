@@ -14,19 +14,19 @@ import java.time.Instant;
  */
 public final class MySqlAgeBasedPurger extends AbstractJdbcAgeBasedPurger {
 
-  public MySqlAgeBasedPurger() {
-    super();
-  }
+    public MySqlAgeBasedPurger() {
+        super();
+    }
 
-  public MySqlAgeBasedPurger(String tableName) {
-    super(tableName);
-  }
+    public MySqlAgeBasedPurger(String tableName) {
+        super(tableName);
+    }
 
-  @Override
-  public int purge(Connection conn, Instant before, int limit) {
-    String sql = "DELETE FROM " + tableName() +
-        " WHERE created_at < ?" +
-        " ORDER BY created_at LIMIT ?";
-    return JdbcTemplate.update(conn, sql, Timestamp.from(before), limit);
-  }
+    @Override
+    public int purge(Connection conn, Instant before, int limit) {
+        String sql = "DELETE FROM " + tableName() +
+                " WHERE created_at < ?" +
+                " ORDER BY created_at LIMIT ?";
+        return JdbcTemplate.update(conn, sql, Timestamp.from(before), limit);
+    }
 }

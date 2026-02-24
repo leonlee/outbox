@@ -10,13 +10,14 @@ import java.time.Instant;
  * @see outbox.spi.OutboxStore#claimPending
  */
 public record OutboxEvent(
-    String eventId,
-    String eventType,
-    String aggregateType,
-    String aggregateId,
-    String tenantId,
-    String payloadJson,
-    String headersJson,
-    int attempts,
-    Instant createdAt
-) {}
+        String eventId,
+        String eventType,
+        String aggregateType,
+        String aggregateId,
+        String tenantId,
+        String payloadJson,
+        String headersJson,
+        int attempts,
+        Instant createdAt
+) {
+}

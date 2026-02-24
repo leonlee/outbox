@@ -17,32 +17,32 @@ import java.util.Objects;
  */
 public record StringEventType(String name) implements EventType {
 
-  /**
-   * @param name the event type name
-   * @throws NullPointerException if name is null
-   * @throws IllegalArgumentException if name is empty
-   */
-  public StringEventType {
-    Objects.requireNonNull(name, "name");
-    if (name.isEmpty()) {
-      throw new IllegalArgumentException("Event type name cannot be empty");
+    /**
+     * @param name the event type name
+     * @throws NullPointerException     if name is null
+     * @throws IllegalArgumentException if name is empty
+     */
+    public StringEventType {
+        Objects.requireNonNull(name, "name");
+        if (name.isEmpty()) {
+            throw new IllegalArgumentException("Event type name cannot be empty");
+        }
     }
-  }
 
-  /**
-   * Creates an event type from a string.
-   *
-   * @param name the event type name
-   * @return the event type
-   * @throws NullPointerException if name is null
-   * @throws IllegalArgumentException if name is empty
-   */
-  public static StringEventType of(String name) {
-    return new StringEventType(name);
-  }
+    /**
+     * Creates an event type from a string.
+     *
+     * @param name the event type name
+     * @return the event type
+     * @throws NullPointerException     if name is null
+     * @throws IllegalArgumentException if name is empty
+     */
+    public static StringEventType of(String name) {
+        return new StringEventType(name);
+    }
 
-  @Override
-  public String toString() {
-    return name;
-  }
+    @Override
+    public String toString() {
+        return name;
+    }
 }

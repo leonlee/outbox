@@ -15,8 +15,8 @@ on:
         description: 'JMH benchmark filter regex'
         default: '.*'
   push:
-    branches: [main]
-    paths: ['benchmarks/**']
+    branches: [ main ]
+    paths: [ 'benchmarks/**' ]
 
 permissions:
   contents: write

@@ -18,13 +18,13 @@ import java.time.Instant;
  */
 public interface EventPurger {
 
-  /**
-   * Deletes terminal events (DONE + DEAD) created before the given cutoff.
-   *
-   * @param conn   the JDBC connection (caller controls transaction)
-   * @param before delete events where {@code COALESCE(done_at, created_at) < before}
-   * @param limit  maximum number of rows to delete in this batch
-   * @return the number of rows actually deleted
-   */
-  int purge(Connection conn, Instant before, int limit);
+    /**
+     * Deletes terminal events (DONE + DEAD) created before the given cutoff.
+     *
+     * @param conn   the JDBC connection (caller controls transaction)
+     * @param before delete events where {@code COALESCE(done_at, created_at) < before}
+     * @param limit  maximum number of rows to delete in this batch
+     * @return the number of rows actually deleted
+     */
+    int purge(Connection conn, Instant before, int limit);
 }

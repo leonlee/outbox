@@ -3,23 +3,23 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
                              http://maven.apache.org/xsd/maven-4.0.0.xsd">
-  <modelVersion>4.0.0</modelVersion>
+    <modelVersion>4.0.0</modelVersion>
 
-  <parent>
-    <groupId>io.github.leonlee</groupId>
-    <artifactId>outbox-parent</artifactId>
-    <version>0.8.2-SNAPSHOT</version>
-  </parent>
+    <parent>
+        <groupId>io.github.leonlee</groupId>
+        <artifactId>outbox-parent</artifactId>
+        <version>0.8.2-SNAPSHOT</version>
+    </parent>
 
-  <artifactId>outbox-samples</artifactId>
-  <name>outbox-samples</name>
-  <description>Sample applications and demos</description>
-  <packaging>pom</packaging>
+    <artifactId>outbox-samples</artifactId>
+    <name>outbox-samples</name>
+    <description>Sample applications and demos</description>
+    <packaging>pom</packaging>
 
-  <modules>
-    <module>outbox-demo</module>
-    <module>outbox-spring-demo</module>
-    <module>outbox-spring-boot-starter-demo</module>
-    <module>outbox-multi-ds-demo</module>
-  </modules>
+    <modules>
+        <module>outbox-demo</module>
+        <module>outbox-spring-demo</module>
+        <module>outbox-spring-boot-starter-demo</module>
+        <module>outbox-multi-ds-demo</module>
+    </modules>
 </project>

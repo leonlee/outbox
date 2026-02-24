@@ -1,15 +1,5 @@
 package outbox.spring;
 
-import outbox.OutboxWriter;
-import outbox.registry.DefaultListenerRegistry;
-import outbox.dispatch.DispatcherWriterHook;
-import outbox.dispatch.OutboxDispatcher;
-import outbox.EventEnvelope;
-import outbox.dispatch.ExponentialBackoffRetryPolicy;
-import outbox.model.EventStatus;
-import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.store.H2OutboxStore;
-
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -19,6 +9,15 @@ import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.DefaultTransactionDefinition;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import outbox.EventEnvelope;
+import outbox.OutboxWriter;
+import outbox.dispatch.DispatcherWriterHook;
+import outbox.dispatch.ExponentialBackoffRetryPolicy;
+import outbox.dispatch.OutboxDispatcher;
+import outbox.jdbc.DataSourceConnectionProvider;
+import outbox.jdbc.store.H2OutboxStore;
+import outbox.model.EventStatus;
+import outbox.registry.DefaultListenerRegistry;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -36,238 +35,240 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SpringAdapterIntegrationTest {
-  private DataSource dataSource;
-  private H2OutboxStore outboxStore;
-  private DataSourceConnectionProvider connectionProvider;
-  private SpringTxContext txContext;
-  private DataSourceTransactionManager txManager;
+    private DataSource dataSource;
+    private H2OutboxStore outboxStore;
+    private DataSourceConnectionProvider connectionProvider;
+    private SpringTxContext txContext;
+    private DataSourceTransactionManager txManager;
 
-  @BeforeEach
-  void setup() throws Exception {
-    JdbcDataSource ds = new JdbcDataSource();
-    ds.setURL("jdbc:h2:mem:outbox_spring_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
-    this.dataSource = ds;
-    this.outboxStore = new H2OutboxStore();
-    this.connectionProvider = new DataSourceConnectionProvider(ds);
-    this.txContext = new SpringTxContext(ds);
-    this.txManager = new DataSourceTransactionManager(ds);
+    @BeforeEach
+    void setup() throws Exception {
+        JdbcDataSource ds = new JdbcDataSource();
+        ds.setURL("jdbc:h2:mem:outbox_spring_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
+        this.dataSource = ds;
+        this.outboxStore = new H2OutboxStore();
+        this.connectionProvider = new DataSourceConnectionProvider(ds);
+        this.txContext = new SpringTxContext(ds);
+        this.txManager = new DataSourceTransactionManager(ds);
 
-    try (Connection conn = ds.getConnection()) {
-      createSchema(conn);
-    }
-  }
-
-  @AfterEach
-  void teardown() throws Exception {
-    try (Connection conn = dataSource.getConnection()) {
-      conn.createStatement().execute("DROP TABLE outbox_event");
-    }
-  }
-
-  @Test
-  void commitTriggersFastPathAndMarksDone() throws Exception {
-    CountDownLatch latch = new CountDownLatch(1);
-    DefaultListenerRegistry listeners = new DefaultListenerRegistry()
-        .register("UserCreated", event -> latch.countDown());
-
-    OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
-    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
-
-    TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
-    String eventId;
-    try {
-      eventId = writer.write(EventEnvelope.ofJson("UserCreated", "{\"id\":42}"));
-      txManager.commit(status);
-    } catch (RuntimeException ex) {
-      txManager.rollback(status);
-      throw ex;
-    }
-
-    assertTrue(latch.await(2, TimeUnit.SECONDS));
-    awaitStatus(eventId, EventStatus.DONE, 2_000);
-
-    dispatcher.close();
-  }
-
-  @Test
-  void rollbackDoesNotPersistAndDoesNotEnqueue() throws Exception {
-    CountDownLatch latch = new CountDownLatch(1);
-    DefaultListenerRegistry listeners = new DefaultListenerRegistry()
-        .register("UserCreated", event -> latch.countDown());
-
-    OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
-    OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
-
-    TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
-    String eventId;
-    try {
-      eventId = writer.write(EventEnvelope.ofJson("UserCreated", "{\"id\":99}"));
-      txManager.rollback(status);
-    } catch (RuntimeException ex) {
-      txManager.rollback(status);
-      throw ex;
-    }
-
-    assertFalse(latch.await(200, TimeUnit.MILLISECONDS));
-    assertEquals(-1, getStatus(eventId));
-
-    dispatcher.close();
-  }
-
-  @Test
-  void afterCommitFailsWhenSynchronizationDisabled() {
-    TransactionSynchronizationManager.setActualTransactionActive(true);
-    try {
-      IllegalStateException ex = assertThrows(
-          IllegalStateException.class,
-          () -> txContext.afterCommit(() -> {})
-      );
-      assertTrue(ex.getMessage().contains("Transaction synchronization is not active"));
-    } finally {
-      TransactionSynchronizationManager.clear();
-    }
-  }
-
-  @Test
-  void afterRollbackFailsWhenSynchronizationDisabled() {
-    TransactionSynchronizationManager.setActualTransactionActive(true);
-    try {
-      IllegalStateException ex = assertThrows(
-          IllegalStateException.class,
-          () -> txContext.afterRollback(() -> {})
-      );
-      assertTrue(ex.getMessage().contains("Transaction synchronization is not active"));
-    } finally {
-      TransactionSynchronizationManager.clear();
-    }
-  }
-
-  @Test
-  void afterRollbackFiresOnStatusUnknown() {
-    TransactionSynchronizationManager.setActualTransactionActive(true);
-    TransactionSynchronizationManager.initSynchronization();
-    try {
-      AtomicBoolean called = new AtomicBoolean();
-      txContext.afterRollback(() -> called.set(true));
-
-      // Simulate STATUS_UNKNOWN completion
-      for (TransactionSynchronization sync :
-          TransactionSynchronizationManager.getSynchronizations()) {
-        sync.afterCompletion(TransactionSynchronization.STATUS_UNKNOWN);
-      }
-      assertTrue(called.get(), "afterRollback should fire on STATUS_UNKNOWN");
-    } finally {
-      TransactionSynchronizationManager.clear();
-    }
-  }
-
-  @Test
-  void currentConnectionRequiresActiveTransaction() {
-    assertThrows(IllegalStateException.class, () -> txContext.currentConnection());
-  }
-
-  @Test
-  void currentConnectionRequiresSynchronizationActive() {
-    TransactionSynchronizationManager.setActualTransactionActive(true);
-    try {
-      IllegalStateException ex = assertThrows(
-          IllegalStateException.class,
-          () -> txContext.currentConnection()
-      );
-      assertTrue(ex.getMessage().contains("synchronization"));
-    } finally {
-      TransactionSynchronizationManager.clear();
-    }
-  }
-
-  @Test
-  void constructorRejectsNullDataSource() {
-    assertThrows(NullPointerException.class, () ->
-        new SpringTxContext(null));
-  }
-
-  @Test
-  void afterCommitRejectsNullCallback() {
-    TransactionSynchronizationManager.setActualTransactionActive(true);
-    TransactionSynchronizationManager.initSynchronization();
-    try {
-      assertThrows(NullPointerException.class, () ->
-          txContext.afterCommit(null));
-    } finally {
-      TransactionSynchronizationManager.clear();
-    }
-  }
-
-  @Test
-  void afterRollbackRejectsNullCallback() {
-    TransactionSynchronizationManager.setActualTransactionActive(true);
-    TransactionSynchronizationManager.initSynchronization();
-    try {
-      assertThrows(NullPointerException.class, () ->
-          txContext.afterRollback(null));
-    } finally {
-      TransactionSynchronizationManager.clear();
-    }
-  }
-
-  private OutboxDispatcher dispatcher(int workers, int hotCapacity, int coldCapacity, DefaultListenerRegistry listeners) {
-    return OutboxDispatcher.builder()
-        .connectionProvider(connectionProvider)
-        .outboxStore(outboxStore)
-        .listenerRegistry(listeners)
-        .retryPolicy(new ExponentialBackoffRetryPolicy(10, 50))
-        .workerCount(workers)
-        .hotQueueCapacity(hotCapacity)
-        .coldQueueCapacity(coldCapacity)
-        .build();
-  }
-
-  private void createSchema(Connection conn) throws SQLException {
-    conn.createStatement().execute(
-        "CREATE TABLE outbox_event (" +
-            "event_id VARCHAR(36) PRIMARY KEY," +
-            "event_type VARCHAR(128) NOT NULL," +
-            "aggregate_type VARCHAR(64)," +
-            "aggregate_id VARCHAR(128)," +
-            "tenant_id VARCHAR(64)," +
-            "payload CLOB NOT NULL," +
-            "headers CLOB," +
-            "status TINYINT NOT NULL," +
-            "attempts INT NOT NULL DEFAULT 0," +
-            "available_at TIMESTAMP NOT NULL," +
-            "created_at TIMESTAMP NOT NULL," +
-            "done_at TIMESTAMP," +
-            "last_error CLOB," +
-            "locked_by VARCHAR(128)," +
-            "locked_at TIMESTAMP" +
-            ")"
-    );
-    conn.createStatement().execute(
-        "CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_at)"
-    );
-  }
-
-  private int getStatus(String eventId) throws SQLException {
-    try (Connection conn = dataSource.getConnection();
-         PreparedStatement ps = conn.prepareStatement("SELECT status FROM outbox_event WHERE event_id=?")) {
-      ps.setString(1, eventId);
-      try (ResultSet rs = ps.executeQuery()) {
-        if (!rs.next()) {
-          return -1;
+        try (Connection conn = ds.getConnection()) {
+            createSchema(conn);
         }
-        return rs.getInt(1);
-      }
     }
-  }
 
-  private void awaitStatus(String eventId, EventStatus status, long timeoutMs) throws Exception {
-    long deadline = System.currentTimeMillis() + timeoutMs;
-    while (System.currentTimeMillis() < deadline) {
-      if (getStatus(eventId) == status.code()) {
-        return;
-      }
-      Thread.sleep(20);
+    @AfterEach
+    void teardown() throws Exception {
+        try (Connection conn = dataSource.getConnection()) {
+            conn.createStatement().execute("DROP TABLE outbox_event");
+        }
     }
-    assertEquals(status.code(), getStatus(eventId));
-  }
+
+    @Test
+    void commitTriggersFastPathAndMarksDone() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        DefaultListenerRegistry listeners = new DefaultListenerRegistry()
+                .register("UserCreated", event -> latch.countDown());
+
+        OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
+        OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
+
+        TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
+        String eventId;
+        try {
+            eventId = writer.write(EventEnvelope.ofJson("UserCreated", "{\"id\":42}"));
+            txManager.commit(status);
+        } catch (RuntimeException ex) {
+            txManager.rollback(status);
+            throw ex;
+        }
+
+        assertTrue(latch.await(2, TimeUnit.SECONDS));
+        awaitStatus(eventId, EventStatus.DONE, 2_000);
+
+        dispatcher.close();
+    }
+
+    @Test
+    void rollbackDoesNotPersistAndDoesNotEnqueue() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        DefaultListenerRegistry listeners = new DefaultListenerRegistry()
+                .register("UserCreated", event -> latch.countDown());
+
+        OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
+        OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
+
+        TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
+        String eventId;
+        try {
+            eventId = writer.write(EventEnvelope.ofJson("UserCreated", "{\"id\":99}"));
+            txManager.rollback(status);
+        } catch (RuntimeException ex) {
+            txManager.rollback(status);
+            throw ex;
+        }
+
+        assertFalse(latch.await(200, TimeUnit.MILLISECONDS));
+        assertEquals(-1, getStatus(eventId));
+
+        dispatcher.close();
+    }
+
+    @Test
+    void afterCommitFailsWhenSynchronizationDisabled() {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            IllegalStateException ex = assertThrows(
+                    IllegalStateException.class,
+                    () -> txContext.afterCommit(() -> {
+                    })
+            );
+            assertTrue(ex.getMessage().contains("Transaction synchronization is not active"));
+        } finally {
+            TransactionSynchronizationManager.clear();
+        }
+    }
+
+    @Test
+    void afterRollbackFailsWhenSynchronizationDisabled() {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            IllegalStateException ex = assertThrows(
+                    IllegalStateException.class,
+                    () -> txContext.afterRollback(() -> {
+                    })
+            );
+            assertTrue(ex.getMessage().contains("Transaction synchronization is not active"));
+        } finally {
+            TransactionSynchronizationManager.clear();
+        }
+    }
+
+    @Test
+    void afterRollbackFiresOnStatusUnknown() {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            AtomicBoolean called = new AtomicBoolean();
+            txContext.afterRollback(() -> called.set(true));
+
+            // Simulate STATUS_UNKNOWN completion
+            for (TransactionSynchronization sync :
+                    TransactionSynchronizationManager.getSynchronizations()) {
+                sync.afterCompletion(TransactionSynchronization.STATUS_UNKNOWN);
+            }
+            assertTrue(called.get(), "afterRollback should fire on STATUS_UNKNOWN");
+        } finally {
+            TransactionSynchronizationManager.clear();
+        }
+    }
+
+    @Test
+    void currentConnectionRequiresActiveTransaction() {
+        assertThrows(IllegalStateException.class, () -> txContext.currentConnection());
+    }
+
+    @Test
+    void currentConnectionRequiresSynchronizationActive() {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            IllegalStateException ex = assertThrows(
+                    IllegalStateException.class,
+                    () -> txContext.currentConnection()
+            );
+            assertTrue(ex.getMessage().contains("synchronization"));
+        } finally {
+            TransactionSynchronizationManager.clear();
+        }
+    }
+
+    @Test
+    void constructorRejectsNullDataSource() {
+        assertThrows(NullPointerException.class, () ->
+                new SpringTxContext(null));
+    }
+
+    @Test
+    void afterCommitRejectsNullCallback() {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            assertThrows(NullPointerException.class, () ->
+                    txContext.afterCommit(null));
+        } finally {
+            TransactionSynchronizationManager.clear();
+        }
+    }
+
+    @Test
+    void afterRollbackRejectsNullCallback() {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            assertThrows(NullPointerException.class, () ->
+                    txContext.afterRollback(null));
+        } finally {
+            TransactionSynchronizationManager.clear();
+        }
+    }
+
+    private OutboxDispatcher dispatcher(int workers, int hotCapacity, int coldCapacity, DefaultListenerRegistry listeners) {
+        return OutboxDispatcher.builder()
+                .connectionProvider(connectionProvider)
+                .outboxStore(outboxStore)
+                .listenerRegistry(listeners)
+                .retryPolicy(new ExponentialBackoffRetryPolicy(10, 50))
+                .workerCount(workers)
+                .hotQueueCapacity(hotCapacity)
+                .coldQueueCapacity(coldCapacity)
+                .build();
+    }
+
+    private void createSchema(Connection conn) throws SQLException {
+        conn.createStatement().execute(
+                "CREATE TABLE outbox_event (" +
+                        "event_id VARCHAR(36) PRIMARY KEY," +
+                        "event_type VARCHAR(128) NOT NULL," +
+                        "aggregate_type VARCHAR(64)," +
+                        "aggregate_id VARCHAR(128)," +
+                        "tenant_id VARCHAR(64)," +
+                        "payload CLOB NOT NULL," +
+                        "headers CLOB," +
+                        "status TINYINT NOT NULL," +
+                        "attempts INT NOT NULL DEFAULT 0," +
+                        "available_at TIMESTAMP NOT NULL," +
+                        "created_at TIMESTAMP NOT NULL," +
+                        "done_at TIMESTAMP," +
+                        "last_error CLOB," +
+                        "locked_by VARCHAR(128)," +
+                        "locked_at TIMESTAMP" +
+                        ")"
+        );
+        conn.createStatement().execute(
+                "CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_at)"
+        );
+    }
+
+    private int getStatus(String eventId) throws SQLException {
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement("SELECT status FROM outbox_event WHERE event_id=?")) {
+            ps.setString(1, eventId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return -1;
+                }
+                return rs.getInt(1);
+            }
+        }
+    }
+
+    private void awaitStatus(String eventId, EventStatus status, long timeoutMs) throws Exception {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (getStatus(eventId) == status.code()) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        assertEquals(status.code(), getStatus(eventId));
+    }
 }

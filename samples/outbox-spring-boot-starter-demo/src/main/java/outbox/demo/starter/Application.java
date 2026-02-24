@@ -14,14 +14,14 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * <p>Run with: mvn install -DskipTests && mvn -f samples/outbox-spring-boot-starter-demo/pom.xml spring-boot:run
  *
  * <p>Endpoints:
- *   POST /events/user-created?name=Alice     - publish UserCreated event
- *   POST /events/order-placed?orderId=123    - publish OrderPlaced event
- *   GET  /events                             - list all events in outbox
+ * POST /events/user-created?name=Alice     - publish UserCreated event
+ * POST /events/order-placed?orderId=123    - publish OrderPlaced event
+ * GET  /events                             - list all events in outbox
  */
 @SpringBootApplication
 public class Application {
 
-  public static void main(String[] args) {
-    SpringApplication.run(Application.class, args);
-  }
+    public static void main(String[] args) {
+        SpringApplication.run(Application.class, args);
+    }
 }

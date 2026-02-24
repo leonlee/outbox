@@ -1,4 +1,3 @@
-
 # Outbox Framework Technical Specification
 
 Formal API contracts, data model, behavioral rules, configuration, and observability for the outbox-java framework.
@@ -35,17 +34,17 @@ For tutorials and code examples, see [TUTORIAL.md](TUTORIAL.md).
 
 ### 1.1 Components
 
-| Component | Responsibility |
-|-----------|----------------|
-| **Outbox** | Composite builder (`singleNode`/`multiNode`/`ordered`) that wires dispatcher, poller, and writer into a single `AutoCloseable` |
-| **OutboxWriter** | API used by business code inside a transaction context |
-| **TxContext** | Abstraction for transaction lifecycle hooks (afterCommit/afterRollback) |
-| **OutboxStore** | Insert/update/query via `java.sql.Connection` |
-| **OutboxDispatcher** | Hot/cold queues + worker pool; executes listeners; updates status |
-| **ListenerRegistry** | Maps event types to event listeners |
-| **OutboxPoller** | Low-frequency fallback DB scan; forwards events to handler |
-| **OutboxPurgeScheduler** | Scheduled purge of terminal events (DONE/DEAD) older than retention |
-| **InFlightTracker** | In-memory deduplication |
+| Component                | Responsibility                                                                                                                 |
+|--------------------------|--------------------------------------------------------------------------------------------------------------------------------|
+| **Outbox**               | Composite builder (`singleNode`/`multiNode`/`ordered`) that wires dispatcher, poller, and writer into a single `AutoCloseable` |
+| **OutboxWriter**         | API used by business code inside a transaction context                                                                         |
+| **TxContext**            | Abstraction for transaction lifecycle hooks (afterCommit/afterRollback)                                                        |
+| **OutboxStore**          | Insert/update/query via `java.sql.Connection`                                                                                  |
+| **OutboxDispatcher**     | Hot/cold queues + worker pool; executes listeners; updates status                                                              |
+| **ListenerRegistry**     | Maps event types to event listeners                                                                                            |
+| **OutboxPoller**         | Low-frequency fallback DB scan; forwards events to handler                                                                     |
+| **OutboxPurgeScheduler** | Scheduled purge of terminal events (DONE/DEAD) older than retention                                                            |
+| **InFlightTracker**      | In-memory deduplication                                                                                                        |
 
 ### 1.2 Event Flow
 
@@ -83,6 +82,7 @@ For tutorials and code examples, see [TUTORIAL.md](TUTORIAL.md).
 ### 1.3 Queue Priority
 
 OutboxDispatcher MUST prioritize:
+
 - **Hot Queue**: afterCommit enqueue from business thread (priority)
 - **Cold Queue**: poller/handler fallback
 
@@ -95,7 +95,9 @@ OutboxDispatcher MUST prioritize:
 Core interfaces, hooks, dispatcher, poller, and registries. **Zero external dependencies.**
 
 Packages:
-- `outbox` - Main API: Outbox (composite builder), OutboxWriter, EventEnvelope, EventType, AggregateType, EventListener, WriterHook
+
+- `outbox` - Main API: Outbox (composite builder), OutboxWriter, EventEnvelope, EventType, AggregateType, EventListener,
+  WriterHook
 - `outbox.spi` - Extension point interfaces: TxContext, ConnectionProvider, OutboxStore, EventPurger, MetricsExporter
 - `outbox.model` - Domain objects: OutboxEvent, EventStatus
 - `outbox.dispatch` - OutboxDispatcher, retry policy, inflight tracking
@@ -110,6 +112,7 @@ Packages:
 JDBC outbox store hierarchy, event purger hierarchy, and manual transaction helpers.
 
 Packages:
+
 - `outbox.jdbc` — Shared utilities: JdbcTemplate, OutboxStoreException, DataSourceConnectionProvider
 - `outbox.jdbc.store` — OutboxStore hierarchy (ServiceLoader-registered)
 - `outbox.jdbc.purge` — EventPurger hierarchy
@@ -118,6 +121,7 @@ Packages:
 Classes by package:
 
 **`outbox.jdbc.store`**
+
 - `AbstractJdbcOutboxStore` - Base outbox store with shared SQL, row mapper, and H2-compatible default claim
 - `H2OutboxStore` - H2 (inherits default subquery-based claim)
 - `MySqlOutboxStore` - MySQL/TiDB (UPDATE...ORDER BY...LIMIT claim)
@@ -125,16 +129,19 @@ Classes by package:
 - `JdbcOutboxStores` - ServiceLoader registry with `detect(DataSource)` auto-detection
 
 **`outbox.jdbc.purge`**
+
 - `AbstractJdbcEventPurger` - Base event purger with subquery-based DELETE (H2/PostgreSQL default)
 - `H2EventPurger` - H2 (inherits default)
 - `MySqlEventPurger` - MySQL/TiDB (DELETE...ORDER BY...LIMIT)
 - `PostgresEventPurger` - PostgreSQL (inherits default)
 
 **`outbox.jdbc.tx`**
+
 - `ThreadLocalTxContext` - ThreadLocal-based TxContext for manual transactions
 - `JdbcTransactionManager` - Helper for manual JDBC transactions
 
 **`outbox.jdbc`** (root)
+
 - `JdbcTemplate` - Lightweight JDBC helper (update, query, updateReturning)
 - `OutboxStoreException` - JDBC-layer exception
 - `DataSourceConnectionProvider` - ConnectionProvider from DataSource
@@ -144,6 +151,7 @@ Classes by package:
 Optional Spring integration.
 
 Classes:
+
 - `SpringTxContext` - Implements TxContext using Spring's TransactionSynchronizationManager
 
 ### 2.4 outbox-micrometer
@@ -151,25 +159,35 @@ Classes:
 Micrometer metrics bridge for Prometheus, Grafana, Datadog, and other monitoring backends.
 
 Classes:
+
 - `MicrometerMetricsExporter` - Implements `MetricsExporter` using Micrometer `MeterRegistry`
 
 ### 2.5 outbox-spring-boot-starter
 
-Spring Boot auto-configuration for the outbox framework. Eliminates manual bean wiring — users add the dependency, annotate listeners, and configure via `application.properties`.
+Spring Boot auto-configuration for the outbox framework. Eliminates manual bean wiring — users add the dependency,
+annotate listeners, and configure via `application.properties`.
 
 Classes:
-- `OutboxAutoConfiguration` - Main auto-configuration: wires `OutboxStore`, `ConnectionProvider`, `TxContext`, `ListenerRegistry`, `Outbox`, and `OutboxWriter` from a `DataSource` and `OutboxProperties`
-- `OutboxMicrometerAutoConfiguration` - Conditional auto-configuration for Micrometer metrics (enabled by default when Micrometer is on classpath)
-- `OutboxProperties` - `@ConfigurationProperties(prefix = "outbox")` with nested classes for dispatcher, retry, poller, claim-locking, purge, and metrics settings
-- `OutboxListener` - Type-level annotation for declaring event listeners with string-based or type-safe class-based event/aggregate type specification
-- `OutboxListenerRegistrar` - `SmartInitializingSingleton` that scans `@OutboxListener` beans and registers them in the `DefaultListenerRegistry`
+
+- `OutboxAutoConfiguration` - Main auto-configuration: wires `OutboxStore`, `ConnectionProvider`, `TxContext`,
+  `ListenerRegistry`, `Outbox`, and `OutboxWriter` from a `DataSource` and `OutboxProperties`
+- `OutboxMicrometerAutoConfiguration` - Conditional auto-configuration for Micrometer metrics (enabled by default when
+  Micrometer is on classpath)
+- `OutboxProperties` - `@ConfigurationProperties(prefix = "outbox")` with nested classes for dispatcher, retry, poller,
+  claim-locking, purge, and metrics settings
+- `OutboxListener` - Type-level annotation for declaring event listeners with string-based or type-safe class-based
+  event/aggregate type specification
+- `OutboxListenerRegistrar` - `SmartInitializingSingleton` that scans `@OutboxListener` beans and registers them in the
+  `DefaultListenerRegistry`
 
 Conditions:
+
 - `@ConditionalOnClass(Outbox.class)` — only activates when outbox-core is on classpath
 - `@ConditionalOnBean(DataSource.class)` — requires a DataSource
 - All beans are `@ConditionalOnMissingBean` — users can override any component
 
 Operating modes (via `outbox.mode` property):
+
 - `SINGLE_NODE` (default) — hot path + poller fallback
 - `MULTI_NODE` — hot path + claim-based locking (requires `outbox.claim-locking.enabled=true`)
 - `ORDERED` — poller-only, single worker, no retry
@@ -195,14 +213,18 @@ Multi-datasource demo (two H2 databases).
 
 ```java
 public interface TxContext {
-  boolean isTransactionActive();
-  Connection currentConnection();
-  void afterCommit(Runnable callback);
-  void afterRollback(Runnable callback);
+    boolean isTransactionActive();
+
+    Connection currentConnection();
+
+    void afterCommit(Runnable callback);
+
+    void afterRollback(Runnable callback);
 }
 ```
 
 Rules:
+
 - `currentConnection()` MUST return the same connection used by business operations.
 - `afterCommit()` callback MUST run only if the transaction commits successfully.
 - `afterCommit()`/`afterRollback()` registration requires transaction synchronization to be active.
@@ -212,7 +234,7 @@ Rules:
 
 ```java
 public interface ConnectionProvider {
-  Connection getConnection() throws SQLException;
+    Connection getConnection() throws SQLException;
 }
 ```
 
@@ -220,29 +242,31 @@ Used by OutboxDispatcher and OutboxPoller for short-lived connections outside th
 
 ### 3.3 Implementations
 
-| Implementation | Module | Description |
-|----------------|--------|-------------|
-| `ThreadLocalTxContext` | outbox-jdbc | Manual JDBC transaction management |
-| `SpringTxContext` | outbox-spring-adapter | Spring @Transactional integration |
+| Implementation         | Module                | Description                        |
+|------------------------|-----------------------|------------------------------------|
+| `ThreadLocalTxContext` | outbox-jdbc           | Manual JDBC transaction management |
+| `SpringTxContext`      | outbox-spring-adapter | Spring @Transactional integration  |
 
 ### 3.4 JsonCodec
 
 ```java
 public interface JsonCodec {
-  static JsonCodec getDefault() { ... }
+    static JsonCodec getDefault() { ...}
 
-  String toJson(Map<String, String> headers);
-  Map<String, String> parseObject(String json);
+    String toJson(Map<String, String> headers);
+
+    Map<String, String> parseObject(String json);
 }
 ```
 
-- `getDefault()` returns the singleton `DefaultJsonCodec` — a lightweight, zero-dependency encoder/decoder that only supports flat `Map<String, String>` objects.
+- `getDefault()` returns the singleton `DefaultJsonCodec` — a lightweight, zero-dependency encoder/decoder that only
+  supports flat `Map<String, String>` objects.
 - `toJson()` returns `null` for null or empty maps; rejects null keys with `IllegalArgumentException`.
 - `parseObject()` returns an empty map for `null`, empty, or `"null"` input.
 - Users who already have Jackson or Gson on the classpath can implement this interface and inject it into:
-  - `AbstractJdbcOutboxStore` constructor: `new H2OutboxStore(tableName, codec)`
-  - `OutboxPoller.Builder.jsonCodec(codec)`
-  - `JdbcOutboxStores.detect(dataSource, codec)`
+    - `AbstractJdbcOutboxStore` constructor: `new H2OutboxStore(tableName, codec)`
+    - `OutboxPoller.Builder.jsonCodec(codec)`
+    - `JdbcOutboxStores.detect(dataSource, codec)`
 
 ---
 
@@ -274,12 +298,12 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 
 ### 4.2 Status Values
 
-| Value | Name | Description |
-|-------|------|-------------|
-| 0 | NEW | Freshly inserted, awaiting processing |
-| 1 | DONE | Successfully processed |
-| 2 | RETRY | Failed, scheduled for retry |
-| 3 | DEAD | Exceeded max attempts |
+| Value | Name  | Description                           |
+|-------|-------|---------------------------------------|
+| 0     | NEW   | Freshly inserted, awaiting processing |
+| 1     | DONE  | Successfully processed                |
+| 2     | RETRY | Failed, scheduled for retry           |
+| 3     | DEAD  | Exceeded max attempts                 |
 
 ---
 
@@ -287,17 +311,17 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 
 ### 5.1 Fields
 
-| Field | Type | Required | Default |
-|-------|------|----------|---------|
-| eventId | String | No | ULID (monotonic) |
-| eventType | String | Yes | - |
-| occurredAt | Instant | No | Instant.now() |
-| aggregateType | String | No | AggregateType.GLOBAL.name() (`"__GLOBAL__"`) |
-| aggregateId | String | No | null |
-| tenantId | String | No | null |
-| headers | Map<String,String> | No | empty map |
-| payloadJson | String | Yes* | - |
-| payloadBytes | byte[] | Yes* | - |
+| Field         | Type               | Required | Default                                      |
+|---------------|--------------------|----------|----------------------------------------------|
+| eventId       | String             | No       | ULID (monotonic)                             |
+| eventType     | String             | Yes      | -                                            |
+| occurredAt    | Instant            | No       | Instant.now()                                |
+| aggregateType | String             | No       | AggregateType.GLOBAL.name() (`"__GLOBAL__"`) |
+| aggregateId   | String             | No       | null                                         |
+| tenantId      | String             | No       | null                                         |
+| headers       | Map<String,String> | No       | empty map                                    |
+| payloadJson   | String             | Yes*     | -                                            |
+| payloadBytes  | byte[]             | Yes*     | -                                            |
 
 *Either payloadJson or payloadBytes must be set, not both.
 
@@ -313,15 +337,15 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 ```java
 // With type-safe EventType
 EventEnvelope envelope = EventEnvelope.builder(UserEvents.USER_CREATED)
-    .aggregateType(Aggregates.USER)
-    .aggregateId("123")
-    .payloadJson("{\"name\":\"John\"}")
-    .build();
+                .aggregateType(Aggregates.USER)
+                .aggregateId("123")
+                .payloadJson("{\"name\":\"John\"}")
+                .build();
 
 // With string
 EventEnvelope envelope = EventEnvelope.builder("UserCreated")
-    .payloadJson("{}")
-    .build();
+        .payloadJson("{}")
+        .build();
 
 // Shorthand
 EventEnvelope envelope = EventEnvelope.ofJson("UserCreated", "{}");
@@ -333,23 +357,26 @@ The `tenantId` field provides **pass-through metadata** for multi-tenant applica
 
 ```java
 EventEnvelope envelope = EventEnvelope.builder("OrderCreated")
-    .tenantId("tenant-123")
-    .aggregateId("order-456")
-    .payloadJson("{...}")
-    .build();
+        .tenantId("tenant-123")
+        .aggregateId("order-456")
+        .payloadJson("{...}")
+        .build();
 ```
 
 **Framework behavior:**
+
 - `tenantId` is stored in the `outbox_event` table
 - `tenantId` is included when polling and dispatching events
 - Listeners receive `tenantId` via `event.tenantId()`
 
 **Framework does NOT provide:**
+
 - Tenant-based filtering during polling
 - Tenant isolation or partitioning
 - Per-tenant configuration
 
 **Application responsibility:**
+
 - Set `tenantId` when publishing events
 - Use `tenantId` in listeners to route events or apply tenant-specific logic
 - Implement tenant isolation at the database level if required (e.g., row-level security, separate schemas)
@@ -362,7 +389,7 @@ EventEnvelope envelope = EventEnvelope.builder("OrderCreated")
 
 ```java
 public interface EventType {
-  String name();
+    String name();
 }
 ```
 
@@ -370,15 +397,21 @@ public interface EventType {
 
 ```java
 public enum UserEvents implements EventType {
-  USER_CREATED,
-  USER_UPDATED,
-  USER_DELETED;
+    USER_CREATED,
+    USER_UPDATED,
+    USER_DELETED;
 }
 
 // Usage
-EventEnvelope.builder(UserEvents.USER_CREATED)
-    .payloadJson("{}")
-    .build();
+EventEnvelope.
+
+builder(UserEvents.USER_CREATED)
+    .
+
+payloadJson("{}")
+    .
+
+build();
 ```
 
 ### 6.3 Dynamic Implementation
@@ -386,18 +419,24 @@ EventEnvelope.builder(UserEvents.USER_CREATED)
 ```java
 EventType type = StringEventType.of("DynamicEvent");
 
-EventEnvelope.builder(type)
-    .payloadJson("{}")
-    .build();
+EventEnvelope.
+
+builder(type)
+    .
+
+payloadJson("{}")
+    .
+
+build();
 ```
 
 ### 6.4 AggregateType Interface
 
 ```java
 public interface AggregateType {
-  AggregateType GLOBAL = ...; // name() returns "__GLOBAL__"
+    AggregateType GLOBAL = ...; // name() returns "__GLOBAL__"
 
-  String name();
+    String name();
 }
 ```
 
@@ -408,19 +447,35 @@ public interface AggregateType {
 ```java
 // Enum-based
 public enum Aggregates implements AggregateType {
-  USER, ORDER, PRODUCT
+    USER, ORDER, PRODUCT
 }
 
-EventEnvelope.builder(eventType)
-    .aggregateType(Aggregates.USER)
-    .aggregateId("user-123")
-    .build();
+EventEnvelope.
+
+builder(eventType)
+    .
+
+aggregateType(Aggregates.USER)
+    .
+
+aggregateId("user-123")
+    .
+
+build();
 
 // Dynamic
-EventEnvelope.builder(eventType)
-    .aggregateType(StringAggregateType.of("CustomAggregate"))
-    .aggregateId("id-456")
-    .build();
+EventEnvelope.
+
+builder(eventType)
+    .
+
+aggregateType(StringAggregateType.of("CustomAggregate"))
+        .
+
+aggregateId("id-456")
+    .
+
+build();
 ```
 
 ---
@@ -431,17 +486,22 @@ EventEnvelope.builder(eventType)
 
 ```java
 public final class OutboxWriter {
-  public OutboxWriter(TxContext txContext, OutboxStore outboxStore);
-  public OutboxWriter(TxContext txContext, OutboxStore outboxStore, WriterHook writerHook);
+    public OutboxWriter(TxContext txContext, OutboxStore outboxStore);
 
-  public String write(EventEnvelope event);              // returns null if suppressed
-  public String write(String eventType, String payloadJson);  // returns null if suppressed
-  public String write(EventType eventType, String payloadJson); // returns null if suppressed
-  public List<String> writeAll(List<EventEnvelope> events);  // returns empty list if suppressed
+    public OutboxWriter(TxContext txContext, OutboxStore outboxStore, WriterHook writerHook);
+
+    public String write(EventEnvelope event);              // returns null if suppressed
+
+    public String write(String eventType, String payloadJson);  // returns null if suppressed
+
+    public String write(EventType eventType, String payloadJson); // returns null if suppressed
+
+    public List<String> writeAll(List<EventEnvelope> events);  // returns empty list if suppressed
 }
 ```
 
 Semantics:
+
 - MUST require an active transaction via TxContext
 - `write()` delegates to `writeAll()` (single-element list)
 - `writeAll()` calls `WriterHook.beforeWrite()` which may transform or suppress the list
@@ -455,16 +515,26 @@ Semantics:
 
 ```java
 public interface WriterHook {
-  default List<EventEnvelope> beforeWrite(List<EventEnvelope> events) { return events; }
-  default void afterWrite(List<EventEnvelope> events) {}
-  default void afterCommit(List<EventEnvelope> events) {}
-  default void afterRollback(List<EventEnvelope> events) {}
+    default List<EventEnvelope> beforeWrite(List<EventEnvelope> events) {
+        return events;
+    }
 
-  WriterHook NOOP = new WriterHook() {};
+    default void afterWrite(List<EventEnvelope> events) {
+    }
+
+    default void afterCommit(List<EventEnvelope> events) {
+    }
+
+    default void afterRollback(List<EventEnvelope> events) {
+    }
+
+    WriterHook NOOP = new WriterHook() {
+    };
 }
 ```
 
-Lifecycle: `beforeWrite` (transform/suppress) → insert → `afterWrite` → tx commit/rollback → `afterCommit`/`afterRollback`.
+Lifecycle: `beforeWrite` (transform/suppress) → insert → `afterWrite` → tx commit/rollback → `afterCommit`/
+`afterRollback`.
 
 - `beforeWrite` may return a modified list; returning null or empty suppresses the write
 - `afterWrite`/`afterCommit`/`afterRollback` exceptions are swallowed and logged
@@ -478,22 +548,27 @@ Lifecycle: `beforeWrite` (transform/suppress) → insert → `afterWrite` → tx
 
 ```java
 public interface OutboxStore {
-  void insertNew(Connection conn, EventEnvelope event);
-  int markDone(Connection conn, String eventId);
-  int markRetry(Connection conn, String eventId, Instant nextAt, String error);
-  int markDead(Connection conn, String eventId, String error);
-  List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit);
+    void insertNew(Connection conn, EventEnvelope event);
 
-  // Claim-based locking (default falls back to pollPending)
-  default List<OutboxEvent> claimPending(
-      Connection conn, String ownerId, Instant now,
-      Instant lockExpiry, Duration skipRecent, int limit);
+    int markDone(Connection conn, String eventId);
+
+    int markRetry(Connection conn, String eventId, Instant nextAt, String error);
+
+    int markDead(Connection conn, String eventId, String error);
+
+    List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit);
+
+    // Claim-based locking (default falls back to pollPending)
+    default List<OutboxEvent> claimPending(
+            Connection conn, String ownerId, Instant now,
+            Instant lockExpiry, Duration skipRecent, int limit);
 }
 ```
 
 ### 8.2 SQL Semantics
 
 **Insert New:**
+
 ```sql
 INSERT INTO outbox_event (event_id, event_type, aggregate_type, aggregate_id,
   tenant_id, payload, headers, status, attempts, available_at, created_at)
@@ -501,6 +576,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
 ```
 
 **Mark Done (idempotent):**
+
 ```sql
 UPDATE outbox_event
 SET status = 1, done_at = ?, locked_by = NULL, locked_at = NULL
@@ -508,6 +584,7 @@ WHERE event_id = ? AND status <> 1
 ```
 
 **Mark Retry:**
+
 ```sql
 UPDATE outbox_event
 SET status = 2, attempts = attempts + 1, available_at = ?, last_error = ?,
@@ -516,6 +593,7 @@ WHERE event_id = ? AND status <> 1
 ```
 
 **Mark Dead:**
+
 ```sql
 UPDATE outbox_event
 SET status = 3, last_error = ?, locked_by = NULL, locked_at = NULL
@@ -523,6 +601,7 @@ WHERE event_id = ? AND status <> 1
 ```
 
 **Poll Pending:**
+
 ```sql
 SELECT event_id, event_type, aggregate_type, aggregate_id, tenant_id,
        payload, headers, attempts, created_at
@@ -548,34 +627,38 @@ LIMIT ?
 
 ```java
 OutboxDispatcher dispatcher = OutboxDispatcher.builder()
-    .connectionProvider(connectionProvider)  // required
-    .outboxStore(outboxStore)                  // required
-    .listenerRegistry(listenerRegistry)      // required
-    .inFlightTracker(tracker)                // default: DefaultInFlightTracker
-    .retryPolicy(policy)                     // default: ExponentialBackoffRetryPolicy(200, 60_000)
-    .maxAttempts(10)                         // default: 10
-    .workerCount(4)                          // default: 4
-    .hotQueueCapacity(1000)                  // default: 1000
-    .coldQueueCapacity(1000)                 // default: 1000
-    .metrics(metricsExporter)                // default: MetricsExporter.NOOP
-    .interceptor(interceptor)                // optional, repeatable
-    .interceptors(List.of(i1, i2))           // optional, bulk add
-    .drainTimeoutMs(5000)                    // default: 5000
-    .build();
+        .connectionProvider(connectionProvider)  // required
+        .outboxStore(outboxStore)                  // required
+        .listenerRegistry(listenerRegistry)      // required
+        .inFlightTracker(tracker)                // default: DefaultInFlightTracker
+        .retryPolicy(policy)                     // default: ExponentialBackoffRetryPolicy(200, 60_000)
+        .maxAttempts(10)                         // default: 10
+        .workerCount(4)                          // default: 4
+        .hotQueueCapacity(1000)                  // default: 1000
+        .coldQueueCapacity(1000)                 // default: 1000
+        .metrics(metricsExporter)                // default: MetricsExporter.NOOP
+        .interceptor(interceptor)                // optional, repeatable
+        .interceptors(List.of(i1, i2))           // optional, bulk add
+        .drainTimeoutMs(5000)                    // default: 5000
+        .build();
 ```
 
 ### 9.2 Methods
 
 ```java
 boolean enqueueHot(QueuedEvent event)  // Returns false if queue full or shutting down
+
 boolean enqueueCold(QueuedEvent event) // Returns false if queue full or shutting down
+
 int coldQueueRemainingCapacity()       // Number of slots available in cold queue
+
 void close()                           // Graceful shutdown with drain
 ```
 
 ### 9.3 Processing Flow
 
 For each queued event:
+
 1. **Dedupe**: If eventId already inflight, drop
 2. **Interceptors**: Run `beforeDispatch` in registration order
 3. **Route**: Find single listener via `listenerRegistry.listenerFor(aggregateType, eventType)`
@@ -606,8 +689,11 @@ Cross-cutting hooks for audit, logging, and metrics:
 
 ```java
 public interface EventInterceptor {
-  default void beforeDispatch(EventEnvelope event) throws Exception {}
-  default void afterDispatch(EventEnvelope event, Exception error) {}
+    default void beforeDispatch(EventEnvelope event) throws Exception {
+    }
+
+    default void afterDispatch(EventEnvelope event, Exception error) {
+    }
 }
 ```
 
@@ -626,20 +712,22 @@ This prevents cold queue starvation under sustained hot load.
 and waits up to `drainTimeoutMs` before forcing shutdown.
 
 This is intentional for **natural backpressure**:
+
 - `workerCount` = maximum concurrent events being processed
 - Slow listeners -> workers stay busy -> cannot poll more events
 - Queues fill up -> `enqueueHot()` returns false -> graceful degradation
 - No risk of overwhelming downstream systems (MQ, databases, APIs)
 
-**Tuning:** Adjust `workerCount` to control max parallelism. Higher values increase throughput but may overwhelm downstream services.
+**Tuning:** Adjust `workerCount` to control max parallelism. Higher values increase throughput but may overwhelm
+downstream services.
 
 ### 9.8 Queue Element
 
 ```java
 public class QueuedEvent {
-  EventEnvelope envelope;
-  Source source;        // HOT or COLD
-  int attempts;
+    EventEnvelope envelope;
+    Source source;        // HOT or COLD
+    int attempts;
 }
 ```
 
@@ -649,15 +737,19 @@ Prevents concurrent processing of the same event.
 
 ```java
 public interface InFlightTracker {
-  boolean tryAcquire(String eventId);  // Returns false if already in-flight
-  void release(String eventId);         // Remove from tracking
+    boolean tryAcquire(String eventId);  // Returns false if already in-flight
+
+    void release(String eventId);         // Remove from tracking
 }
 ```
 
 **DefaultInFlightTracker**:
+
 ```java
 new DefaultInFlightTracker()           // No TTL
-new DefaultInFlightTracker(long ttlMs) // With TTL for stale entry recovery
+new
+
+DefaultInFlightTracker(long ttlMs) // With TTL for stale entry recovery
 ```
 
 - Uses ConcurrentHashMap for thread-safe tracking
@@ -671,22 +763,24 @@ new DefaultInFlightTracker(long ttlMs) // With TTL for stale entry recovery
 
 ```java
 OutboxPoller poller = OutboxPoller.builder()
-    .connectionProvider(connectionProvider)  // required
-    .outboxStore(outboxStore)                  // required
-    .handler(handler)                        // required
-    .skipRecent(Duration.ofSeconds(1))       // default: Duration.ZERO
-    .batchSize(50)                           // default: 50
-    .intervalMs(5000)                        // default: 5000
-    .metrics(metricsExporter)                // default: MetricsExporter.NOOP
-    .claimLocking("poller-1", Duration.ofMinutes(5))  // optional: enables multi-node claim locking
-    .build();
+        .connectionProvider(connectionProvider)  // required
+        .outboxStore(outboxStore)                  // required
+        .handler(handler)                        // required
+        .skipRecent(Duration.ofSeconds(1))       // default: Duration.ZERO
+        .batchSize(50)                           // default: 50
+        .intervalMs(5000)                        // default: 5000
+        .metrics(metricsExporter)                // default: MetricsExporter.NOOP
+        .claimLocking("poller-1", Duration.ofMinutes(5))  // optional: enables multi-node claim locking
+        .build();
 ```
 
 ### 10.2 Methods
 
 ```java
 void start()    // Start scheduled polling
+
 void poll()     // Execute single poll cycle
+
 void close()    // Stop polling
 ```
 
@@ -707,18 +801,20 @@ When `claimLocking` is configured, the poller uses claim-based locking:
 - **Claim**: Sets `locked_by` and `locked_at` on pending events atomically
 - **Expiry**: Locks older than the configured timeout are considered expired and can be reclaimed
 - **Release**: `markDone`/`markRetry`/`markDead` clear `locked_by` and `locked_at`
-- **Database-specific**: PostgreSQL uses `FOR UPDATE SKIP LOCKED` + `RETURNING`; MySQL uses `UPDATE...ORDER BY...LIMIT`; H2 uses subquery-based two-phase claim
+- **Database-specific**: PostgreSQL uses `FOR UPDATE SKIP LOCKED` + `RETURNING`; MySQL uses `UPDATE...ORDER BY...LIMIT`;
+  H2 uses subquery-based two-phase claim
 
 ### 10.5 OutboxPollerHandler
 
 ```java
+
 @FunctionalInterface
 public interface OutboxPollerHandler {
-  boolean handle(EventEnvelope event, int attempts);
+    boolean handle(EventEnvelope event, int attempts);
 
-  default int availableCapacity() {
-    return Integer.MAX_VALUE;
-  }
+    default int availableCapacity() {
+        return Integer.MAX_VALUE;
+    }
 }
 ```
 
@@ -749,7 +845,7 @@ For high-QPS workloads, CDC can replace the in-process poller and hot-path hook:
  * For cross-cutting concerns (audit, logging), use EventInterceptor.
  */
 public interface EventListener {
-  void onEvent(EventEnvelope event) throws Exception;
+    void onEvent(EventEnvelope event) throws Exception;
 }
 ```
 
@@ -757,7 +853,7 @@ public interface EventListener {
 
 ```java
 public interface ListenerRegistry {
-  EventListener listenerFor(String aggregateType, String eventType);
+    EventListener listenerFor(String aggregateType, String eventType);
 }
 ```
 
@@ -767,13 +863,17 @@ Returns the single listener for the given `(aggregateType, eventType)`, or `null
 
 ```java
 // Register with GLOBAL aggregate type (convenience)
-registry.register("UserCreated", event -> { ... });
+registry.register("UserCreated",event ->{...});
 
 // Register with specific aggregate type
-registry.register("Order", "OrderPlaced", event -> { ... });
+        registry.
+
+register("Order","OrderPlaced",event ->{...});
 
 // Type-safe registration
-registry.register(Aggregates.USER, UserEvents.USER_CREATED, event -> { ... });
+        registry.
+
+register(Aggregates.USER, UserEvents.USER_CREATED, event ->{...});
 ```
 
 - Duplicate registration for the same `(aggregateType, eventType)` throws `IllegalStateException`
@@ -794,7 +894,7 @@ registry.register(Aggregates.USER, UserEvents.USER_CREATED, event -> { ... });
 
 ```java
 public interface RetryPolicy {
-  long computeDelayMs(int attempts);
+    long computeDelayMs(int attempts);
 }
 ```
 
@@ -805,6 +905,7 @@ public ExponentialBackoffRetryPolicy(long baseDelayMs, long maxDelayMs)
 ```
 
 Formula:
+
 ```
 delay = min(maxDelay, baseDelay * 2^(attempts-1)) * jitter
 jitter = random(0.5, 1.5)
@@ -812,11 +913,11 @@ jitter = random(0.5, 1.5)
 
 ### 12.3 Default Values
 
-| Parameter | Default |
-|-----------|---------|
-| baseDelayMs | 200 |
-| maxDelayMs | 60000 |
-| maxAttempts | 10 |
+| Parameter   | Default |
+|-------------|---------|
+| baseDelayMs | 200     |
+| maxDelayMs  | 60000   |
+| maxAttempts | 10      |
 
 ---
 
@@ -858,10 +959,10 @@ The framework implements backpressure at multiple levels to prevent overwhelming
 
 Workers execute listeners synchronously (blocking). This provides natural rate limiting:
 
-| Scenario | Effect |
-|----------|--------|
-| Fast listeners | Workers quickly return to polling, high throughput |
-| Slow listeners | Workers blocked, queues fill, automatic throttling |
+| Scenario          | Effect                                              |
+|-------------------|-----------------------------------------------------|
+| Fast listeners    | Workers quickly return to polling, high throughput  |
+| Slow listeners    | Workers blocked, queues fill, automatic throttling  |
 | Downstream outage | All workers blocked, queues full, events safe in DB |
 
 **Key insight:** The database acts as a durable buffer when in-memory queues are full.
@@ -883,33 +984,35 @@ Workers execute listeners synchronously (blocking). This provides natural rate l
 
 ## 14. Configuration
 
-The recommended way to configure the outbox is via the `Outbox` composite builder (`Outbox.singleNode()`, `Outbox.multiNode()`, `Outbox.ordered()`, `Outbox.writerOnly()`), which wires all components with correct defaults. For advanced use cases, `OutboxDispatcher.Builder` and `OutboxPoller.Builder` are available directly.
+The recommended way to configure the outbox is via the `Outbox` composite builder (`Outbox.singleNode()`,
+`Outbox.multiNode()`, `Outbox.ordered()`, `Outbox.writerOnly()`), which wires all components with correct defaults. For
+advanced use cases, `OutboxDispatcher.Builder` and `OutboxPoller.Builder` are available directly.
 
 ### 14.1 Dispatcher Defaults
 
-| Parameter | Default |
-|-----------|---------|
-| workerCount | 4 |
-| hotQueueCapacity | 1000 |
-| coldQueueCapacity | 1000 |
-| maxAttempts | 10 |
-| retryPolicy | ExponentialBackoffRetryPolicy(200, 60_000) |
-| drainTimeoutMs | 5000 |
-| metrics | MetricsExporter.NOOP |
+| Parameter         | Default                                    |
+|-------------------|--------------------------------------------|
+| workerCount       | 4                                          |
+| hotQueueCapacity  | 1000                                       |
+| coldQueueCapacity | 1000                                       |
+| maxAttempts       | 10                                         |
+| retryPolicy       | ExponentialBackoffRetryPolicy(200, 60_000) |
+| drainTimeoutMs    | 5000                                       |
+| metrics           | MetricsExporter.NOOP                       |
 
 ### 14.2 Composite Builder Example
 
 ```java
-try (Outbox outbox = Outbox.singleNode()
-    .connectionProvider(connectionProvider)
-    .txContext(txContext)
-    .outboxStore(outboxStore)
-    .listenerRegistry(registry)
-    .workerCount(8)
-    .hotQueueCapacity(2000)
-    .build()) {
-  OutboxWriter writer = outbox.writer();
-  // use writer inside transactions...
+try(Outbox outbox = Outbox.singleNode()
+        .connectionProvider(connectionProvider)
+        .txContext(txContext)
+        .outboxStore(outboxStore)
+        .listenerRegistry(registry)
+        .workerCount(8)
+        .hotQueueCapacity(2000)
+        .build()){
+OutboxWriter writer = outbox.writer();
+// use writer inside transactions...
 }
 ```
 
@@ -917,12 +1020,12 @@ try (Outbox outbox = Outbox.singleNode()
 
 ```java
 OutboxDispatcher dispatcher = OutboxDispatcher.builder()
-    .connectionProvider(connectionProvider)
-    .outboxStore(outboxStore)
-    .listenerRegistry(registry)
-    .workerCount(8)
-    .hotQueueCapacity(2000)
-    .build();
+        .connectionProvider(connectionProvider)
+        .outboxStore(outboxStore)
+        .listenerRegistry(registry)
+        .workerCount(8)
+        .hotQueueCapacity(2000)
+        .build();
 ```
 
 ---
@@ -933,61 +1036,73 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
 
 ```java
 public interface MetricsExporter {
-  void incrementHotEnqueued();
-  void incrementHotDropped();
-  void incrementColdEnqueued();
-  void incrementDispatchSuccess();
-  void incrementDispatchFailure();
-  void incrementDispatchDead();
-  void recordQueueDepths(int hotDepth, int coldDepth);
-  void recordOldestLagMs(long lagMs);
+    void incrementHotEnqueued();
 
-  MetricsExporter NOOP = new Noop();
+    void incrementHotDropped();
+
+    void incrementColdEnqueued();
+
+    void incrementDispatchSuccess();
+
+    void incrementDispatchFailure();
+
+    void incrementDispatchDead();
+
+    void recordQueueDepths(int hotDepth, int coldDepth);
+
+    void recordOldestLagMs(long lagMs);
+
+    MetricsExporter NOOP = new Noop();
 }
 ```
 
 ### 15.2 MicrometerMetricsExporter
 
-The `outbox-micrometer` module provides `MicrometerMetricsExporter`, a ready-to-use implementation that registers counters and gauges with a Micrometer `MeterRegistry`.
+The `outbox-micrometer` module provides `MicrometerMetricsExporter`, a ready-to-use implementation that registers
+counters and gauges with a Micrometer `MeterRegistry`.
 
 **Constructors:**
 
 ```java
 new MicrometerMetricsExporter(MeterRegistry registry)                // default prefix: "outbox"
-new MicrometerMetricsExporter(MeterRegistry registry, String namePrefix) // custom prefix
+new
+
+MicrometerMetricsExporter(MeterRegistry registry, String namePrefix) // custom prefix
 ```
 
 **Counters (monotonically increasing):**
 
-| Metric Name | Description |
-|-------------|-------------|
-| `{prefix}.enqueue.hot` | Events enqueued via hot path |
-| `{prefix}.enqueue.hot.dropped` | Events dropped (hot queue full) |
-| `{prefix}.enqueue.cold` | Events enqueued via cold (poller) path |
-| `{prefix}.dispatch.success` | Events dispatched successfully |
-| `{prefix}.dispatch.failure` | Events failed (will retry) |
-| `{prefix}.dispatch.dead` | Events moved to DEAD |
+| Metric Name                    | Description                            |
+|--------------------------------|----------------------------------------|
+| `{prefix}.enqueue.hot`         | Events enqueued via hot path           |
+| `{prefix}.enqueue.hot.dropped` | Events dropped (hot queue full)        |
+| `{prefix}.enqueue.cold`        | Events enqueued via cold (poller) path |
+| `{prefix}.dispatch.success`    | Events dispatched successfully         |
+| `{prefix}.dispatch.failure`    | Events failed (will retry)             |
+| `{prefix}.dispatch.dead`       | Events moved to DEAD                   |
 
 **Gauges (current value):**
 
-| Metric Name | Description |
-|-------------|-------------|
-| `{prefix}.queue.hot.depth` | Current hot queue depth |
-| `{prefix}.queue.cold.depth` | Current cold queue depth |
-| `{prefix}.lag.oldest.ms` | Lag of oldest pending event in milliseconds |
+| Metric Name                 | Description                                 |
+|-----------------------------|---------------------------------------------|
+| `{prefix}.queue.hot.depth`  | Current hot queue depth                     |
+| `{prefix}.queue.cold.depth` | Current cold queue depth                    |
+| `{prefix}.lag.oldest.ms`    | Lag of oldest pending event in milliseconds |
 
-The default prefix is `outbox`. For multi-instance setups, use a custom prefix (e.g., `"orders.outbox"`) to avoid metric collisions.
+The default prefix is `outbox`. For multi-instance setups, use a custom prefix (e.g., `"orders.outbox"`) to avoid metric
+collisions.
 
 ### 15.3 Logging
 
-| Level | Event |
-|-------|-------|
+| Level   | Event                                 |
+|---------|---------------------------------------|
 | WARNING | Hot queue drop (DispatcherWriterHook) |
-| ERROR | DEAD transition |
-| ERROR | OutboxDispatcher/poller loop errors |
-| SEVERE | Decode failures (malformed headers) |
+| ERROR   | DEAD transition                       |
+| ERROR   | OutboxDispatcher/poller loop errors   |
+| SEVERE  | Decode failures (malformed headers)   |
 
-Hot queue drop warnings are emitted by `DispatcherWriterHook`. If no hook is installed (CDC-only), no warning or metric is produced.
+Hot queue drop warnings are emitted by `DispatcherWriterHook`. If no hook is installed (CDC-only), no warning or metric
+is produced.
 
 ### 15.4 Idempotency Requirements
 
@@ -999,14 +1114,14 @@ Hot queue drop warnings are emitted by `DispatcherWriterHook`. If no hook is ins
 
 ## 16. Thread Safety
 
-| Component | Strategy |
-|-----------|----------|
-| OutboxDispatcher | Worker pool (ExecutorService), bounded BlockingQueues |
-| Registries | ConcurrentHashMap |
-| InFlightTracker | ConcurrentHashMap with CAS operations |
-| OutboxPoller | Single-thread ScheduledExecutorService |
-| OutboxPurgeScheduler | Single-thread ScheduledExecutorService |
-| ThreadLocalTxContext | ThreadLocal storage |
+| Component            | Strategy                                              |
+|----------------------|-------------------------------------------------------|
+| OutboxDispatcher     | Worker pool (ExecutorService), bounded BlockingQueues |
+| Registries           | ConcurrentHashMap                                     |
+| InFlightTracker      | ConcurrentHashMap with CAS operations                 |
+| OutboxPoller         | Single-thread ScheduledExecutorService                |
+| OutboxPurgeScheduler | Single-thread ScheduledExecutorService                |
+| ThreadLocalTxContext | ThreadLocal storage                                   |
 
 ---
 
@@ -1014,13 +1129,15 @@ Hot queue drop warnings are emitted by `DispatcherWriterHook`. If no hook is ins
 
 ### 17.1 Overview
 
-The outbox table is a transient buffer, not an outbox store. Terminal events (DONE and DEAD) should be purged after a retention period to prevent table bloat and maintain poller query performance. If clients need to archive events for audit, they should do so in their `EventListener`.
+The outbox table is a transient buffer, not an outbox store. Terminal events (DONE and DEAD) should be purged after a
+retention period to prevent table bloat and maintain poller query performance. If clients need to archive events for
+audit, they should do so in their `EventListener`.
 
 ### 17.2 EventPurger Interface
 
 ```java
 public interface EventPurger {
-  int purge(Connection conn, Instant before, int limit);
+    int purge(Connection conn, Instant before, int limit);
 }
 ```
 
@@ -1031,14 +1148,15 @@ public interface EventPurger {
 
 ### 17.3 JDBC Purger Hierarchy
 
-| Class | Database | Strategy |
-|-------|----------|----------|
-| `AbstractJdbcEventPurger` | Base | Subquery-based DELETE (default) |
-| `H2EventPurger` | H2 | Inherits default |
-| `MySqlEventPurger` | MySQL/TiDB | `DELETE...ORDER BY...LIMIT` |
-| `PostgresEventPurger` | PostgreSQL | Inherits default |
+| Class                     | Database   | Strategy                        |
+|---------------------------|------------|---------------------------------|
+| `AbstractJdbcEventPurger` | Base       | Subquery-based DELETE (default) |
+| `H2EventPurger`           | H2         | Inherits default                |
+| `MySqlEventPurger`        | MySQL/TiDB | `DELETE...ORDER BY...LIMIT`     |
+| `PostgresEventPurger`     | PostgreSQL | Inherits default                |
 
 **Default purge SQL (H2, PostgreSQL):**
+
 ```sql
 DELETE FROM outbox_event WHERE event_id IN (
   SELECT event_id FROM outbox_event
@@ -1048,43 +1166,48 @@ DELETE FROM outbox_event WHERE event_id IN (
 ```
 
 **MySQL purge SQL:**
+
 ```sql
 DELETE FROM outbox_event
 WHERE status IN (1, 3) AND COALESCE(done_at, created_at) < ?
 ORDER BY created_at LIMIT ?
 ```
 
-All purger classes support a custom table name via constructor (validated with the same regex as `AbstractJdbcOutboxStore`).
+All purger classes support a custom table name via constructor (validated with the same regex as
+`AbstractJdbcOutboxStore`).
 
 ### 17.4 OutboxPurgeScheduler
 
-Scheduled component modeled after `OutboxPoller`: builder pattern, `AutoCloseable`, daemon threads, synchronized lifecycle.
+Scheduled component modeled after `OutboxPoller`: builder pattern, `AutoCloseable`, daemon threads, synchronized
+lifecycle.
 
 #### Builder
 
 ```java
 OutboxPurgeScheduler scheduler = OutboxPurgeScheduler.builder()
-    .connectionProvider(connectionProvider)  // required
-    .purger(purger)                          // required
-    .retention(Duration.ofDays(7))           // default: 7 days
-    .batchSize(500)                          // default: 500
-    .intervalSeconds(3600)                   // default: 3600 (1 hour)
-    .build();
+        .connectionProvider(connectionProvider)  // required
+        .purger(purger)                          // required
+        .retention(Duration.ofDays(7))           // default: 7 days
+        .batchSize(500)                          // default: 500
+        .intervalSeconds(3600)                   // default: 3600 (1 hour)
+        .build();
 ```
 
-| Parameter | Type | Default | Required |
-|-----------|------|---------|----------|
-| `connectionProvider` | `ConnectionProvider` | - | yes |
-| `purger` | `EventPurger` | - | yes |
-| `retention` | `Duration` | 7 days | no |
-| `batchSize` | `int` | 500 | no |
-| `intervalSeconds` | `long` | 3600 | no |
+| Parameter            | Type                 | Default | Required |
+|----------------------|----------------------|---------|----------|
+| `connectionProvider` | `ConnectionProvider` | -       | yes      |
+| `purger`             | `EventPurger`        | -       | yes      |
+| `retention`          | `Duration`           | 7 days  | no       |
+| `batchSize`          | `int`                | 500     | no       |
+| `intervalSeconds`    | `long`               | 3600    | no       |
 
 #### Methods
 
 ```java
 void start()    // Start scheduled purge loop
+
 void runOnce()  // Execute single purge cycle (loops batches until count < batchSize)
+
 void close()    // Stop purge and shut down scheduler thread
 ```
 
@@ -1103,7 +1226,8 @@ void close()    // Stop purge and shut down scheduler thread
 
 ### 18.1 Overview
 
-Events that exceed `maxAttempts` or have no registered listener are marked DEAD. The framework provides tooling to query, count, and replay dead events without writing raw SQL.
+Events that exceed `maxAttempts` or have no registered listener are marked DEAD. The framework provides tooling to
+query, count, and replay dead events without writing raw SQL.
 
 ### 18.2 OutboxStore SPI Methods
 
@@ -1111,7 +1235,9 @@ The `OutboxStore` interface includes default methods for dead event operations:
 
 ```java
 default List<OutboxEvent> queryDead(Connection conn, String eventType, String aggregateType, int limit);
+
 default int replayDead(Connection conn, String eventId);
+
 default int countDead(Connection conn, String eventType);
 ```
 
@@ -1121,31 +1247,36 @@ default int countDead(Connection conn, String eventType);
 
 ### 18.3 DeadEventManager
 
-`DeadEventManager` (`outbox.dead`) is a convenience facade that manages connection lifecycle internally using a `ConnectionProvider`:
+`DeadEventManager` (`outbox.dead`) is a convenience facade that manages connection lifecycle internally using a
+`ConnectionProvider`:
 
 ```java
 public final class DeadEventManager {
-  public DeadEventManager(ConnectionProvider connectionProvider, OutboxStore outboxStore);
+    public DeadEventManager(ConnectionProvider connectionProvider, OutboxStore outboxStore);
 
-  public List<OutboxEvent> query(String eventType, String aggregateType, int limit);
-  public boolean replay(String eventId);
-  public int replayAll(String eventType, String aggregateType, int batchSize);
-  public int count(String eventType);
+    public List<OutboxEvent> query(String eventType, String aggregateType, int limit);
+
+    public boolean replay(String eventId);
+
+    public int replayAll(String eventType, String aggregateType, int batchSize);
+
+    public int count(String eventType);
 }
 ```
 
 **Methods:**
 
-| Method | Description |
-|--------|-------------|
-| `query(eventType, aggregateType, limit)` | Query dead events with optional filters (`null` for all) |
-| `replay(eventId)` | Replay a single dead event by resetting it to NEW; returns `true` if replayed |
-| `replayAll(eventType, aggregateType, batchSize)` | Replay all matching dead events in batches; returns total replayed |
-| `count(eventType)` | Count dead events, optionally filtered by event type (`null` for all) |
+| Method                                           | Description                                                                   |
+|--------------------------------------------------|-------------------------------------------------------------------------------|
+| `query(eventType, aggregateType, limit)`         | Query dead events with optional filters (`null` for all)                      |
+| `replay(eventId)`                                | Replay a single dead event by resetting it to NEW; returns `true` if replayed |
+| `replayAll(eventType, aggregateType, batchSize)` | Replay all matching dead events in batches; returns total replayed            |
+| `count(eventType)`                               | Count dead events, optionally filtered by event type (`null` for all)         |
 
 ### 18.4 Error Handling
 
 All `DeadEventManager` methods catch `SQLException` and log at `SEVERE` level:
+
 - `query()` returns `List.of()` on failure
 - `replay()` returns `false` on failure
 - `replayAll()` returns the count replayed so far and stops on failure
@@ -1159,11 +1290,11 @@ All `DeadEventManager` methods catch `SQLException` and log at `SEVERE` level:
 
 For per-aggregate FIFO ordering:
 
-| Setting | Value | Reason |
-|---------|-------|--------|
-| `WriterHook` | `NOOP` (default) | Disable hot path to avoid dual-path reordering |
-| `OutboxPoller` | Single node | Prevent cross-node claim interleaving |
-| `workerCount` | `1` | Sequential dispatch preserves poll order |
+| Setting        | Value            | Reason                                         |
+|----------------|------------------|------------------------------------------------|
+| `WriterHook`   | `NOOP` (default) | Disable hot path to avoid dual-path reordering |
+| `OutboxPoller` | Single node      | Prevent cross-node claim interleaving          |
+| `workerCount`  | `1`              | Sequential dispatch preserves poll order       |
 
 The poller reads events in `ORDER BY created_at` order. The single dispatch
 worker processes them sequentially, guaranteeing that events for the same
@@ -1201,14 +1332,16 @@ underlying issue.
 
 ### 20.1 Overview
 
-The `Outbox` class is the recommended entry point for wiring the framework. It provides four scenario-specific builders that create an `OutboxWriter` and optionally an `OutboxDispatcher`, `OutboxPoller`, and `OutboxPurgeScheduler` as a single `AutoCloseable` unit.
+The `Outbox` class is the recommended entry point for wiring the framework. It provides four scenario-specific builders
+that create an `OutboxWriter` and optionally an `OutboxDispatcher`, `OutboxPoller`, and `OutboxPurgeScheduler` as a
+single `AutoCloseable` unit.
 
-| Builder | Hot Path | Poller Mode | workerCount | maxAttempts | WriterHook |
-|---------|----------|-------------|-------------|-------------|------------|
-| `Outbox.singleNode()` | Yes | `pollPending` | user-set (default 4) | user-set (default 10) | `DispatcherWriterHook` |
-| `Outbox.multiNode()` | Yes | `claimPending` | user-set (default 4) | user-set (default 10) | `DispatcherWriterHook` |
-| `Outbox.ordered()` | No | `pollPending` | 1 (forced) | 1 (forced) | `NOOP` (forced) |
-| `Outbox.writerOnly()` | No | None | N/A | N/A | `NOOP` (forced) |
+| Builder               | Hot Path | Poller Mode    | workerCount          | maxAttempts           | WriterHook             |
+|-----------------------|----------|----------------|----------------------|-----------------------|------------------------|
+| `Outbox.singleNode()` | Yes      | `pollPending`  | user-set (default 4) | user-set (default 10) | `DispatcherWriterHook` |
+| `Outbox.multiNode()`  | Yes      | `claimPending` | user-set (default 4) | user-set (default 10) | `DispatcherWriterHook` |
+| `Outbox.ordered()`    | No       | `pollPending`  | 1 (forced)           | 1 (forced)            | `NOOP` (forced)        |
+| `Outbox.writerOnly()` | No       | None           | N/A                  | N/A                   | `NOOP` (forced)        |
 
 ### 20.2 Sealed Builder Hierarchy
 
@@ -1225,11 +1358,14 @@ Outbox (final, AutoCloseable)
               skipRecent, drainTimeoutMs
 ```
 
-`SingleNodeBuilder` and `MultiNodeBuilder` add: `workerCount`, `hotQueueCapacity`, `coldQueueCapacity`, `maxAttempts`, `retryPolicy`. `MultiNodeBuilder` additionally requires `claimLocking(Duration)` or `claimLocking(String, Duration)`.
+`SingleNodeBuilder` and `MultiNodeBuilder` add: `workerCount`, `hotQueueCapacity`, `coldQueueCapacity`, `maxAttempts`,
+`retryPolicy`. `MultiNodeBuilder` additionally requires `claimLocking(Duration)` or `claimLocking(String, Duration)`.
 
 `OrderedBuilder` exposes no additional parameters.
 
-`WriterOnlyBuilder` only requires `txContext` and `outboxStore`. Optionally accepts `purger`, `purgeRetention`, `purgeBatchSize`, `purgeIntervalSeconds` for age-based cleanup; if `purger` is set, `connectionProvider` is also required. Inherited dispatcher/poller settings are ignored.
+`WriterOnlyBuilder` only requires `txContext` and `outboxStore`. Optionally accepts `purger`, `purgeRetention`,
+`purgeBatchSize`, `purgeIntervalSeconds` for age-based cleanup; if `purger` is set, `connectionProvider` is also
+required. Inherited dispatcher/poller settings are ignored.
 
 ### 20.3 Build Lifecycle
 
@@ -1238,10 +1374,12 @@ Each `build()`:
 1. Validates required fields (`NullPointerException` if missing).
 2. `MultiNodeBuilder` checks `claimLocking()` was called (`IllegalStateException` if not).
 3. Builds `OutboxDispatcher` (workers start immediately). Skipped for `WriterOnlyBuilder`.
-4. Builds `OutboxPoller` — wrapped in try-catch: if fails, dispatcher is closed before rethrowing. Skipped for `WriterOnlyBuilder`.
+4. Builds `OutboxPoller` — wrapped in try-catch: if fails, dispatcher is closed before rethrowing. Skipped for
+   `WriterOnlyBuilder`.
 5. Starts poller. Skipped for `WriterOnlyBuilder`.
 6. Creates `OutboxWriter` (with `DispatcherWriterHook` for single/multi-node, `NOOP` for ordered and writer-only).
-7. `WriterOnlyBuilder` optionally builds and starts `OutboxPurgeScheduler` if a purger is configured — wrapped in try-catch: if `start()` fails, the scheduler is closed before rethrowing.
+7. `WriterOnlyBuilder` optionally builds and starts `OutboxPurgeScheduler` if a purger is configured — wrapped in
+   try-catch: if `start()` fails, the scheduler is closed before rethrowing.
 8. Returns `Outbox`.
 
 ### 20.4 Shutdown
@@ -1256,45 +1394,49 @@ Each `build()`:
 
 ```java
 // Single-node (hot + poller)
-try (Outbox outbox = Outbox.singleNode()
-    .connectionProvider(cp).txContext(tx).outboxStore(store).listenerRegistry(reg)
-    .workerCount(4)
-    .build()) {
-  OutboxWriter writer = outbox.writer();
+try(Outbox outbox = Outbox.singleNode()
+        .connectionProvider(cp).txContext(tx).outboxStore(store).listenerRegistry(reg)
+        .workerCount(4)
+        .build()){
+OutboxWriter writer = outbox.writer();
 }
 
 // Multi-node (hot + poller + claim locking)
-try (Outbox outbox = Outbox.multiNode()
-    .connectionProvider(cp).txContext(tx).outboxStore(store).listenerRegistry(reg)
-    .claimLocking(Duration.ofMinutes(5))
-    .workerCount(8)
-    .build()) {
-  OutboxWriter writer = outbox.writer();
+        try(
+Outbox outbox = Outbox.multiNode()
+        .connectionProvider(cp).txContext(tx).outboxStore(store).listenerRegistry(reg)
+        .claimLocking(Duration.ofMinutes(5))
+        .workerCount(8)
+        .build()){
+OutboxWriter writer = outbox.writer();
 }
 
 // Ordered delivery (poller-only, single worker, no retry)
-try (Outbox outbox = Outbox.ordered()
-    .connectionProvider(cp).txContext(tx).outboxStore(store).listenerRegistry(reg)
-    .intervalMs(1000)
-    .build()) {
-  OutboxWriter writer = outbox.writer();
+        try(
+Outbox outbox = Outbox.ordered()
+        .connectionProvider(cp).txContext(tx).outboxStore(store).listenerRegistry(reg)
+        .intervalMs(1000)
+        .build()){
+OutboxWriter writer = outbox.writer();
 }
 
 // Writer-only (CDC mode, no dispatcher/poller)
-try (Outbox outbox = Outbox.writerOnly()
-    .txContext(tx).outboxStore(store)
-    .build()) {
-  OutboxWriter writer = outbox.writer();
+        try(
+Outbox outbox = Outbox.writerOnly()
+        .txContext(tx).outboxStore(store)
+        .build()){
+OutboxWriter writer = outbox.writer();
 }
 
 // Writer-only with age-based purge
-try (Outbox outbox = Outbox.writerOnly()
-    .txContext(tx).outboxStore(store)
-    .connectionProvider(cp)
-    .purger(new H2AgeBasedPurger())
-    .purgeRetention(Duration.ofHours(24))
-    .purgeIntervalSeconds(1800)
-    .build()) {
-  OutboxWriter writer = outbox.writer();
+        try(
+Outbox outbox = Outbox.writerOnly()
+        .txContext(tx).outboxStore(store)
+        .connectionProvider(cp)
+        .purger(new H2AgeBasedPurger())
+        .purgeRetention(Duration.ofHours(24))
+        .purgeIntervalSeconds(1800)
+        .build()){
+OutboxWriter writer = outbox.writer();
 }
 ```

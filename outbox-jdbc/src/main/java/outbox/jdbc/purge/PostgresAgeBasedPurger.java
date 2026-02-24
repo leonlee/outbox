@@ -7,11 +7,11 @@ package outbox.jdbc.purge;
  */
 public final class PostgresAgeBasedPurger extends AbstractJdbcAgeBasedPurger {
 
-  public PostgresAgeBasedPurger() {
-    super();
-  }
+    public PostgresAgeBasedPurger() {
+        super();
+    }
 
-  public PostgresAgeBasedPurger(String tableName) {
-    super(tableName);
-  }
+    public PostgresAgeBasedPurger(String tableName) {
+        super(tableName);
+    }
 }

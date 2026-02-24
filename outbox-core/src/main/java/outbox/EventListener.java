@@ -48,11 +48,11 @@ package outbox;
  */
 public interface EventListener {
 
-  /**
-   * Processes an outbox event.
-   *
-   * @param event the event envelope containing type, payload, and metadata
-   * @throws Exception if processing fails; triggers retry or dead-letter handling
-   */
-  void onEvent(EventEnvelope event) throws Exception;
+    /**
+     * Processes an outbox event.
+     *
+     * @param event the event envelope containing type, payload, and metadata
+     * @throws Exception if processing fails; triggers retry or dead-letter handling
+     */
+    void onEvent(EventEnvelope event) throws Exception;
 }

@@ -14,14 +14,14 @@ import java.util.Objects;
  * @see ConnectionProvider
  */
 public final class DataSourceConnectionProvider implements ConnectionProvider {
-  private final DataSource dataSource;
+    private final DataSource dataSource;
 
-  public DataSourceConnectionProvider(DataSource dataSource) {
-    this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
-  }
+    public DataSourceConnectionProvider(DataSource dataSource) {
+        this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
+    }
 
-  @Override
-  public Connection getConnection() throws SQLException {
-    return dataSource.getConnection();
-  }
+    @Override
+    public Connection getConnection() throws SQLException {
+        return dataSource.getConnection();
+    }
 }

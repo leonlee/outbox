@@ -5,15 +5,18 @@
 ## Languages
 
 **Primary:**
+
 - Java 17 - Core framework and all modules (baseline)
 - Java 21 - CI/CD matrix testing against latest LTS
 
 ## Runtime
 
 **Environment:**
+
 - JDK 17+ (OpenJDK Temurin distribution in CI)
 
 **Package Manager:**
+
 - Maven 3.x
 - Lockfile: `pom-lock.xml` not used; `pom.xml` files are the source of truth
 - Parent POM: `/Users/lee/Workspace/oss/outbox/pom.xml` (0.7.0-SNAPSHOT)
@@ -21,28 +24,34 @@
 ## Frameworks
 
 **Core Libraries:**
+
 - No external dependencies in `outbox-core` (zero-dependency core)
 - JUnit Jupiter 5.10.2 - Testing framework for all modules
 
 **Key Dependencies by Module:**
 
 **outbox-core:**
+
 - `ulid-creator` 5.2.3 - ULID generation for event IDs (`com.github.f4b6a3:ulid-creator`)
 
 **outbox-jdbc:**
+
 - `h2` 2.2.224 - In-memory test database (test scope only)
 - Depends on `outbox-core`
 
 **outbox-spring-adapter:**
+
 - `spring-jdbc` 6.2.15 - Spring JDBC wrapper (provided scope - optional)
 - `spring-tx` 6.2.15 - Spring transaction management (provided scope - optional)
 - Depends on `outbox-core` and `outbox-jdbc` (test scope)
 
 **outbox-micrometer:**
+
 - `micrometer-core` 1.14.5 - Metrics collection (provided scope - optional)
 - Depends on `outbox-core`
 
 **Benchmarks Module:**
+
 - `jmh-core` 1.37 - JMH microbenchmark framework
 - `jmh-generator-annprocess` 1.37 - Annotation processor for JMH (provided scope)
 - `maven-shade-plugin` 3.5.1 - UberJAR creation for benchmarks
@@ -80,17 +89,19 @@
 
 **Build Configuration Files:**
 
-- Parent POM: `/Users/lee/Workspace/oss/outbox/pom.xml` (defines dependency management, plugin management, distribution repo)
+- Parent POM: `/Users/lee/Workspace/oss/outbox/pom.xml` (defines dependency management, plugin management, distribution
+  repo)
 - Module POMs: Each module has its own `pom.xml` inheriting from parent
 - Samples: Spring Boot 3.4.2 parent (outbox-spring-demo only; others inherit from outbox-samples parent)
 
 **Sample Application Configuration:**
 
-- `outbox-spring-demo`: `/Users/lee/Workspace/oss/outbox/samples/outbox-spring-demo/src/main/resources/application.properties`
-  - H2 in-memory (MySQL mode compatibility)
-  - Server port 8080
-  - H2 Console enabled at `/h2-console`
-  - Schema auto-initialization from `schema.sql`
+- `outbox-spring-demo`:
+  `/Users/lee/Workspace/oss/outbox/samples/outbox-spring-demo/src/main/resources/application.properties`
+    - H2 in-memory (MySQL mode compatibility)
+    - Server port 8080
+    - H2 Console enabled at `/h2-console`
+    - Schema auto-initialization from `schema.sql`
 
 ## Platform Requirements
 
@@ -118,11 +129,11 @@
 **Build & CI/CD:**
 
 - GitHub Actions (workflows in `.github/workflows/`)
-  - CI: `ci.yml` - Java 17 and 21 matrix, all tests
-  - Publish: `publish.yml` - Deploy on version tags to GitHub Packages
-  - Benchmarks: `benchmark.yml` - JMH report generation
-  - Docs: `docs.yml` - Path-filtered documentation updates
-  - Schema Diff: `schema-diff.yml` - Database schema comparison
+    - CI: `ci.yml` - Java 17 and 21 matrix, all tests
+    - Publish: `publish.yml` - Deploy on version tags to GitHub Packages
+    - Benchmarks: `benchmark.yml` - JMH report generation
+    - Docs: `docs.yml` - Path-filtered documentation updates
+    - Schema Diff: `schema-diff.yml` - Database schema comparison
 
 **Dependency Management:**
 
@@ -146,7 +157,8 @@
 
 - Destination: `https://maven.pkg.github.com/leonlee/outbox`
 - Scope: Private to GitHub organization (`leonlee`)
-- Auth: Repository requires `GITHUB_TOKEN` in Maven `settings.xml` (auto-configured by `setup-java` action with `server-id: github`)
+- Auth: Repository requires `GITHUB_TOKEN` in Maven `settings.xml` (auto-configured by `setup-java` action with
+  `server-id: github`)
 
 ---
 

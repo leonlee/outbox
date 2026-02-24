@@ -5,16 +5,20 @@
 ## Test Framework
 
 **Runner:**
+
 - JUnit Jupiter 5.10.2
 - Config: Inherited via Maven Surefire plugin (version 3.5.4)
-  - File: `pom.xml` in parent module
-  - Setting: `<useModulePath>false</useModulePath>` to avoid Java 9+ issues
+    - File: `pom.xml` in parent module
+    - Setting: `<useModulePath>false</useModulePath>` to avoid Java 9+ issues
 
 **Assertion Library:**
+
 - JUnit Jupiter built-in assertions (`org.junit.jupiter.api.Assertions.*`)
-- Common methods: `assertEquals()`, `assertTrue()`, `assertFalse()`, `assertThrows()`, `assertNull()`, `assertNotNull()`, `assertDoesNotThrow()`
+- Common methods: `assertEquals()`, `assertTrue()`, `assertFalse()`, `assertThrows()`, `assertNull()`,
+  `assertNotNull()`, `assertDoesNotThrow()`
 
 **Run Commands:**
+
 ```bash
 mvn test                                # Run all tests (~239 tests)
 mvn -pl outbox-core test               # Run core module tests only
@@ -24,22 +28,26 @@ mvn test -Dtest=OutboxWriterTest#*Test # Run matching test methods
 ```
 
 **Coverage:**
+
 - No code coverage tooling configured (Jacoco not present)
 - Coverage requirements: Not enforced
 
 ## Test File Organization
 
 **Location:**
+
 - Source: `src/test/java/` parallel to `src/main/java/`
 - Same package structure as production code
 - Test utilities/fixtures in same package (not separate `fixtures/` folder)
 
 **Naming Convention:**
+
 - Test classes: `*Test.java` suffix for unit tests
 - Integration tests: `*IntegrationTest.java` suffix
 - Test helper classes (stubs, fakes): `Stub*.java` or `Recording*.java` prefix
 
 **Structure:**
+
 ```
 outbox-core/src/test/java/outbox/
 ├── OutboxWriterTest.java
@@ -73,6 +81,7 @@ outbox-jdbc/src/test/java/outbox/jdbc/
 ## Test Structure
 
 **Suite Organization:**
+
 - Flat test class per public class (1:1 mapping)
 - No test suite classes; JUnit discovers all `*Test.java` files automatically
 - No `@Nested` classes; keep test methods flat in single test class
@@ -80,6 +89,7 @@ outbox-jdbc/src/test/java/outbox/jdbc/
 **Patterns:**
 
 **1. Setup/Teardown Pattern (Database Tests):**
+
 ```java
 class OutboxAcceptanceTest {
   private DataSource dataSource;
@@ -117,6 +127,7 @@ class OutboxAcceptanceTest {
 ```
 
 **2. Simple Unit Test Pattern:**
+
 ```java
 @Test
 void acquireSucceedsForNewEventId() {
@@ -135,6 +146,7 @@ void acquireFailsForAlreadyAcquiredEventId() {
 ```
 
 **3. Builder Validation Pattern:**
+
 ```java
 @Test
 void builderRejectsNullConnectionProvider() {
@@ -158,6 +170,7 @@ void builderRejectsMaxAttemptsLessThanOne() {
 ```
 
 **4. Async/Latch Pattern (for concurrent operations):**
+
 ```java
 @Test
 void commitFastPathPublishesAndMarksDone() throws Exception {
@@ -182,6 +195,7 @@ void commitFastPathPublishesAndMarksDone() throws Exception {
 ```
 
 **5. Atomic Transaction Test Pattern:**
+
 ```java
 @Test
 void atomicityRollbackDoesNotPersist() throws Exception {
@@ -201,6 +215,7 @@ void atomicityRollbackDoesNotPersist() throws Exception {
 ## Mocking
 
 **Framework:**
+
 - No mocking library (Mockito, EasyMock) configured
 - Use **hand-written stub/fake implementations** instead
 - Located in test package alongside real tests
@@ -208,6 +223,7 @@ void atomicityRollbackDoesNotPersist() throws Exception {
 **Patterns:**
 
 **1. Stub Implementations (minimal, no assertions):**
+
 ```java
 class StubOutboxStore implements OutboxStore {
   final AtomicInteger markDoneCount = new AtomicInteger();
@@ -234,6 +250,7 @@ class StubOutboxStore implements OutboxStore {
 ```
 
 **2. Recording Stubs (capture calls for assertion):**
+
 ```java
 // Used in OutboxWriterTest.java
 class RecordingHook implements WriterHook {
@@ -256,6 +273,7 @@ class RecordingHook implements WriterHook {
 ```
 
 **3. Test Transaction Context (in-memory, not real JDBC):**
+
 ```java
 class StubTxContext implements TxContext {
   private final boolean active;
@@ -292,11 +310,13 @@ class StubTxContext implements TxContext {
 ```
 
 **What to Mock:**
+
 - Database interactions (use `StubOutboxStore`, real `H2OutboxStore` for integration tests)
 - Transactional context (use `StubTxContext` for unit tests, `ThreadLocalTxContext` for integration tests)
 - Event listeners (use `DefaultListenerRegistry` with lambda callbacks)
 
 **What NOT to Mock:**
+
 - `EventEnvelope` (use real builder)
 - `OutboxDispatcher` (use real, but with 0 workers for sync testing)
 - `OutboxWriter` (use real with recording hooks)
@@ -305,12 +325,14 @@ class StubTxContext implements TxContext {
 ## Fixtures and Factories
 
 **Test Data:**
+
 - H2 in-memory database for all JDBC tests
 - Schema created in `@BeforeEach`, dropped in `@AfterEach`
 - Use `EventEnvelope.ofJson(type, payload)` factory for test events
 - Use `UUID.randomUUID()` in connection URLs to isolate tests
 
 **Example Fixture Creation:**
+
 ```java
 private void createSchema(Connection conn) throws SQLException {
   conn.createStatement().execute(
@@ -333,6 +355,7 @@ private void createSchema(Connection conn) throws SQLException {
 ```
 
 **Helper Methods (in test class):**
+
 ```java
 private OutboxDispatcher dispatcher(int workerCount, int hotQ, int coldQ) {
   return OutboxDispatcher.builder()
@@ -380,31 +403,35 @@ private void awaitStatus(String eventId, EventStatus status, long timeoutMs) thr
 ## Test Types
 
 **Unit Tests:**
+
 - Scope: Single class in isolation with stubs/fakes
 - Location: `outbox-core/src/test/java/` (most tests)
 - Examples:
-  - `OutboxWriterTest.java` - Tests writer behavior with `StubTxContext` and recording hooks
-  - `DefaultInFlightTrackerTest.java` - Tests tracker de-duplication
-  - `ExponentialBackoffRetryPolicyTest.java` - Tests backoff calculation with range assertions
-  - `EventInterceptorTest.java` - Tests interceptor chaining
+    - `OutboxWriterTest.java` - Tests writer behavior with `StubTxContext` and recording hooks
+    - `DefaultInFlightTrackerTest.java` - Tests tracker de-duplication
+    - `ExponentialBackoffRetryPolicyTest.java` - Tests backoff calculation with range assertions
+    - `EventInterceptorTest.java` - Tests interceptor chaining
 
 **Integration Tests:**
+
 - Scope: Multiple components with real H2 database
 - Location: `outbox-jdbc/src/test/java/` (JDBC-based integration tests)
 - Examples:
-  - `OutboxAcceptanceTest.java` - Full transaction lifecycle: write → hot dispatch → poller fallback
-  - `OutboxDispatcherTest.java` - Dispatcher with H2 store and real transactions
-  - `OutboxPollerTest.java` - Poller cycle with real DB rows
-  - `OutboxCompositeTest.java` - Full `Outbox` builder scenarios
-  - `SpringAdapterIntegrationTest.java` - Spring integration with real Spring transactions
+    - `OutboxAcceptanceTest.java` - Full transaction lifecycle: write → hot dispatch → poller fallback
+    - `OutboxDispatcherTest.java` - Dispatcher with H2 store and real transactions
+    - `OutboxPollerTest.java` - Poller cycle with real DB rows
+    - `OutboxCompositeTest.java` - Full `Outbox` builder scenarios
+    - `SpringAdapterIntegrationTest.java` - Spring integration with real Spring transactions
 
 **E2E Tests:**
+
 - Not automated in test suite
 - Manual verification: `samples/outbox-demo` and `samples/outbox-spring-demo` run end-to-end flows
 
 ## Common Patterns
 
 **1. Async Testing with CountDownLatch:**
+
 ```java
 @Test
 void hotQueueIsPrioritizedOverColdQueue() throws Exception {
@@ -432,6 +459,7 @@ void hotQueueIsPrioritizedOverColdQueue() throws Exception {
 ```
 
 **2. Error Testing (exception assertion):**
+
 ```java
 @Test
 void writeThrowsWhenNoActiveTransaction() {
@@ -446,6 +474,7 @@ void writeThrowsWhenNoActiveTransaction() {
 ```
 
 **3. Builder Validation (constructor contract):**
+
 ```java
 @Test
 void builderRejectsMaxAttemptsLessThanOne() {
@@ -460,6 +489,7 @@ void builderRejectsMaxAttemptsLessThanOne() {
 ```
 
 **4. State Isolation with Volatile Fields:**
+
 ```java
 @Test
 void ttlAllowsReacquisitionAfterExpiry() throws InterruptedException {
@@ -475,11 +505,13 @@ void ttlAllowsReacquisitionAfterExpiry() throws InterruptedException {
 ```
 
 **5. Jitter/Range Testing (for randomized behavior):**
+
 - `ExponentialBackoffRetryPolicyTest.java` tests delay ranges rather than exact values
 - Pattern: Assert that computed delay falls within expected bounds
 - Note: Jitter uses `[0.5, 1.5)` multiplier — test with ranges, not point assertions
 
 **6. Row/Status Polling (for eventual consistency):**
+
 ```java
 private void awaitStatus(String eventId, EventStatus expected, long timeoutMs) throws SQLException {
   long deadline = System.currentTimeMillis() + timeoutMs;
@@ -496,19 +528,22 @@ private void awaitStatus(String eventId, EventStatus expected, long timeoutMs) t
 ## Test Organization Guidelines
 
 **Naming Test Methods:**
+
 - Descriptive sentence style: `testXxxWhenConditionThenBehavior()` or `xxxWhenCondition()`
 - Examples:
-  - `writeThrowsWhenNoActiveTransaction()`
-  - `acquireSucceedsForNewEventId()`
-  - `hotQueueIsPrioritizedOverColdQueue()`
+    - `writeThrowsWhenNoActiveTransaction()`
+    - `acquireSucceedsForNewEventId()`
+    - `hotQueueIsPrioritizedOverColdQueue()`
 
 **Test Size (lines per test):**
+
 - Arrange (setup): 5-10 lines
 - Act (execute): 1-3 lines
 - Assert (verify): 1-5 lines
 - Total per test: 10-20 lines typically
 
 **Test Dependencies:**
+
 - Tests must be order-independent
 - `@BeforeEach` creates fresh fixtures (no shared state between tests)
 - `@AfterEach` cleans up (drop tables, close connections)
@@ -516,16 +551,19 @@ private void awaitStatus(String eventId, EventStatus expected, long timeoutMs) t
 ## Known Test Behaviors
 
 **Expected Log Output:**
+
 - Some edge case tests in `OutboxEdgeCaseTest` produce SEVERE/WARNING logs
 - This is expected; logs confirm error paths are exercised
 - Not treated as test failures
 
 **Flaky Test Notes:**
+
 - Jitter-based tests (`ExponentialBackoffRetryPolicyTest`) use range assertions
 - TTL/expiry tests use `Thread.sleep()` with buffer (100ms sleep after 50ms TTL)
 - Async tests use `CountDownLatch.await()` with 2+ second timeout
 
 **Database Isolation:**
+
 - Each test gets unique H2 database URL: `jdbc:h2:mem:outbox_[UUID];MODE=MySQL;DB_CLOSE_DELAY=-1`
 - Schema dropped in `@AfterEach`
 - `MODE=MySQL` enables MySQL dialect compatibility (e.g., `DELIMIT BY IDENTIFIER`)
@@ -533,6 +571,7 @@ private void awaitStatus(String eventId, EventStatus expected, long timeoutMs) t
 ## Coverage Gaps
 
 **Areas Not Extensively Tested:**
+
 - Micrometer metrics export (`outbox-micrometer` has basic tests only)
 - PostgreSQL-specific claim locking edge cases (manual verification against real PostgreSQL)
 - High-concurrency dispatcher scenarios (tested but not stress-tested)

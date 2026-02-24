@@ -20,26 +20,28 @@ package outbox;
  */
 public interface AggregateType {
 
-  /**
-   * Global aggregate type used when no specific aggregate type is set.
-   */
-  AggregateType GLOBAL = new AggregateType() {
-    @Override
-    public String name() {
-      return "__GLOBAL__";
-    }
+    /**
+     * Global aggregate type used when no specific aggregate type is set.
+     */
+    AggregateType GLOBAL = new AggregateType() {
+        @Override
+        public String name() {
+            return "__GLOBAL__";
+        }
 
-    @Override
-    public String toString() {
-      return "GLOBAL";
-    }
-  };
+        @Override
+        public String toString() {
+            return "GLOBAL";
+        }
+    };
 
-  /**
-   * Returns the string representation of this aggregate type.
-   * This value is persisted to the database.
-   *
-   * @return the aggregate type name, never null
-   */
-  String name();
+    /**
+     * Returns the string representation of this aggregate type.
+     * This value is persisted to the database.
+     *
+     * @return the aggregate type name, never null
+     */
+    default String name() {
+        return this.getClass().getName();
+    }
 }

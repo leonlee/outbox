@@ -3,44 +3,44 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
                              http://maven.apache.org/xsd/maven-4.0.0.xsd">
-  <modelVersion>4.0.0</modelVersion>
+    <modelVersion>4.0.0</modelVersion>
 
-  <parent>
-    <groupId>io.github.leonlee</groupId>
-    <artifactId>outbox-samples</artifactId>
-    <version>0.8.2-SNAPSHOT</version>
-  </parent>
+    <parent>
+        <groupId>io.github.leonlee</groupId>
+        <artifactId>outbox-samples</artifactId>
+        <version>0.8.2-SNAPSHOT</version>
+    </parent>
 
-  <artifactId>outbox-demo</artifactId>
-  <name>outbox-demo</name>
-  <description>Simple demo of outbox framework without Spring</description>
+    <artifactId>outbox-demo</artifactId>
+    <name>outbox-demo</name>
+    <description>Simple demo of outbox framework without Spring</description>
 
-  <dependencies>
-    <dependency>
-      <groupId>io.github.leonlee</groupId>
-      <artifactId>outbox-core</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>io.github.leonlee</groupId>
-      <artifactId>outbox-jdbc</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>com.h2database</groupId>
-      <artifactId>h2</artifactId>
-    </dependency>
-  </dependencies>
+    <dependencies>
+        <dependency>
+            <groupId>io.github.leonlee</groupId>
+            <artifactId>outbox-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.leonlee</groupId>
+            <artifactId>outbox-jdbc</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+        </dependency>
+    </dependencies>
 
-  <build>
-    <plugins>
-      <plugin>
-        <groupId>org.codehaus.mojo</groupId>
-        <artifactId>exec-maven-plugin</artifactId>
-        <configuration>
-          <mainClass>outbox.demo.OutboxDemo</mainClass>
-        </configuration>
-      </plugin>
-    </plugins>
-  </build>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <configuration>
+                    <mainClass>outbox.demo.OutboxDemo</mainClass>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

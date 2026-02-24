@@ -11,16 +11,22 @@ import java.util.Objects;
  */
 public record QueuedEvent(EventEnvelope envelope, Source source, int attempts) {
 
-  /** Indicates whether an event arrived via the hot path or cold (poller) path. */
-  public enum Source {
-    /** Event enqueued directly via after-commit hook. */
-    HOT,
-    /** Event enqueued by the poller from the database. */
-    COLD
-  }
+    /**
+     * Indicates whether an event arrived via the hot path or cold (poller) path.
+     */
+    public enum Source {
+        /**
+         * Event enqueued directly via after-commit hook.
+         */
+        HOT,
+        /**
+         * Event enqueued by the poller from the database.
+         */
+        COLD
+    }
 
-  public QueuedEvent {
-    Objects.requireNonNull(envelope, "envelope");
-    Objects.requireNonNull(source, "source");
-  }
+    public QueuedEvent {
+        Objects.requireNonNull(envelope, "envelope");
+        Objects.requireNonNull(source, "source");
+    }
 }

@@ -14,20 +14,20 @@ import java.time.Instant;
  */
 public final class MySqlEventPurger extends AbstractJdbcEventPurger {
 
-  public MySqlEventPurger() {
-    super();
-  }
+    public MySqlEventPurger() {
+        super();
+    }
 
-  public MySqlEventPurger(String tableName) {
-    super(tableName);
-  }
+    public MySqlEventPurger(String tableName) {
+        super(tableName);
+    }
 
-  @Override
-  public int purge(Connection conn, Instant before, int limit) {
-    String sql = "DELETE FROM " + tableName() +
-        " WHERE status IN " + TERMINAL_STATUS_IN +
-        " AND COALESCE(done_at, created_at) < ?" +
-        " ORDER BY created_at LIMIT ?";
-    return JdbcTemplate.update(conn, sql, Timestamp.from(before), limit);
-  }
+    @Override
+    public int purge(Connection conn, Instant before, int limit) {
+        String sql = "DELETE FROM " + tableName() +
+                " WHERE status IN " + TERMINAL_STATUS_IN +
+                " AND COALESCE(done_at, created_at) < ?" +
+                " ORDER BY created_at LIMIT ?";
+        return JdbcTemplate.update(conn, sql, Timestamp.from(before), limit);
+    }
 }

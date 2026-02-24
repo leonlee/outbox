@@ -45,165 +45,166 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class MicrometerMetricsExporter implements MetricsExporter, AutoCloseable {
 
-  private final MeterRegistry registry;
-  private final Counter hotEnqueued;
-  private final Counter hotDropped;
-  private final Counter coldEnqueued;
-  private final Counter dispatchSuccess;
-  private final Counter dispatchFailure;
-  private final Counter dispatchDead;
-  private final Gauge hotDepthGauge;
-  private final Gauge coldDepthGauge;
-  private final Gauge lagGauge;
-  private final DistributionSummary dispatchLatency;
-  private final DistributionSummary listenerDuration;
+    private final MeterRegistry registry;
+    private final Counter hotEnqueued;
+    private final Counter hotDropped;
+    private final Counter coldEnqueued;
+    private final Counter dispatchSuccess;
+    private final Counter dispatchFailure;
+    private final Counter dispatchDead;
+    private final Gauge hotDepthGauge;
+    private final Gauge coldDepthGauge;
+    private final Gauge lagGauge;
+    private final DistributionSummary dispatchLatency;
+    private final DistributionSummary listenerDuration;
 
-  private final AtomicInteger hotDepth = new AtomicInteger();
-  private final AtomicInteger coldDepth = new AtomicInteger();
-  private final AtomicLong oldestLagMs = new AtomicLong();
-  private volatile boolean closed;
+    private final AtomicInteger hotDepth = new AtomicInteger();
+    private final AtomicInteger coldDepth = new AtomicInteger();
+    private final AtomicLong oldestLagMs = new AtomicLong();
+    private volatile boolean closed;
 
-  /**
-   * Creates an exporter with the default metric name prefix {@code "outbox"}.
-   *
-   * @param registry the Micrometer meter registry
-   */
-  public MicrometerMetricsExporter(MeterRegistry registry) {
-    this(registry, "outbox");
-  }
-
-  /**
-   * Creates an exporter with a custom metric name prefix for multi-instance use.
-   *
-   * @param registry   the Micrometer meter registry
-   * @param namePrefix prefix for all meter names (e.g. {@code "orders.outbox"})
-   */
-  public MicrometerMetricsExporter(MeterRegistry registry, String namePrefix) {
-    Objects.requireNonNull(registry, "registry");
-    Objects.requireNonNull(namePrefix, "namePrefix");
-    if (namePrefix.isEmpty()) {
-      throw new IllegalArgumentException("namePrefix must not be empty");
-    }
-    if (namePrefix.endsWith(".")) {
-      throw new IllegalArgumentException("namePrefix must not end with '.'");
+    /**
+     * Creates an exporter with the default metric name prefix {@code "outbox"}.
+     *
+     * @param registry the Micrometer meter registry
+     */
+    public MicrometerMetricsExporter(MeterRegistry registry) {
+        this(registry, "outbox");
     }
 
-    this.registry = registry;
-    this.hotEnqueued = Counter.builder(namePrefix + ".enqueue.hot")
-        .description("Events enqueued via hot path")
-        .register(registry);
-    this.hotDropped = Counter.builder(namePrefix + ".enqueue.hot.dropped")
-        .description("Events dropped (hot queue full)")
-        .register(registry);
-    this.coldEnqueued = Counter.builder(namePrefix + ".enqueue.cold")
-        .description("Events enqueued via cold (poller) path")
-        .register(registry);
-    this.dispatchSuccess = Counter.builder(namePrefix + ".dispatch.success")
-        .description("Events dispatched successfully")
-        .register(registry);
-    this.dispatchFailure = Counter.builder(namePrefix + ".dispatch.failure")
-        .description("Events failed (will retry)")
-        .register(registry);
-    this.dispatchDead = Counter.builder(namePrefix + ".dispatch.dead")
-        .description("Events moved to DEAD")
-        .register(registry);
+    /**
+     * Creates an exporter with a custom metric name prefix for multi-instance use.
+     *
+     * @param registry   the Micrometer meter registry
+     * @param namePrefix prefix for all meter names (e.g. {@code "orders.outbox"})
+     */
+    public MicrometerMetricsExporter(MeterRegistry registry, String namePrefix) {
+        Objects.requireNonNull(registry, "registry");
+        Objects.requireNonNull(namePrefix, "namePrefix");
+        if (namePrefix.isEmpty()) {
+            throw new IllegalArgumentException("namePrefix must not be empty");
+        }
+        if (namePrefix.endsWith(".")) {
+            throw new IllegalArgumentException("namePrefix must not end with '.'");
+        }
 
-    this.hotDepthGauge = Gauge.builder(namePrefix + ".queue.hot.depth", hotDepth, AtomicInteger::get)
-        .register(registry);
-    this.coldDepthGauge = Gauge.builder(namePrefix + ".queue.cold.depth", coldDepth, AtomicInteger::get)
-        .register(registry);
-    this.lagGauge = Gauge.builder(namePrefix + ".lag.oldest.ms", oldestLagMs, AtomicLong::get)
-        .register(registry);
+        this.registry = registry;
+        this.hotEnqueued = Counter.builder(namePrefix + ".enqueue.hot")
+                .description("Events enqueued via hot path")
+                .register(registry);
+        this.hotDropped = Counter.builder(namePrefix + ".enqueue.hot.dropped")
+                .description("Events dropped (hot queue full)")
+                .register(registry);
+        this.coldEnqueued = Counter.builder(namePrefix + ".enqueue.cold")
+                .description("Events enqueued via cold (poller) path")
+                .register(registry);
+        this.dispatchSuccess = Counter.builder(namePrefix + ".dispatch.success")
+                .description("Events dispatched successfully")
+                .register(registry);
+        this.dispatchFailure = Counter.builder(namePrefix + ".dispatch.failure")
+                .description("Events failed (will retry)")
+                .register(registry);
+        this.dispatchDead = Counter.builder(namePrefix + ".dispatch.dead")
+                .description("Events moved to DEAD")
+                .register(registry);
 
-    this.dispatchLatency = DistributionSummary.builder(namePrefix + ".dispatch.latency.ms")
-        .description("End-to-end dispatch latency in milliseconds")
-        .register(registry);
-    this.listenerDuration = DistributionSummary.builder(namePrefix + ".dispatch.listener.duration.ms")
-        .description("Listener execution time in milliseconds")
-        .register(registry);
-  }
+        this.hotDepthGauge = Gauge.builder(namePrefix + ".queue.hot.depth", hotDepth, AtomicInteger::get)
+                .register(registry);
+        this.coldDepthGauge = Gauge.builder(namePrefix + ".queue.cold.depth", coldDepth, AtomicInteger::get)
+                .register(registry);
+        this.lagGauge = Gauge.builder(namePrefix + ".lag.oldest.ms", oldestLagMs, AtomicLong::get)
+                .register(registry);
 
-  @Override
-  public void incrementHotEnqueued() {
-    if (closed) return;
-    hotEnqueued.increment();
-  }
-
-  @Override
-  public void incrementHotDropped() {
-    if (closed) return;
-    hotDropped.increment();
-  }
-
-  @Override
-  public void incrementColdEnqueued() {
-    if (closed) return;
-    coldEnqueued.increment();
-  }
-
-  @Override
-  public void incrementDispatchSuccess() {
-    if (closed) return;
-    dispatchSuccess.increment();
-  }
-
-  @Override
-  public void incrementDispatchFailure() {
-    if (closed) return;
-    dispatchFailure.increment();
-  }
-
-  @Override
-  public void incrementDispatchDead() {
-    if (closed) return;
-    dispatchDead.increment();
-  }
-
-  @Override
-  public void recordQueueDepths(int hotDepth, int coldDepth) {
-    if (closed) return;
-    this.hotDepth.set(hotDepth);
-    this.coldDepth.set(coldDepth);
-  }
-
-  @Override
-  public void recordOldestLagMs(long lagMs) {
-    if (closed) return;
-    this.oldestLagMs.set(lagMs);
-  }
-
-  @Override
-  public void recordDispatchLatencyMs(long latencyMs) {
-    if (closed) return;
-    dispatchLatency.record(latencyMs);
-  }
-
-  @Override
-  public void recordListenerDurationMs(long durationMs) {
-    if (closed) return;
-    listenerDuration.record(durationMs);
-  }
-
-  /**
-   * Removes all meters registered by this exporter from the registry.
-   *
-   * <p>Call this when the exporter is no longer needed (e.g. when the
-   * {@link outbox.Outbox} is closed) to prevent stale gauges.
-   */
-  @Override
-  public void close() {
-    closed = true;
-    RuntimeException first = null;
-    for (Meter meter : List.of(hotEnqueued, hotDropped, coldEnqueued,
-        dispatchSuccess, dispatchFailure, dispatchDead,
-        hotDepthGauge, coldDepthGauge, lagGauge,
-        dispatchLatency, listenerDuration)) {
-      try {
-        registry.remove(meter);
-      } catch (RuntimeException e) {
-        if (first == null) first = e; else first.addSuppressed(e);
-      }
+        this.dispatchLatency = DistributionSummary.builder(namePrefix + ".dispatch.latency.ms")
+                .description("End-to-end dispatch latency in milliseconds")
+                .register(registry);
+        this.listenerDuration = DistributionSummary.builder(namePrefix + ".dispatch.listener.duration.ms")
+                .description("Listener execution time in milliseconds")
+                .register(registry);
     }
-    if (first != null) throw first;
-  }
+
+    @Override
+    public void incrementHotEnqueued() {
+        if (closed) return;
+        hotEnqueued.increment();
+    }
+
+    @Override
+    public void incrementHotDropped() {
+        if (closed) return;
+        hotDropped.increment();
+    }
+
+    @Override
+    public void incrementColdEnqueued() {
+        if (closed) return;
+        coldEnqueued.increment();
+    }
+
+    @Override
+    public void incrementDispatchSuccess() {
+        if (closed) return;
+        dispatchSuccess.increment();
+    }
+
+    @Override
+    public void incrementDispatchFailure() {
+        if (closed) return;
+        dispatchFailure.increment();
+    }
+
+    @Override
+    public void incrementDispatchDead() {
+        if (closed) return;
+        dispatchDead.increment();
+    }
+
+    @Override
+    public void recordQueueDepths(int hotDepth, int coldDepth) {
+        if (closed) return;
+        this.hotDepth.set(hotDepth);
+        this.coldDepth.set(coldDepth);
+    }
+
+    @Override
+    public void recordOldestLagMs(long lagMs) {
+        if (closed) return;
+        this.oldestLagMs.set(lagMs);
+    }
+
+    @Override
+    public void recordDispatchLatencyMs(long latencyMs) {
+        if (closed) return;
+        dispatchLatency.record(latencyMs);
+    }
+
+    @Override
+    public void recordListenerDurationMs(long durationMs) {
+        if (closed) return;
+        listenerDuration.record(durationMs);
+    }
+
+    /**
+     * Removes all meters registered by this exporter from the registry.
+     *
+     * <p>Call this when the exporter is no longer needed (e.g. when the
+     * {@link outbox.Outbox} is closed) to prevent stale gauges.
+     */
+    @Override
+    public void close() {
+        closed = true;
+        RuntimeException first = null;
+        for (Meter meter : List.of(hotEnqueued, hotDropped, coldEnqueued,
+                dispatchSuccess, dispatchFailure, dispatchDead,
+                hotDepthGauge, coldDepthGauge, lagGauge,
+                dispatchLatency, listenerDuration)) {
+            try {
+                registry.remove(meter);
+            } catch (RuntimeException e) {
+                if (first == null) first = e;
+                else first.addSuppressed(e);
+            }
+        }
+        if (first != null) throw first;
+    }
 }

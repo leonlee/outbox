@@ -11,30 +11,30 @@ import java.util.List;
  */
 public final class H2OutboxStore extends AbstractJdbcOutboxStore {
 
-  public H2OutboxStore() {
-    super();
-  }
+    public H2OutboxStore() {
+        super();
+    }
 
-  public H2OutboxStore(String tableName) {
-    super(tableName);
-  }
+    public H2OutboxStore(String tableName) {
+        super(tableName);
+    }
 
-  public H2OutboxStore(String tableName, JsonCodec jsonCodec) {
-    super(tableName, jsonCodec);
-  }
+    public H2OutboxStore(String tableName, JsonCodec jsonCodec) {
+        super(tableName, jsonCodec);
+    }
 
-  @Override
-  public AbstractJdbcOutboxStore withJsonCodec(JsonCodec jsonCodec) {
-    return new H2OutboxStore(tableName(), jsonCodec);
-  }
+    @Override
+    public AbstractJdbcOutboxStore withJsonCodec(JsonCodec jsonCodec) {
+        return new H2OutboxStore(tableName(), jsonCodec);
+    }
 
-  @Override
-  public String name() {
-    return "h2";
-  }
+    @Override
+    public String name() {
+        return "h2";
+    }
 
-  @Override
-  public List<String> jdbcUrlPrefixes() {
-    return List.of("jdbc:h2:");
-  }
+    @Override
+    public List<String> jdbcUrlPrefixes() {
+        return List.of("jdbc:h2:");
+    }
 }

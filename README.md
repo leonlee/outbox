@@ -3,48 +3,50 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Java 17+](https://img.shields.io/badge/Java-17%2B-blue)](https://openjdk.org/projects/jdk/17/)
 [![Javadoc](https://img.shields.io/badge/Javadoc-latest-green)](https://leonlee.github.io/outbox/)
+
 # outbox-java
 
 Minimal, Spring-free outbox framework with JDBC persistence, optional hot-path enqueue, and poller/CDC fallback.
 
 ## Installation
 
-Artifacts are published to [Maven Central](https://central.sonatype.com/namespace/io.github.leonlee). Current release: **0.8.1**.
+Artifacts are published to [Maven Central](https://central.sonatype.com/namespace/io.github.leonlee). Current release: *
+*0.8.1**.
 
 ```xml
 <!-- Core APIs, dispatcher, poller, registries (required) -->
 <dependency>
-  <groupId>io.github.leonlee</groupId>
-  <artifactId>outbox-core</artifactId>
-  <version>0.8.1</version>
+    <groupId>io.github.leonlee</groupId>
+    <artifactId>outbox-core</artifactId>
+    <version>0.8.1</version>
 </dependency>
 
-<!-- JDBC outbox store and transaction helpers (required for persistence) -->
+        <!-- JDBC outbox store and transaction helpers (required for persistence) -->
 <dependency>
-  <groupId>io.github.leonlee</groupId>
-  <artifactId>outbox-jdbc</artifactId>
-  <version>0.8.1</version>
+<groupId>io.github.leonlee</groupId>
+<artifactId>outbox-jdbc</artifactId>
+<version>0.8.1</version>
 </dependency>
 
-<!-- Spring Boot Starter — auto-configures everything (recommended for Spring Boot) -->
+        <!-- Spring Boot Starter — auto-configures everything (recommended for Spring Boot) -->
 <dependency>
-  <groupId>io.github.leonlee</groupId>
-  <artifactId>outbox-spring-boot-starter</artifactId>
-  <version>0.8.1</version>
+<groupId>io.github.leonlee</groupId>
+<artifactId>outbox-spring-boot-starter</artifactId>
+<version>0.8.1</version>
 </dependency>
 
-<!-- Spring transaction integration (optional, only if using Spring without Boot) -->
+        <!-- Spring transaction integration (optional, only if using Spring without Boot) -->
 <dependency>
-  <groupId>io.github.leonlee</groupId>
-  <artifactId>outbox-spring-adapter</artifactId>
-  <version>0.8.1</version>
+<groupId>io.github.leonlee</groupId>
+<artifactId>outbox-spring-adapter</artifactId>
+<version>0.8.1</version>
 </dependency>
 
-<!-- Micrometer metrics bridge for Prometheus/Grafana (optional) -->
+        <!-- Micrometer metrics bridge for Prometheus/Grafana (optional) -->
 <dependency>
-  <groupId>io.github.leonlee</groupId>
-  <artifactId>outbox-micrometer</artifactId>
-  <version>0.8.1</version>
+<groupId>io.github.leonlee</groupId>
+<artifactId>outbox-micrometer</artifactId>
+<version>0.8.1</version>
 </dependency>
 ```
 
@@ -108,12 +110,16 @@ Hot path is optional: supply an `WriterHook` (for example, `DispatcherWriterHook
 
 ## How It Works
 
-- **Write inside TX**: `OutboxWriter.write(...)` inserts into `outbox_event` using the same JDBC connection as your business work.
-- **After-commit hook**: `DispatcherWriterHook` enqueues the event into the hot queue after commit. If the queue is full, the event stays in the DB.
-- **Dispatch**: `OutboxDispatcher` drains hot/cold queues, routes to a single listener, and updates status to `DONE`, `RETRY`, or `DEAD`.
+- **Write inside TX**: `OutboxWriter.write(...)` inserts into `outbox_event` using the same JDBC connection as your
+  business work.
+- **After-commit hook**: `DispatcherWriterHook` enqueues the event into the hot queue after commit. If the queue is
+  full, the event stays in the DB.
+- **Dispatch**: `OutboxDispatcher` drains hot/cold queues, routes to a single listener, and updates status to `DONE`,
+  `RETRY`, or `DEAD`.
 - **Fallback**: `OutboxPoller` periodically scans/claims pending rows and enqueues them into the cold queue.
 - **At-least-once**: listeners may see duplicates. Always dedupe downstream by `eventId`.
-- **Purge**: `OutboxPurgeScheduler` periodically deletes terminal events (DONE/DEAD) older than a configurable retention period to prevent table bloat.
+- **Purge**: `OutboxPurgeScheduler` periodically deletes terminal events (DONE/DEAD) older than a configurable retention
+  period to prevent table bloat.
 
 ## Operating Modes
 
@@ -131,17 +137,20 @@ Hot path is optional: supply an `WriterHook` (for example, `DispatcherWriterHook
 
 ## Event Retention / Purge
 
-The outbox table is a transient buffer, not an outbox store. Terminal events (DONE, DEAD) should be purged after a retention period to prevent table bloat:
+The outbox table is a transient buffer, not an outbox store. Terminal events (DONE, DEAD) should be purged after a
+retention period to prevent table bloat:
 
 ```java
 OutboxPurgeScheduler purgeScheduler = OutboxPurgeScheduler.builder()
-    .connectionProvider(connectionProvider)
-    .purger(new H2EventPurger())       // or MySqlEventPurger, PostgresEventPurger
-    .retention(Duration.ofDays(7))     // default: 7 days
-    .batchSize(500)                    // default: 500
-    .intervalSeconds(3600)             // default: 1 hour
-    .build();
-purgeScheduler.start();
+        .connectionProvider(connectionProvider)
+        .purger(new H2EventPurger())       // or MySqlEventPurger, PostgresEventPurger
+        .retention(Duration.ofDays(7))     // default: 7 days
+        .batchSize(500)                    // default: 500
+        .intervalSeconds(3600)             // default: 1 hour
+        .build();
+purgeScheduler.
+
+start();
 ```
 
 If clients need to archive events for audit, they should do so in their `EventListener` before events are purged.
@@ -159,43 +168,47 @@ and writer into a single `AutoCloseable` unit:
 
 ```java
 // Single-node: hot path + poller fallback
-try (Outbox outbox = Outbox.singleNode()
-    .connectionProvider(connProvider).txContext(txContext)
-    .outboxStore(store).listenerRegistry(registry)
-    .build()) {
-  OutboxWriter writer = outbox.writer();
-  // write events inside transactions...
+try(Outbox outbox = Outbox.singleNode()
+        .connectionProvider(connProvider).txContext(txContext)
+        .outboxStore(store).listenerRegistry(registry)
+        .build()){
+OutboxWriter writer = outbox.writer();
+// write events inside transactions...
 }
 
 // Multi-node: hot path + claim-based locking
-try (Outbox outbox = Outbox.multiNode()
-    .connectionProvider(connProvider).txContext(txContext)
-    .outboxStore(store).listenerRegistry(registry)
-    .claimLocking(Duration.ofMinutes(5))
-    .build()) { ... }
+        try(
+Outbox outbox = Outbox.multiNode()
+        .connectionProvider(connProvider).txContext(txContext)
+        .outboxStore(store).listenerRegistry(registry)
+        .claimLocking(Duration.ofMinutes(5))
+        .build()){...}
 
 // Ordered delivery: poller-only, single worker, no retry
-try (Outbox outbox = Outbox.ordered()
-    .connectionProvider(connProvider).txContext(txContext)
-    .outboxStore(store).listenerRegistry(registry)
-    .intervalMs(1000)
-    .build()) { ... }
+        try(
+Outbox outbox = Outbox.ordered()
+        .connectionProvider(connProvider).txContext(txContext)
+        .outboxStore(store).listenerRegistry(registry)
+        .intervalMs(1000)
+        .build()){...}
 
 // Writer-only (CDC mode): no dispatcher or poller
-try (Outbox outbox = Outbox.writerOnly()
-    .txContext(txContext).outboxStore(store)
-    .build()) {
-  OutboxWriter writer = outbox.writer();
-  // Events consumed externally (e.g. Debezium)
+        try(
+Outbox outbox = Outbox.writerOnly()
+        .txContext(txContext).outboxStore(store)
+        .build()){
+OutboxWriter writer = outbox.writer();
+// Events consumed externally (e.g. Debezium)
 }
 
 // Writer-only with age-based purge
-try (Outbox outbox = Outbox.writerOnly()
-    .txContext(txContext).outboxStore(store)
-    .connectionProvider(connProvider)
-    .purger(new H2AgeBasedPurger())
-    .purgeRetention(Duration.ofHours(24))
-    .build()) { ... }
+        try(
+Outbox outbox = Outbox.writerOnly()
+        .txContext(txContext).outboxStore(store)
+        .connectionProvider(connProvider)
+        .purger(new H2AgeBasedPurger())
+        .purgeRetention(Duration.ofHours(24))
+        .build()){...}
 ```
 
 For advanced wiring (custom `InFlightTracker`, per-component lifecycle, etc.), use
@@ -229,22 +242,24 @@ unordered events, use the default hot + poller mode for lowest latency.
 For Spring Boot applications, just add the starter dependency — no manual `@Configuration` needed:
 
 ```xml
+
 <dependency>
-  <groupId>io.github.leonlee</groupId>
-  <artifactId>outbox-spring-boot-starter</artifactId>
-  <version>0.8.1</version>
+    <groupId>io.github.leonlee</groupId>
+    <artifactId>outbox-spring-boot-starter</artifactId>
+    <version>0.8.1</version>
 </dependency>
 ```
 
 Annotate your listeners with `@OutboxListener`:
 
 ```java
+
 @Component
 @OutboxListener(eventType = "OrderPlaced", aggregateType = "Order")
 public class OrderListener implements EventListener {
-  public void onEvent(EventEnvelope event) {
-    // publish to MQ, update cache, etc.
-  }
+    public void onEvent(EventEnvelope event) {
+        // publish to MQ, update cache, etc.
+    }
 }
 ```
 
@@ -256,7 +271,9 @@ outbox.dispatcher.worker-count=4
 outbox.poller.interval-ms=5000
 ```
 
-The starter auto-detects your database (H2, MySQL, PostgreSQL), wires `SpringTxContext`, and creates an `Outbox` composite with graceful shutdown. Micrometer metrics are enabled automatically when `spring-boot-starter-actuator` is on the classpath.
+The starter auto-detects your database (H2, MySQL, PostgreSQL), wires `SpringTxContext`, and creates an `Outbox`
+composite with graceful shutdown. Micrometer metrics are enabled automatically when `spring-boot-starter-actuator` is on
+the classpath.
 
 See [TUTORIAL.md](TUTORIAL.md#5-spring-boot-starter) for the full guide with all configuration properties.
 
@@ -267,7 +284,8 @@ See [TUTORIAL.md](TUTORIAL.md#5-spring-boot-starter) for the full guide with all
 ## Documentation
 
 - [**OBJECTIVE.md**](OBJECTIVE.md) -- Project goals, constraints, non-goals, and acceptance criteria
-- [**SPEC.md**](SPEC.md) -- Technical specification: API contracts, data model, behavioral rules, configuration, observability
+- [**SPEC.md**](SPEC.md) -- Technical specification: API contracts, data model, behavioral rules, configuration,
+  observability
 - [**TUTORIAL.md**](TUTORIAL.md) -- Step-by-step guides with runnable code examples
 
 ## Notes

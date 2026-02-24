@@ -2,7 +2,7 @@ name: Schema Diff
 
 on:
   pull_request:
-    branches: [main]
+    branches: [ main ]
     paths:
       - 'outbox-jdbc/src/main/resources/schema/**'
 

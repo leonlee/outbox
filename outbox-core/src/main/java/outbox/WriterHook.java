@@ -24,43 +24,49 @@ import java.util.List;
  */
 public interface WriterHook {
 
-  /**
-   * Called before events are inserted into the outbox store.
-   *
-   * <p>May return a modified list (filtering, enriching, reordering). Throwing
-   * an exception aborts the entire write — no events are inserted.
-   *
-   * @param events immutable copy of the events to be written
-   * @return the (possibly modified) event list to actually insert; {@code null} or empty suppresses the write
-   */
-  default List<EventEnvelope> beforeWrite(List<EventEnvelope> events) {
-    return events;
-  }
+    /**
+     * Called before events are inserted into the outbox store.
+     *
+     * <p>May return a modified list (filtering, enriching, reordering). Throwing
+     * an exception aborts the entire write — no events are inserted.
+     *
+     * @param events immutable copy of the events to be written
+     * @return the (possibly modified) event list to actually insert; {@code null} or empty suppresses the write
+     */
+    default List<EventEnvelope> beforeWrite(List<EventEnvelope> events) {
+        return events;
+    }
 
-  /**
-   * Called after events are inserted but before the transaction commits.
-   * Exceptions are swallowed and logged.
-   *
-   * @param events the events that were inserted (post-{@code beforeWrite} transformation)
-   */
-  default void afterWrite(List<EventEnvelope> events) {}
+    /**
+     * Called after events are inserted but before the transaction commits.
+     * Exceptions are swallowed and logged.
+     *
+     * @param events the events that were inserted (post-{@code beforeWrite} transformation)
+     */
+    default void afterWrite(List<EventEnvelope> events) {
+    }
 
-  /**
-   * Called after the enclosing transaction commits successfully.
-   * Exceptions are swallowed and logged.
-   *
-   * @param events the events that were committed
-   */
-  default void afterCommit(List<EventEnvelope> events) {}
+    /**
+     * Called after the enclosing transaction commits successfully.
+     * Exceptions are swallowed and logged.
+     *
+     * @param events the events that were committed
+     */
+    default void afterCommit(List<EventEnvelope> events) {
+    }
 
-  /**
-   * Called after the enclosing transaction rolls back.
-   * Exceptions are swallowed and logged.
-   *
-   * @param events the events that were rolled back
-   */
-  default void afterRollback(List<EventEnvelope> events) {}
+    /**
+     * Called after the enclosing transaction rolls back.
+     * Exceptions are swallowed and logged.
+     *
+     * @param events the events that were rolled back
+     */
+    default void afterRollback(List<EventEnvelope> events) {
+    }
 
-  /** No-op hook that does nothing; used as the default in {@link OutboxWriter}. */
-  WriterHook NOOP = new WriterHook() {};
+    /**
+     * No-op hook that does nothing; used as the default in {@link OutboxWriter}.
+     */
+    WriterHook NOOP = new WriterHook() {
+    };
 }

@@ -7,11 +7,11 @@ package outbox.jdbc.purge;
  */
 public final class PostgresEventPurger extends AbstractJdbcEventPurger {
 
-  public PostgresEventPurger() {
-    super();
-  }
+    public PostgresEventPurger() {
+        super();
+    }
 
-  public PostgresEventPurger(String tableName) {
-    super(tableName);
-  }
+    public PostgresEventPurger(String tableName) {
+        super(tableName);
+    }
 }

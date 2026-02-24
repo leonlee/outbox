@@ -11,17 +11,17 @@ import java.util.concurrent.atomic.AtomicInteger;
  * are daemon threads so they do not prevent JVM shutdown.
  */
 public final class DaemonThreadFactory implements ThreadFactory {
-  private final String prefix;
-  private final AtomicInteger counter = new AtomicInteger(1);
+    private final String prefix;
+    private final AtomicInteger counter = new AtomicInteger(1);
 
-  public DaemonThreadFactory(String prefix) {
-    this.prefix = Objects.requireNonNull(prefix, "prefix");
-  }
+    public DaemonThreadFactory(String prefix) {
+        this.prefix = Objects.requireNonNull(prefix, "prefix");
+    }
 
-  @Override
-  public Thread newThread(Runnable runnable) {
-    Thread thread = new Thread(runnable, prefix + counter.getAndIncrement());
-    thread.setDaemon(true);
-    return thread;
-  }
+    @Override
+    public Thread newThread(Runnable runnable) {
+        Thread thread = new Thread(runnable, prefix + counter.getAndIncrement());
+        thread.setDaemon(true);
+        return thread;
+    }
 }

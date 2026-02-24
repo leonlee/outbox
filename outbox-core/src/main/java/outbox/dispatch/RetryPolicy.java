@@ -7,11 +7,11 @@ package outbox.dispatch;
  */
 public interface RetryPolicy {
 
-  /**
-   * Computes the delay in milliseconds before the next retry attempt.
-   *
-   * @param attempts the number of attempts so far (1-based)
-   * @return delay in milliseconds (non-negative)
-   */
-  long computeDelayMs(int attempts);
+    /**
+     * Computes the delay in milliseconds before the next retry attempt.
+     *
+     * @param attempts the number of attempts so far (1-based)
+     * @return delay in milliseconds (non-negative)
+     */
+    long computeDelayMs(int attempts);
 }

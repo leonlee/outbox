@@ -3,12 +3,14 @@ package outbox;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -195,5 +197,113 @@ class EventEnvelopeTest {
                 .build();
 
         assertEquals(EventEnvelope.MAX_PAYLOAD_BYTES, envelope.payloadBytes().length);
+    }
+
+    @Test
+    void availableAtSetsAbsoluteDeliveryTime() {
+        Instant future = Instant.now().plusSeconds(3600);
+        EventEnvelope envelope = EventEnvelope.builder("Delayed")
+                .availableAt(future)
+                .payloadJson("{}")
+                .build();
+
+        assertEquals(future, envelope.availableAt());
+        assertTrue(envelope.isDelayed());
+    }
+
+    @Test
+    void deliverAfterComputesAvailableAtFromOccurredAt() {
+        Instant occurredAt = Instant.parse("2025-01-01T00:00:00Z");
+        EventEnvelope envelope = EventEnvelope.builder("Delayed")
+                .occurredAt(occurredAt)
+                .deliverAfter(Duration.ofMinutes(30))
+                .payloadJson("{}")
+                .build();
+
+        assertEquals(occurredAt.plusSeconds(1800), envelope.availableAt());
+        assertTrue(envelope.isDelayed());
+    }
+
+    @Test
+    void defaultAvailableAtIsNull() {
+        EventEnvelope envelope = EventEnvelope.builder("Immediate")
+                .payloadJson("{}")
+                .build();
+
+        assertNull(envelope.availableAt());
+        assertFalse(envelope.isDelayed());
+    }
+
+    @Test
+    void rejectsBothAvailableAtAndDeliverAfter() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                EventEnvelope.builder("Bad")
+                        .availableAt(Instant.now().plusSeconds(60))
+                        .deliverAfter(Duration.ofMinutes(5))
+                        .payloadJson("{}")
+                        .build());
+        assertTrue(ex.getMessage().contains("availableAt or deliverAfter"));
+    }
+
+    @Test
+    void rejectsZeroDeliverAfter() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                EventEnvelope.builder("Bad")
+                        .deliverAfter(Duration.ZERO)
+                        .payloadJson("{}")
+                        .build());
+        assertTrue(ex.getMessage().contains("deliverAfter must be positive"));
+    }
+
+    @Test
+    void rejectsNegativeDeliverAfter() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                EventEnvelope.builder("Bad")
+                        .deliverAfter(Duration.ofSeconds(-10))
+                        .payloadJson("{}")
+                        .build());
+        assertTrue(ex.getMessage().contains("deliverAfter must be positive"));
+    }
+
+    @Test
+    void isDelayedReturnsFalseWhenAvailableAtEqualsOccurredAt() {
+        Instant now = Instant.now();
+        EventEnvelope envelope = EventEnvelope.builder("NotDelayed")
+                .occurredAt(now)
+                .availableAt(now)
+                .payloadJson("{}")
+                .build();
+
+        assertFalse(envelope.isDelayed());
+    }
+
+    @Test
+    void rejectsNullAvailableAt() {
+        assertThrows(NullPointerException.class, () ->
+                EventEnvelope.builder("Bad")
+                        .availableAt(null)
+                        .payloadJson("{}")
+                        .build());
+    }
+
+    @Test
+    void rejectsNullDeliverAfter() {
+        assertThrows(NullPointerException.class, () ->
+                EventEnvelope.builder("Bad")
+                        .deliverAfter(null)
+                        .payloadJson("{}")
+                        .build());
+    }
+
+    @Test
+    void rejectsAvailableAtBeforeOccurredAt() {
+        Instant now = Instant.now();
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                EventEnvelope.builder("Past")
+                        .occurredAt(now)
+                        .availableAt(now.minusSeconds(10))
+                        .payloadJson("{}")
+                        .build());
+        assertTrue(ex.getMessage().contains("availableAt must not be before occurredAt"));
     }
 }

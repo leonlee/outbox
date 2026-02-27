@@ -112,11 +112,13 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
                 "locked_by, locked_at" +
                 ") VALUES (?,?,?,?,?," + jp + "," + jp + ",?,?,?,?,NULL,NULL,NULL,NULL)";
         Timestamp now = Timestamp.from(event.occurredAt());
+        Timestamp availableAt = event.availableAt() != null
+                ? Timestamp.from(event.availableAt()) : now;
         JdbcTemplate.update(conn, sql,
                 event.eventId(), event.eventType(), event.aggregateType(),
                 event.aggregateId(), event.tenantId(), event.payloadJson(),
                 jsonCodec.toJson(event.headers()),
-                EventStatus.NEW.code(), 0, now, now);
+                EventStatus.NEW.code(), 0, availableAt, now);
     }
 
     @Override
@@ -154,6 +156,8 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
         int idx = 0;
         for (EventEnvelope event : events) {
             Timestamp now = Timestamp.from(event.occurredAt());
+            Timestamp availableAt = event.availableAt() != null
+                    ? Timestamp.from(event.availableAt()) : now;
             params[idx++] = event.eventId();
             params[idx++] = event.eventType();
             params[idx++] = event.aggregateType();
@@ -163,7 +167,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
             params[idx++] = jsonCodec.toJson(event.headers());
             params[idx++] = EventStatus.NEW.code();
             params[idx++] = 0;
-            params[idx++] = now;
+            params[idx++] = availableAt;
             params[idx++] = now;
         }
         JdbcTemplate.update(conn, sql.toString(), params);

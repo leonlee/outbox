@@ -3,6 +3,7 @@ package outbox;
 import com.github.f4b6a3.ulid.UlidCreator;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collections;
@@ -29,6 +30,7 @@ public final class EventEnvelope {
     private final String aggregateType;
     private final String aggregateId;
     private final String tenantId;
+    private final Instant availableAt;
     private final Map<String, String> headers;
     private final String payloadJson;
     private final byte[] payloadBytes;
@@ -44,6 +46,21 @@ public final class EventEnvelope {
                 ? AggregateType.GLOBAL.name() : builder.aggregateType;
         this.aggregateId = builder.aggregateId;
         this.tenantId = builder.tenantId;
+
+        if (builder.availableAt != null && builder.deliverAfter != null) {
+            throw new IllegalArgumentException("Set either availableAt or deliverAfter, not both");
+        }
+        if (builder.deliverAfter != null && (builder.deliverAfter.isZero() || builder.deliverAfter.isNegative())) {
+            throw new IllegalArgumentException("deliverAfter must be positive");
+        }
+        if (builder.availableAt != null && builder.availableAt.isBefore(this.occurredAt)) {
+            throw new IllegalArgumentException("availableAt must not be before occurredAt");
+        }
+        if (builder.deliverAfter != null) {
+            this.availableAt = this.occurredAt.plus(builder.deliverAfter);
+        } else {
+            this.availableAt = builder.availableAt;
+        }
 
         Map<String, String> headerCopy = builder.headers == null
                 ? Collections.emptyMap()
@@ -146,6 +163,24 @@ public final class EventEnvelope {
         return tenantId;
     }
 
+    /**
+     * Returns the earliest time this event should be delivered, or {@code null} for immediate delivery.
+     *
+     * @return the available-at instant, or {@code null}
+     */
+    public Instant availableAt() {
+        return availableAt;
+    }
+
+    /**
+     * Returns {@code true} if this event has a future delivery time.
+     *
+     * @return whether this event is delayed
+     */
+    public boolean isDelayed() {
+        return availableAt != null && availableAt.isAfter(occurredAt);
+    }
+
     public Map<String, String> headers() {
         return headers;
     }
@@ -160,11 +195,14 @@ public final class EventEnvelope {
 
     @Override
     public String toString() {
-        return "EventEnvelope{eventId=" + eventId
-                + ", eventType=" + eventType
-                + ", aggregateType=" + aggregateType
-                + ", aggregateId=" + aggregateId
-                + "}";
+        StringBuilder sb = new StringBuilder("EventEnvelope{eventId=").append(eventId)
+                .append(", eventType=").append(eventType)
+                .append(", aggregateType=").append(aggregateType)
+                .append(", aggregateId=").append(aggregateId);
+        if (availableAt != null) {
+            sb.append(", availableAt=").append(availableAt);
+        }
+        return sb.append('}').toString();
     }
 
     /**
@@ -177,6 +215,8 @@ public final class EventEnvelope {
         private String aggregateType;
         private String aggregateId;
         private String tenantId;
+        private Instant availableAt;
+        private Duration deliverAfter;
         private Map<String, String> headers;
         private String payloadJson;
         private byte[] payloadBytes;
@@ -261,6 +301,30 @@ public final class EventEnvelope {
          */
         public Builder tenantId(String tenantId) {
             this.tenantId = tenantId;
+            return this;
+        }
+
+        /**
+         * Sets an absolute time at which this event becomes available for delivery.
+         * Mutually exclusive with {@link #deliverAfter}.
+         *
+         * @param availableAt the earliest delivery time
+         * @return this builder
+         */
+        public Builder availableAt(Instant availableAt) {
+            this.availableAt = Objects.requireNonNull(availableAt, "availableAt");
+            return this;
+        }
+
+        /**
+         * Sets a relative delay from {@code occurredAt} after which this event becomes
+         * available for delivery. Mutually exclusive with {@link #availableAt}.
+         *
+         * @param deliverAfter the delay duration (must be positive)
+         * @return this builder
+         */
+        public Builder deliverAfter(Duration deliverAfter) {
+            this.deliverAfter = Objects.requireNonNull(deliverAfter, "deliverAfter");
             return this;
         }
 

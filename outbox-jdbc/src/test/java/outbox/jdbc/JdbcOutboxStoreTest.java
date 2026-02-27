@@ -677,6 +677,113 @@ class JdbcOutboxStoreTest {
         assertEquals(List.of("jdbc:h2:"), outboxStore.jdbcUrlPrefixes());
     }
 
+    @Test
+    void insertNewUsesAvailableAtWhenSet() throws SQLException {
+        Instant occurredAt = Instant.parse("2025-06-01T12:00:00Z");
+        Instant availableAt = Instant.parse("2025-06-01T13:00:00Z");
+        EventEnvelope event = EventEnvelope.builder("Delayed")
+                .occurredAt(occurredAt)
+                .availableAt(availableAt)
+                .payloadJson("{}")
+                .build();
+
+        try (Connection conn = dataSource.getConnection()) {
+            outboxStore.insertNew(conn, event);
+
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT available_at, created_at FROM outbox_event WHERE event_id = ?")) {
+                ps.setString(1, event.eventId());
+                ResultSet rs = ps.executeQuery();
+                assertTrue(rs.next());
+                assertEquals(java.sql.Timestamp.from(availableAt), rs.getTimestamp("available_at"));
+                assertEquals(java.sql.Timestamp.from(occurredAt), rs.getTimestamp("created_at"));
+            }
+        }
+    }
+
+    @Test
+    void insertNewDefaultsAvailableAtToOccurredAt() throws SQLException {
+        EventEnvelope event = EventEnvelope.builder("Immediate")
+                .payloadJson("{}")
+                .build();
+
+        try (Connection conn = dataSource.getConnection()) {
+            outboxStore.insertNew(conn, event);
+
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT available_at, created_at FROM outbox_event WHERE event_id = ?")) {
+                ps.setString(1, event.eventId());
+                ResultSet rs = ps.executeQuery();
+                assertTrue(rs.next());
+                assertEquals(rs.getTimestamp("created_at"), rs.getTimestamp("available_at"));
+            }
+        }
+    }
+
+    @Test
+    void insertBatchUsesAvailableAtWhenSet() throws SQLException {
+        Instant occurredAt = Instant.parse("2025-06-01T12:00:00Z");
+        Instant availableAt = Instant.parse("2025-06-01T14:00:00Z");
+        EventEnvelope delayed = EventEnvelope.builder("BatchDelayed")
+                .eventId("batch-delayed")
+                .occurredAt(occurredAt)
+                .availableAt(availableAt)
+                .payloadJson("{}")
+                .build();
+        EventEnvelope immediate = EventEnvelope.builder("BatchImmediate")
+                .eventId("batch-immediate")
+                .occurredAt(occurredAt)
+                .payloadJson("{}")
+                .build();
+
+        try (Connection conn = dataSource.getConnection()) {
+            outboxStore.insertBatch(conn, List.of(delayed, immediate));
+
+            // Verify delayed event has future available_at
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT available_at FROM outbox_event WHERE event_id = ?")) {
+                ps.setString(1, "batch-delayed");
+                ResultSet rs = ps.executeQuery();
+                assertTrue(rs.next());
+                assertEquals(java.sql.Timestamp.from(availableAt), rs.getTimestamp("available_at"));
+            }
+
+            // Verify immediate event has available_at = created_at
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT available_at, created_at FROM outbox_event WHERE event_id = ?")) {
+                ps.setString(1, "batch-immediate");
+                ResultSet rs = ps.executeQuery();
+                assertTrue(rs.next());
+                assertEquals(rs.getTimestamp("created_at"), rs.getTimestamp("available_at"));
+            }
+        }
+    }
+
+    @Test
+    void delayedEventNotReturnedByPollPendingUntilAvailable() throws SQLException {
+        Instant now = Instant.now();
+        EventEnvelope delayed = EventEnvelope.builder("FutureEvent")
+                .occurredAt(now)
+                .deliverAfter(Duration.ofHours(1))
+                .payloadJson("{}")
+                .build();
+
+        try (Connection conn = dataSource.getConnection()) {
+            outboxStore.insertNew(conn, delayed);
+
+            // Poll at current time — delayed event should not be returned
+            List<OutboxEvent> pending = outboxStore.pollPending(conn,
+                    now.plusSeconds(1), Duration.ZERO, 10);
+            assertTrue(pending.isEmpty());
+
+            // Poll at future time — delayed event should now be returned
+            List<OutboxEvent> future = outboxStore.pollPending(conn,
+                    now.plusSeconds(3601), Duration.ZERO, 10);
+            assertEquals(1, future.size());
+            assertEquals(delayed.eventId(), future.get(0).eventId());
+        }
+    }
+
     private String insertTestEvent() throws SQLException {
         EventEnvelope event = EventEnvelope.builder("TestEvent")
                 .payloadJson("{}")

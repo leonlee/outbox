@@ -35,6 +35,13 @@ public final class DispatcherWriterHook implements WriterHook {
     @Override
     public void afterCommit(List<EventEnvelope> events) {
         for (EventEnvelope event : events) {
+            if (event.isDelayed()) {
+                metrics.incrementHotSkippedDelayed();
+                logger.log(Level.FINE,
+                        "Skipping delayed event for hot queue, poller will deliver at availableAt; eventId="
+                                + event.eventId());
+                continue;
+            }
             try {
                 QueuedEvent queued = new QueuedEvent(event, QueuedEvent.Source.HOT, 0);
                 boolean enqueued = dispatcher.enqueueHot(queued);

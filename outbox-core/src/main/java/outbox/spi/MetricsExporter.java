@@ -51,6 +51,13 @@ public interface MetricsExporter {
     }
 
     /**
+     * Increments the count of delayed events skipped on the hot path.
+     * These events will be delivered by the poller when their {@code availableAt} time arrives.
+     */
+    default void incrementHotSkippedDelayed() {
+    }
+
+    /**
      * Records the current depth of both dispatch queues.
      *
      * @param hotDepth  number of events in the hot queue

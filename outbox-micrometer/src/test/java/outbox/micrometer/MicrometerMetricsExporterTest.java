@@ -70,6 +70,14 @@ class MicrometerMetricsExporterTest {
     }
 
     @Test
+    void incrementHotSkippedDelayed() {
+        exporter.incrementHotSkippedDelayed();
+        exporter.incrementHotSkippedDelayed();
+        exporter.incrementHotSkippedDelayed();
+        assertEquals(3.0, counter("outbox.enqueue.hot.skipped.delayed").count());
+    }
+
+    @Test
     void recordQueueDepths() {
         exporter.recordQueueDepths(42, 7);
         assertEquals(42.0, gauge("outbox.queue.hot.depth").value());
@@ -148,6 +156,7 @@ class MicrometerMetricsExporterTest {
     void closeRemovesAllMeters() {
         exporter.incrementHotEnqueued();
         exporter.incrementDispatchDeferred();
+        exporter.incrementHotSkippedDelayed();
         exporter.recordQueueDepths(5, 3);
         exporter.recordOldestLagMs(100L);
         exporter.recordDispatchLatencyMs(10L);
@@ -157,6 +166,7 @@ class MicrometerMetricsExporterTest {
 
         assertNull(registry.find("outbox.enqueue.hot").counter());
         assertNull(registry.find("outbox.dispatch.deferred").counter());
+        assertNull(registry.find("outbox.enqueue.hot.skipped.delayed").counter());
         assertNull(registry.find("outbox.queue.hot.depth").gauge());
         assertNull(registry.find("outbox.lag.oldest.ms").gauge());
         assertNull(registry.find("outbox.dispatch.latency.ms").summary());

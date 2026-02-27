@@ -5,6 +5,8 @@ import outbox.EventEnvelope;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.spi.MetricsExporter;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -65,6 +67,47 @@ class DispatcherWriterHookTest {
     }
 
     @Test
+    void afterCommitSkipsDelayedEvents() {
+        var dispatcher = newDispatcher(0, 10);
+        var metrics = new CountingMetrics();
+        var hook = new DispatcherWriterHook(dispatcher, metrics);
+
+        EventEnvelope delayed = EventEnvelope.builder("Delayed")
+                .deliverAfter(Duration.ofHours(1))
+                .payloadJson("{}")
+                .build();
+        EventEnvelope immediate = EventEnvelope.ofJson("Immediate", "{}");
+
+        hook.afterCommit(List.of(delayed, immediate));
+
+        assertEquals(1, metrics.hotEnqueued.get());
+        assertEquals(0, metrics.hotDropped.get());
+        assertEquals(1, metrics.hotSkippedDelayed.get());
+    }
+
+    @Test
+    void afterCommitSkipsAllDelayedEvents() {
+        var dispatcher = newDispatcher(0, 10);
+        var metrics = new CountingMetrics();
+        var hook = new DispatcherWriterHook(dispatcher, metrics);
+
+        EventEnvelope delayed1 = EventEnvelope.builder("D1")
+                .availableAt(Instant.now().plusSeconds(3600))
+                .payloadJson("{}")
+                .build();
+        EventEnvelope delayed2 = EventEnvelope.builder("D2")
+                .deliverAfter(Duration.ofMinutes(30))
+                .payloadJson("{}")
+                .build();
+
+        hook.afterCommit(List.of(delayed1, delayed2));
+
+        assertEquals(0, metrics.hotEnqueued.get());
+        assertEquals(0, metrics.hotDropped.get());
+        assertEquals(2, metrics.hotSkippedDelayed.get());
+    }
+
+    @Test
     void afterCommitWithNullMetricsFallsBackToNoop() {
         var dispatcher = newDispatcher(0, 10);
         var hook = new DispatcherWriterHook(dispatcher, null);
@@ -89,6 +132,7 @@ class DispatcherWriterHookTest {
     static final class CountingMetrics implements MetricsExporter {
         final AtomicInteger hotEnqueued = new AtomicInteger();
         final AtomicInteger hotDropped = new AtomicInteger();
+        final AtomicInteger hotSkippedDelayed = new AtomicInteger();
         final AtomicInteger coldEnqueued = new AtomicInteger();
 
         @Override
@@ -99,6 +143,11 @@ class DispatcherWriterHookTest {
         @Override
         public void incrementHotDropped() {
             hotDropped.incrementAndGet();
+        }
+
+        @Override
+        public void incrementHotSkippedDelayed() {
+            hotSkippedDelayed.incrementAndGet();
         }
 
         @Override

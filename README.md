@@ -96,14 +96,14 @@ Artifacts are published to [Maven Central](https://central.sonatype.com/namespac
     +--------+---------+
              |
              v
-    +------------------+  onEvent()  +--------------+
-    | ListenerRegistry | ----------> |  Listener A  |
-    +--------+---------+             +--------------+
-             |                       +--------------+
-             +---------------------> |  Listener B  |
-                                     +--------------+
+    +------------------+ handleEvent() +--------------+
+    | ListenerRegistry | ------------> |  Listener A  |
+    +--------+---------+               +--------------+
+             |                         +--------------+
+             +-----------------------> |  Listener B  |
+                                       +--------------+
 
-    OutboxDispatcher --- mark DONE/RETRY/DEAD ---> OutboxStore
+    OutboxDispatcher --- mark DONE/DEFERRED/RETRY/DEAD ---> OutboxStore
 ```
 
 Hot path is optional: supply an `WriterHook` (for example, `DispatcherWriterHook`) or omit it for CDC-only consumption.
@@ -114,8 +114,8 @@ Hot path is optional: supply an `WriterHook` (for example, `DispatcherWriterHook
   business work.
 - **After-commit hook**: `DispatcherWriterHook` enqueues the event into the hot queue after commit. If the queue is
   full, the event stays in the DB.
-- **Dispatch**: `OutboxDispatcher` drains hot/cold queues, routes to a single listener, and updates status to `DONE`,
-  `RETRY`, or `DEAD`.
+- **Dispatch**: `OutboxDispatcher` drains hot/cold queues, routes to a single listener via `handleEvent()`, and updates
+  status based on `DispatchResult` (`DONE`, `DEFERRED`, `RETRY`, or `DEAD`).
 - **Fallback**: `OutboxPoller` periodically scans/claims pending rows and enqueues them into the cold queue.
 - **At-least-once**: listeners may see duplicates. Always dedupe downstream by `eventId`.
 - **Purge**: `OutboxPurgeScheduler` periodically deletes terminal events (DONE/DEAD) older than a configurable retention
@@ -133,7 +133,8 @@ Hot path is optional: supply an `WriterHook` (for example, `DispatcherWriterHook
 - `hotQueueCapacity`/`coldQueueCapacity` bound in-memory buffering.
 - `skipRecent` avoids racing very recent inserts with the hot path.
 - `claimLocking(ownerId, lockTimeout)` enables multi-instance poller locking.
-- `maxAttempts` and `RetryPolicy` control retries and backoff.
+- `maxAttempts` and `RetryPolicy` control retries and backoff. Handlers can override retry timing via
+  `DispatchResult.retryAfter()` or `RetryAfterException`.
 
 ## Event Retention / Purge
 
@@ -159,6 +160,8 @@ If clients need to archive events for audit, they should do so in their `EventLi
 
 - Delivery is **at-least-once**. Downstream must dedupe by `eventId`.
 - Listener exceptions trigger `RETRY` with backoff; after `maxAttempts`, events go `DEAD`.
+- Handlers can return `DispatchResult.retryAfter(delay)` for deferred re-delivery without counting against
+  `maxAttempts`, or throw `RetryAfterException` for handler-controlled retry timing that does count.
 - If status updates fail, the event remains in DB and may be retried later.
 
 ## Composite Builder

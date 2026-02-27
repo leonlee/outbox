@@ -75,8 +75,8 @@ For tutorials and code examples, see [TUTORIAL.md](TUTORIAL.md).
                                       v
                          OutboxDispatcher.process()
                            -> ListenerRegistry.listenerFor()
-                           -> EventListener.onEvent()
-                           -> markDone/Retry/Dead()
+                           -> EventListener.handleEvent()
+                           -> markDone/Deferred/Retry/Dead()
 ```
 
 ### 1.3 Queue Priority
@@ -97,7 +97,7 @@ Core interfaces, hooks, dispatcher, poller, and registries. **Zero external depe
 Packages:
 
 - `outbox` - Main API: Outbox (composite builder), OutboxWriter, EventEnvelope, EventType, AggregateType, EventListener,
-  WriterHook
+  DispatchResult, RetryAfterException, WriterHook
 - `outbox.spi` - Extension point interfaces: TxContext, ConnectionProvider, OutboxStore, EventPurger, MetricsExporter
 - `outbox.model` - Domain objects: OutboxEvent, EventStatus
 - `outbox.dispatch` - OutboxDispatcher, retry policy, inflight tracking
@@ -556,6 +556,9 @@ public interface OutboxStore {
 
     int markDead(Connection conn, String eventId, String error);
 
+    // Handler-controlled deferred retry (default falls back to markRetry)
+    default int markDeferred(Connection conn, String eventId, Instant nextAt);
+
     List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit);
 
     // Claim-based locking (default falls back to pollPending)
@@ -599,6 +602,17 @@ UPDATE outbox_event
 SET status = 3, last_error = ?, locked_by = NULL, locked_at = NULL
 WHERE event_id = ? AND status <> 1
 ```
+
+**Mark Deferred** (handler-controlled retry without incrementing attempts):
+
+```sql
+UPDATE outbox_event
+SET status = 0, available_at = ?, locked_by = NULL, locked_at = NULL
+WHERE event_id = ? AND status <> 1
+```
+
+Default implementation falls back to `markRetry` (which increments attempts). JDBC implementations override with
+the above SQL to preserve the attempt count.
 
 **Poll Pending:**
 
@@ -663,10 +677,15 @@ For each queued event:
 2. **Interceptors**: Run `beforeDispatch` in registration order
 3. **Route**: Find single listener via `listenerRegistry.listenerFor(aggregateType, eventType)`
 4. **Unroutable**: If no listener, throw `UnroutableEventException` -> mark DEAD immediately (no retry)
-5. **Execute**: Run the listener
+5. **Execute**: Call `listener.handleEvent(event)` → returns `DispatchResult`
 6. **After**: Run `afterDispatch` in reverse order (null error on success, exception on failure)
-7. **Success**: Update DB to DONE; remove from inflight
-8. **Failure**: Update RETRY with backoff, or DEAD after maxAttempts; remove from inflight
+7. **Result handling**:
+   - `Done` (or null): markDone; remove from inflight
+   - `RetryAfter(delay)`: markDeferred with `now + delay` (no attempt increment); remove from inflight
+8. **Failure handling**:
+   - `RetryAfterException`: markRetry with handler delay (counts against maxAttempts)
+   - Other exception: markRetry with `RetryPolicy` backoff, or markDead after maxAttempts
+   - `UnroutableEventException`: markDead immediately (no retry)
 
 ### 9.4 Synchronous Execution Model
 
@@ -678,9 +697,10 @@ Worker Thread:
     event = pollFairly()      // 2:1 hot:cold weighted round-robin
     interceptors.beforeDispatch(event)
     listener = registry.listenerFor(aggregateType, eventType)
-    listener.onEvent(event)   // blocking
+    result = listener.handleEvent(event)   // blocking, returns DispatchResult
     interceptors.afterDispatch(event, null)
-    markDone(event)
+    if result is RetryAfter -> markDeferred(event, now + delay)
+    else                    -> markDone(event)
 ```
 
 ### 9.5 EventInterceptor
@@ -846,6 +866,17 @@ For high-QPS workloads, CDC can replace the in-process poller and hot-path hook:
  */
 public interface EventListener {
     void onEvent(EventEnvelope event) throws Exception;
+
+    /**
+     * Processes an event and returns a DispatchResult to control post-dispatch behavior.
+     * Default delegates to onEvent() and returns Done.
+     * Override to return RetryAfter(delay) for deferred re-delivery without counting
+     * against maxAttempts.
+     */
+    default DispatchResult handleEvent(EventEnvelope event) throws Exception {
+        onEvent(event);
+        return DispatchResult.done();
+    }
 }
 ```
 
@@ -918,6 +949,50 @@ jitter = random(0.5, 1.5)
 | baseDelayMs | 200     |
 | maxDelayMs  | 60000   |
 | maxAttempts | 10      |
+
+### 12.4 Handler-Controlled Retry Timing
+
+In addition to the framework's `RetryPolicy`, handlers can control retry timing directly:
+
+**DispatchResult (sealed interface):**
+
+```java
+public sealed interface DispatchResult permits Done, RetryAfter {
+    static Done done();
+    static RetryAfter retryAfter(Duration delay);
+
+    record Done() implements DispatchResult {}
+    record RetryAfter(Duration delay) implements DispatchResult {}
+}
+```
+
+- `Done` (or null): event processed successfully → `markDone`
+- `RetryAfter(delay)`: event not yet complete → `markDeferred` (resets to PENDING with `available_at = now + delay`).
+  Does **not** increment `attempts`. Useful for polling external systems or respecting rate-limit `Retry-After` headers.
+
+**RetryAfterException:**
+
+```java
+public class RetryAfterException extends RuntimeException {
+    public RetryAfterException(Duration retryAfter);
+    public RetryAfterException(Duration retryAfter, String message);
+    public RetryAfterException(Duration retryAfter, Throwable cause);
+    public RetryAfterException(Duration retryAfter, String message, Throwable cause);
+    public Duration retryAfter();
+}
+```
+
+- Unlike `DispatchResult.RetryAfter`, throwing this exception **does** count against `maxAttempts`
+- Dispatcher uses exception's `retryAfter()` duration instead of `RetryPolicy.computeDelayMs()`
+- If `maxAttempts` exhausted, event goes DEAD regardless
+
+**Comparison:**
+
+| Mechanism                   | Counts against maxAttempts | Delay source         | Use case                                 |
+|-----------------------------|----------------------------|----------------------|------------------------------------------|
+| `DispatchResult.RetryAfter` | No                         | Handler-specified    | Polling, waiting for preconditions       |
+| `RetryAfterException`       | Yes                        | Handler-specified    | Transient failure with known retry delay |
+| Other exception             | Yes                        | `RetryPolicy`        | Unexpected failure                       |
 
 ---
 
@@ -1048,6 +1123,8 @@ public interface MetricsExporter {
 
     void incrementDispatchDead();
 
+    default void incrementDispatchDeferred();  // handler returned RetryAfter
+
     void recordQueueDepths(int hotDepth, int coldDepth);
 
     void recordOldestLagMs(long lagMs);
@@ -1080,6 +1157,7 @@ MicrometerMetricsExporter(MeterRegistry registry, String namePrefix) // custom p
 | `{prefix}.dispatch.success`    | Events dispatched successfully         |
 | `{prefix}.dispatch.failure`    | Events failed (will retry)             |
 | `{prefix}.dispatch.dead`       | Events moved to DEAD                   |
+| `{prefix}.dispatch.deferred`   | Events deferred by handler (RetryAfter)|
 
 **Gauges (current value):**
 

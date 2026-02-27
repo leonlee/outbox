@@ -53,6 +53,8 @@ outbox-core/src/main/java/
     ├── StringEventType.java (record)
     ├── StringAggregateType.java (record)
     ├── EventListener.java (interface)
+    ├── DispatchResult.java (sealed interface: Done, RetryAfter)
+    ├── RetryAfterException.java
     ├── WriterHook.java (interface)
     │
     │  # SPI - Extension Point Interfaces
@@ -138,8 +140,8 @@ outbox-jdbc/src/main/java/
 
 - **TxContext**: Abstracts transaction lifecycle (`isTransactionActive()`, `currentConnection()`, `afterCommit()`,
   `afterRollback()`). Implementations: `ThreadLocalTxContext` (`outbox.jdbc.tx`, JDBC), `SpringTxContext` (Spring).
-- **OutboxStore**: Persistence contract (`insertNew`, `insertBatch`, `markDone`, `markRetry`, `markDead`, `pollPending`,
-  `claimPending`, `queryDead`, `replayDead`, `countDead`). `insertBatch` defaults to looping `insertNew`;
+- **OutboxStore**: Persistence contract (`insertNew`, `insertBatch`, `markDone`, `markRetry`, `markDead`, `markDeferred`,
+  `pollPending`, `claimPending`, `queryDead`, `replayDead`, `countDead`). `insertBatch` defaults to looping `insertNew`;
   `AbstractJdbcOutboxStore` overrides with `addBatch/executeBatch`. Implemented by `AbstractJdbcOutboxStore` hierarchy
   in `outbox.jdbc.store`.
 - **AbstractJdbcOutboxStore** (`outbox.jdbc.store`): Base JDBC outbox store with shared SQL, row mapper, and
@@ -155,8 +157,9 @@ outbox-jdbc/src/main/java/
   writer + optional age-based purge, no dispatcher/poller). `close()` shuts down purgeScheduler → poller → dispatcher (
   null components skipped). Access the writer via `outbox.writer()`.
 - **OutboxDispatcher**: Dual-queue single-event processor with hot queue (afterCommit callbacks) and cold queue (poller
-  fallback). Each event is dispatched individually: acquire in-flight → run interceptors → call listener →
-  markDone/markRetry/markDead. Created via `OutboxDispatcher.builder()`. Uses `InFlightTracker` for deduplication,
+  fallback). Each event is dispatched individually: acquire in-flight → run interceptors → call `listener.handleEvent()`
+  → handle `DispatchResult` (Done/RetryAfter) → markDone/markDeferred/markRetry/markDead. Created via
+  `OutboxDispatcher.builder()`. Uses `InFlightTracker` for deduplication,
   `RetryPolicy` for exponential backoff, `EventInterceptor` for cross-cutting hooks, fair 2:1 hot/cold queue draining,
   and graceful shutdown with configurable drain timeout.
 - **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails. Created via `OutboxPoller.builder()`. Uses an
@@ -195,7 +198,12 @@ outbox-jdbc/src/main/java/
 - **DeadEventManager** (`outbox.dead`): Connection-managed facade for querying, counting, and replaying DEAD events.
   Constructor takes `ConnectionProvider` + `OutboxStore`.
 - **MicrometerMetricsExporter** (`outbox.micrometer`): Micrometer-based `MetricsExporter` implementation with counters
-  and gauges. Supports custom `namePrefix` for multi-instance use.
+  and gauges. Tracks `incrementDispatchDeferred` for handler-deferred events. Supports custom `namePrefix` for
+  multi-instance use.
+- **DispatchResult**: Sealed interface returned by `EventListener.handleEvent()`. `Done` (singleton) marks event
+  complete. `RetryAfter(Duration)` defers re-delivery without counting against `maxAttempts`.
+- **RetryAfterException**: RuntimeException with handler-specified retry delay. Unlike `DispatchResult.RetryAfter`,
+  counts against `maxAttempts`. Dispatcher uses exception's `retryAfter()` instead of `RetryPolicy`.
 
 ### Event Flow
 
@@ -205,8 +213,12 @@ outbox-jdbc/src/main/java/
    OutboxDispatcher hot queue)
 3. If hot queue full, event is dropped (logged) and poller picks it up later
 4. OutboxDispatcher workers process events one at a time: acquire in-flight → run interceptors → find listener via
-   `(aggregateType, eventType)` → call `listener.onEvent()` → update status to DONE/RETRY/DEAD
-5. Unroutable events (no listener found) are immediately marked DEAD (no retry)
+   `(aggregateType, eventType)` → call `listener.handleEvent()` → handle DispatchResult:
+   - Done (or null): markDone
+   - RetryAfter: markDeferred (no attempt increment)
+   - Exception: markRetry (or markDead if maxAttempts exhausted)
+   - RetryAfterException: markRetry with handler delay (counts against maxAttempts)
+   - UnroutableEventException: markDead immediately (no retry)
 
 ## Coding Style
 

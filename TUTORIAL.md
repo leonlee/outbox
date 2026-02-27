@@ -30,6 +30,7 @@ For the full technical specification, see [SPEC.md](SPEC.md).
 13. [Micrometer Metrics](#13-micrometer-metrics)
 14. [Custom JsonCodec](#14-custom-jsoncodec)
 15. [Ordered Delivery](#15-ordered-delivery)
+16. [Handler-Controlled Retry Timing](#16-handler-controlled-retry-timing)
 
 ---
 
@@ -1559,3 +1560,83 @@ start();
 | **Throughput** | Parallel workers       | Single-threaded            |
 
 For unordered events, use the default hot + poller mode for lowest latency.
+
+---
+
+## 16. Handler-Controlled Retry Timing
+
+By default, the framework's `RetryPolicy` controls retry delays. Handlers can override this with two complementary
+mechanisms: `DispatchResult.RetryAfter` (deferred re-delivery, no penalty) and `RetryAfterException` (failed attempt
+with handler-specified delay).
+
+### 16.1 Deferred Re-delivery with DispatchResult
+
+Return `DispatchResult.retryAfter(delay)` from `handleEvent()` when the event isn't ready to be processed yet. This
+does **not** count against `maxAttempts` — the event is rescheduled without penalty.
+
+```java
+// Simple case: onEvent() lambda — framework returns Done automatically
+registry.register("OrderPlaced", event -> {
+  kafkaTemplate.send("orders", event.eventId(), event.payloadJson());
+});
+
+// Advanced case: override handleEvent() for controlled retry
+registry.register("PaymentStatus", new EventListener() {
+  @Override
+  public void onEvent(EventEnvelope event) {}
+
+  @Override
+  public DispatchResult handleEvent(EventEnvelope event) throws Exception {
+    String status = callPaymentGateway(event.aggregateId());
+
+    return switch (status) {
+      case "completed" -> {
+        publishDownstream(event);
+        yield DispatchResult.done();
+      }
+      case "pending" -> DispatchResult.retryAfter(Duration.ofSeconds(30));
+      case "failed"  -> throw new RuntimeException("Payment failed");
+      default         -> throw new RuntimeException("Unknown status: " + status);
+    };
+  }
+});
+```
+
+### 16.2 RetryAfterException for Rate Limiting
+
+Throw `RetryAfterException` when a transient failure occurs and the handler knows the appropriate retry delay (e.g.,
+from an HTTP `Retry-After` header). Unlike `DispatchResult.RetryAfter`, this **does** count against `maxAttempts`.
+
+```java
+registry.register("WebhookDelivery", new EventListener() {
+  @Override
+  public void onEvent(EventEnvelope event) {}
+
+  @Override
+  public DispatchResult handleEvent(EventEnvelope event) throws Exception {
+    var response = httpClient.post(webhookUrl, event.payloadJson());
+
+    return switch (response.statusCode()) {
+      case 200, 201, 204 -> DispatchResult.done();
+      case 429 -> {
+        // Rate limited — use server's Retry-After header
+        long retryAfterSecs = Long.parseLong(
+            response.headers().firstValue("Retry-After").orElse("60"));
+        throw new RetryAfterException(
+            Duration.ofSeconds(retryAfterSecs),
+            "Rate limited by webhook endpoint");
+      }
+      default -> throw new RuntimeException(
+          "Webhook delivery failed: HTTP " + response.statusCode());
+    };
+  }
+});
+```
+
+### 16.3 Choosing Between the Two
+
+| Mechanism                     | Attempt count | When to use                                       |
+|-------------------------------|---------------|---------------------------------------------------|
+| `DispatchResult.retryAfter()` | Not incremented | Polling external state, waiting for preconditions |
+| `RetryAfterException`         | Incremented     | Transient failures with known recovery delay      |
+| Regular exception             | Incremented     | Unexpected failures (uses framework RetryPolicy)  |

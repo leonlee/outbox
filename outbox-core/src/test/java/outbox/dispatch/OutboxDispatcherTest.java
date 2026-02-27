@@ -2,10 +2,13 @@ package outbox.dispatch;
 
 import org.junit.jupiter.api.Test;
 import outbox.EventEnvelope;
+import outbox.DispatchResult;
+import outbox.RetryAfterException;
 import outbox.registry.DefaultListenerRegistry;
 import outbox.spi.ConnectionProvider;
 
 import java.sql.Connection;
+import java.time.Duration;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -460,6 +463,259 @@ class OutboxDispatcherTest {
     void builderRejectsNullInterceptor() {
         assertThrows(NullPointerException.class, () ->
                 OutboxDispatcher.builder().interceptor(null));
+    }
+
+    // ── DispatchResult dispatch paths ────────────────────────────────
+
+    @Test
+    void handlerReturningDoneMarksEventDone() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        var store = new StubOutboxStore() {
+            @Override
+            public int markDone(Connection conn, String eventId) {
+                super.markDone(conn, eventId);
+                latch.countDown();
+                return 1;
+            }
+        };
+
+        var registry = new DefaultListenerRegistry();
+        registry.register("DoneResult", new outbox.EventListener() {
+            @Override
+            public void onEvent(EventEnvelope event) {
+            }
+
+            @Override
+            public DispatchResult handleEvent(EventEnvelope event) {
+                return DispatchResult.done();
+            }
+        });
+
+        try (var d = newDispatcher(1, 10, 10, registry, store)) {
+            d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("DoneResult", "{}"), QueuedEvent.Source.HOT, 0));
+
+            assertTrue(latch.await(3, TimeUnit.SECONDS));
+            assertEquals(1, store.markDoneCount.get());
+            assertEquals(0, store.markDeferredCount.get());
+        }
+    }
+
+    @Test
+    void handlerReturningRetryAfterMarksDeferredNotDone() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        var store = new StubOutboxStore() {
+            @Override
+            public int markDeferred(Connection conn, String eventId, java.time.Instant nextAt) {
+                super.markDeferred(conn, eventId, nextAt);
+                latch.countDown();
+                return 1;
+            }
+        };
+
+        var registry = new DefaultListenerRegistry();
+        registry.register("DeferResult", new outbox.EventListener() {
+            @Override
+            public void onEvent(EventEnvelope event) {
+            }
+
+            @Override
+            public DispatchResult handleEvent(EventEnvelope event) {
+                return DispatchResult.retryAfter(Duration.ofSeconds(30));
+            }
+        });
+
+        java.time.Instant before = java.time.Instant.now();
+        try (var d = newDispatcher(1, 10, 10, registry, store)) {
+            d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("DeferResult", "{}"), QueuedEvent.Source.HOT, 0));
+
+            assertTrue(latch.await(3, TimeUnit.SECONDS));
+            assertEquals(1, store.markDeferredCount.get());
+            assertEquals(0, store.markDoneCount.get());
+            assertEquals(0, store.markRetryCount.get());
+
+            // Verify the delay value: nextAt should be ~now + 30s
+            java.time.Instant nextAt = store.lastDeferredNextAt.get();
+            assertTrue(nextAt.isAfter(before.plusSeconds(29)),
+                    "nextAt should be at least 29s after test start, was: " + nextAt);
+            assertTrue(nextAt.isBefore(before.plusSeconds(35)),
+                    "nextAt should be within 35s of test start, was: " + nextAt);
+        }
+    }
+
+    @Test
+    void handlerReturningNullTreatedAsDone() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        var store = new StubOutboxStore() {
+            @Override
+            public int markDone(Connection conn, String eventId) {
+                super.markDone(conn, eventId);
+                latch.countDown();
+                return 1;
+            }
+        };
+
+        var registry = new DefaultListenerRegistry();
+        registry.register("NullResult", new outbox.EventListener() {
+            @Override
+            public void onEvent(EventEnvelope event) {
+            }
+
+            @Override
+            public DispatchResult handleEvent(EventEnvelope event) {
+                return null;
+            }
+        });
+
+        try (var d = newDispatcher(1, 10, 10, registry, store)) {
+            d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("NullResult", "{}"), QueuedEvent.Source.HOT, 0));
+
+            assertTrue(latch.await(3, TimeUnit.SECONDS));
+            assertEquals(1, store.markDoneCount.get());
+        }
+    }
+
+    @Test
+    void retryAfterExceptionMarksRetryWithHandlerDelay() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        var store = new StubOutboxStore() {
+            @Override
+            public int markRetry(Connection conn, String eventId, java.time.Instant nextAt, String error) {
+                super.markRetry(conn, eventId, nextAt, error);
+                latch.countDown();
+                return 1;
+            }
+        };
+
+        var registry = new DefaultListenerRegistry();
+        registry.register("RetryAfterEx", event -> {
+            throw new RetryAfterException(Duration.ofMinutes(5), "rate limited");
+        });
+
+        java.time.Instant before = java.time.Instant.now();
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp())
+                .outboxStore(store)
+                .listenerRegistry(registry)
+                .workerCount(1)
+                .maxAttempts(3)
+                .hotQueueCapacity(10)
+                .coldQueueCapacity(10)
+                .drainTimeoutMs(1000)
+                .build()) {
+
+            d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("RetryAfterEx", "{}"), QueuedEvent.Source.HOT, 0));
+
+            assertTrue(latch.await(3, TimeUnit.SECONDS));
+            assertEquals(1, store.markRetryCount.get());
+            assertEquals(0, store.markDeadCount.get());
+
+            // Verify the delay value: nextAt should be ~now + 5min (300s)
+            java.time.Instant nextAt = store.lastRetryNextAt.get();
+            assertTrue(nextAt.isAfter(before.plusSeconds(299)),
+                    "nextAt should be at least 299s after test start, was: " + nextAt);
+            assertTrue(nextAt.isBefore(before.plusSeconds(305)),
+                    "nextAt should be within 305s of test start, was: " + nextAt);
+        }
+    }
+
+    @Test
+    void retryAfterExceptionRespectsMaxAttempts() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        var store = new StubOutboxStore() {
+            @Override
+            public int markDead(Connection conn, String eventId, String error) {
+                super.markDead(conn, eventId, error);
+                latch.countDown();
+                return 1;
+            }
+        };
+
+        var registry = new DefaultListenerRegistry();
+        registry.register("RetryAfterMaxed", event -> {
+            throw new RetryAfterException(Duration.ofMinutes(5), "rate limited");
+        });
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp())
+                .outboxStore(store)
+                .listenerRegistry(registry)
+                .workerCount(1)
+                .maxAttempts(2)
+                .hotQueueCapacity(10)
+                .coldQueueCapacity(10)
+                .drainTimeoutMs(1000)
+                .build()) {
+
+            // attempts=1, maxAttempts=2 → nextAttempt (1+1=2) >= maxAttempts → DEAD
+            d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("RetryAfterMaxed", "{}"), QueuedEvent.Source.HOT, 1));
+
+            assertTrue(latch.await(3, TimeUnit.SECONDS));
+            assertEquals(1, store.markDeadCount.get());
+            assertEquals(0, store.markRetryCount.get());
+        }
+    }
+
+    @Test
+    void defaultMarkDeferredFallsBackToMarkRetry() {
+        // Minimal OutboxStore that does NOT override markDeferred — uses the default
+        var retryCount = new AtomicInteger();
+        outbox.spi.OutboxStore storeWithDefault = new outbox.spi.OutboxStore() {
+            @Override
+            public void insertNew(Connection conn, outbox.EventEnvelope event) {
+            }
+
+            @Override
+            public int markDone(Connection conn, String eventId) {
+                return 1;
+            }
+
+            @Override
+            public int markRetry(Connection conn, String eventId, java.time.Instant nextAt, String error) {
+                retryCount.incrementAndGet();
+                return 1;
+            }
+
+            @Override
+            public int markDead(Connection conn, String eventId, String error) {
+                return 1;
+            }
+
+            @Override
+            public java.util.List<outbox.model.OutboxEvent> pollPending(
+                    Connection conn, java.time.Instant now, java.time.Duration skipRecent, int limit) {
+                return java.util.List.of();
+            }
+        };
+
+        java.time.Instant nextAt = java.time.Instant.now().plusSeconds(60);
+        storeWithDefault.markDeferred(null, "test-event", nextAt);
+
+        // Default falls back to markRetry (which increments attempts in real stores)
+        assertEquals(1, retryCount.get());
+    }
+
+    @Test
+    void lambdaListenerBackwardCompat() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<String> received = new AtomicReference<>();
+
+        var registry = new DefaultListenerRegistry()
+                .register("LambdaCompat", event -> {
+                    received.set(event.payloadJson());
+                    latch.countDown();
+                });
+
+        var store = new StubOutboxStore();
+        try (var d = newDispatcher(1, 10, 10, registry, store)) {
+            d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("LambdaCompat", "{\"ok\":true}"), QueuedEvent.Source.HOT, 0));
+
+            assertTrue(latch.await(3, TimeUnit.SECONDS));
+            assertEquals("{\"ok\":true}", received.get());
+
+            Thread.sleep(100);
+            assertTrue(store.markDoneCount.get() > 0);
+            assertEquals(0, store.markDeferredCount.get());
+        }
     }
 
     // ── Helpers ─────────────────────────────────────────────────────

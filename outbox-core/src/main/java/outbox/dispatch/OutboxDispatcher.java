@@ -2,6 +2,8 @@ package outbox.dispatch;
 
 import outbox.EventEnvelope;
 import outbox.EventListener;
+import outbox.DispatchResult;
+import outbox.RetryAfterException;
 import outbox.registry.ListenerRegistry;
 import outbox.spi.ConnectionProvider;
 import outbox.spi.MetricsExporter;
@@ -188,17 +190,22 @@ public final class OutboxDispatcher implements AutoCloseable {
         }
         try {
             long listenerStartNs = System.nanoTime();
-            deliverEvent(event.envelope());
+            DispatchResult result = deliverEvent(event.envelope());
             long listenerDurationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - listenerStartNs);
             metrics.recordListenerDurationMs(listenerDurationMs);
 
-            long latencyMs = Instant.now().toEpochMilli() - event.envelope().occurredAt().toEpochMilli();
-            if (latencyMs >= 0) {
-                metrics.recordDispatchLatencyMs(latencyMs);
+            if (result instanceof DispatchResult.RetryAfter retryAfter) {
+                Instant nextAt = Instant.now().plus(retryAfter.delay());
+                markDeferred(eventId, nextAt);
+                metrics.incrementDispatchDeferred();
+            } else {
+                long latencyMs = Instant.now().toEpochMilli() - event.envelope().occurredAt().toEpochMilli();
+                if (latencyMs >= 0) {
+                    metrics.recordDispatchLatencyMs(latencyMs);
+                }
+                markDone(eventId);
+                metrics.incrementDispatchSuccess();
             }
-
-            markDone(eventId);
-            metrics.incrementDispatchSuccess();
         } catch (Exception e) {
             handleFailure(event, e);
         } finally {
@@ -206,7 +213,7 @@ public final class OutboxDispatcher implements AutoCloseable {
         }
     }
 
-    private void deliverEvent(EventEnvelope envelope) throws Exception {
+    private DispatchResult deliverEvent(EventEnvelope envelope) throws Exception {
         int completedBefore = 0;
         try {
             for (int i = 0; i < interceptors.size(); i++) {
@@ -220,9 +227,10 @@ public final class OutboxDispatcher implements AutoCloseable {
                 throw new UnroutableEventException("No listener for aggregateType="
                         + envelope.aggregateType() + ", eventType=" + envelope.eventType());
             }
-            listener.onEvent(envelope);
+            DispatchResult result = listener.handleEvent(envelope);
 
             runAfterDispatch(envelope, null, completedBefore);
+            return result == null ? DispatchResult.DONE : result;
         } catch (Exception e) {
             runAfterDispatch(envelope, e, completedBefore);
             throw e;
@@ -253,6 +261,10 @@ public final class OutboxDispatcher implements AutoCloseable {
             markDead(eventId, failure);
             metrics.incrementDispatchDead();
             logger.log(Level.SEVERE, "Event moved to DEAD after max attempts: " + eventId, failure);
+        } else if (failure instanceof RetryAfterException retryAfterEx) {
+            Instant nextAt = Instant.now().plus(retryAfterEx.retryAfter());
+            markRetry(eventId, nextAt, failure);
+            metrics.incrementDispatchFailure();
         } else {
             long delayMs = retryPolicy.computeDelayMs(nextAttempt);
             Instant nextAt = Instant.now().plusMillis(delayMs);
@@ -264,6 +276,11 @@ public final class OutboxDispatcher implements AutoCloseable {
     private void markDone(String eventId) {
         withConnection("mark DONE", eventId,
                 conn -> outboxStore.markDone(conn, eventId));
+    }
+
+    private void markDeferred(String eventId, Instant nextAt) {
+        withConnection("mark DEFERRED", eventId,
+                conn -> outboxStore.markDeferred(conn, eventId, nextAt));
     }
 
     private void markRetry(String eventId, Instant nextAt, Exception failure) {

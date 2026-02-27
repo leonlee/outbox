@@ -77,6 +77,26 @@ public interface OutboxStore {
     int markDead(Connection conn, String eventId, String error);
 
     /**
+     * Marks an event as deferred (handler requested retry-after) without incrementing
+     * the attempt count or recording an error.
+     *
+     * <p>This is used when a handler returns {@link outbox.DispatchResult.RetryAfter}
+     * to reschedule delivery without penalising the event's retry budget.
+     *
+     * <p>Default implementation falls back to {@link #markRetry} which <em>does</em>
+     * increment attempts. JDBC implementations should override this with a proper
+     * implementation that preserves the attempt count.
+     *
+     * @param conn    the JDBC connection
+     * @param eventId the event ID to update
+     * @param nextAt  earliest time for the next delivery attempt
+     * @return the number of rows updated (0 or 1)
+     */
+    default int markDeferred(Connection conn, String eventId, Instant nextAt) {
+        return markRetry(conn, eventId, nextAt, null);
+    }
+
+    /**
      * Retrieves pending events eligible for processing (no locking).
      *
      * @param conn       the JDBC connection

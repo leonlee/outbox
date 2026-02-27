@@ -195,6 +195,15 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     }
 
     @Override
+    public int markDeferred(Connection conn, String eventId, Instant nextAt) {
+        String sql = "UPDATE " + tableName() +
+                " SET status=" + EventStatus.RETRY.code() +
+                ", available_at=?, locked_by=NULL, locked_at=NULL" +
+                " WHERE event_id=? AND status NOT IN " + TERMINAL_STATUS_IN;
+        return JdbcTemplate.update(conn, sql, Timestamp.from(nextAt), eventId);
+    }
+
+    @Override
     public List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit) {
         String sql = "SELECT event_id, event_type, aggregate_type, aggregate_id, tenant_id, " +
                 "payload, headers, attempts, created_at " +

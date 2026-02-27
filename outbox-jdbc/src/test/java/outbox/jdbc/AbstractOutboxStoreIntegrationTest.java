@@ -279,6 +279,49 @@ abstract class AbstractOutboxStoreIntegrationTest {
     }
 
     @Test
+    void markDeferredDoesNotIncrementAttempts() throws Exception {
+        EventEnvelope envelope = EventEnvelope.ofJson("DeferEvent", "{}");
+
+        try (Connection conn = dataSource().getConnection()) {
+            conn.setAutoCommit(true);
+            store().insertNew(conn, envelope);
+
+            // First: mark retry to increment attempts to 1
+            store().markRetry(conn, envelope.eventId(), Instant.now(), "error1");
+
+            // Now defer — should NOT increment attempts
+            Instant nextAt = Instant.now().plusSeconds(60);
+            int updated = store().markDeferred(conn, envelope.eventId(), nextAt);
+            assertEquals(1, updated);
+
+            // Event should not appear in poll (available_at is in the future)
+            List<OutboxEvent> pending = store().pollPending(conn, Instant.now(), Duration.ZERO, 10);
+            assertTrue(pending.isEmpty());
+
+            // Defer again with immediate nextAt and check attempts stayed at 1
+            Instant now = Instant.now();
+            store().markDeferred(conn, envelope.eventId(), now);
+            pending = store().pollPending(conn, now.plusSeconds(1), Duration.ZERO, 10);
+            assertEquals(1, pending.size());
+            assertEquals(1, pending.get(0).attempts(), "markDeferred should not increment attempts");
+        }
+    }
+
+    @Test
+    void markDeferredOnTerminalEventIsNoOp() throws Exception {
+        EventEnvelope envelope = EventEnvelope.ofJson("DeferTerminal", "{}");
+
+        try (Connection conn = dataSource().getConnection()) {
+            conn.setAutoCommit(true);
+            store().insertNew(conn, envelope);
+            store().markDone(conn, envelope.eventId());
+
+            int updated = store().markDeferred(conn, envelope.eventId(), Instant.now());
+            assertEquals(0, updated, "markDeferred should not update terminal events");
+        }
+    }
+
+    @Test
     void autoDetectFromDataSource() {
         AbstractJdbcOutboxStore detected = JdbcOutboxStores.detect(dataSource());
         assertEquals(store().name(), detected.name());

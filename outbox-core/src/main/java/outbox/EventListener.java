@@ -55,4 +55,23 @@ public interface EventListener {
      * @throws Exception if processing fails; triggers retry or dead-letter handling
      */
     void onEvent(EventEnvelope event) throws Exception;
+
+    /**
+     * Processes an outbox event and returns a {@link DispatchResult} to control
+     * post-dispatch behavior.
+     *
+     * <p>The default implementation delegates to {@link #onEvent(EventEnvelope)}
+     * and returns {@link DispatchResult#DONE}. Override this method to return
+     * {@link DispatchResult#retryAfter(java.time.Duration)} for deferred re-delivery
+     * without counting against {@code maxAttempts}.
+     *
+     * @param event the event envelope containing type, payload, and metadata
+     * @return the handler result indicating completion or deferred retry
+     * @throws Exception if processing fails; triggers retry or dead-letter handling
+     * @see DispatchResult
+     */
+    default DispatchResult handleEvent(EventEnvelope event) throws Exception {
+        onEvent(event);
+        return DispatchResult.done();
+    }
 }

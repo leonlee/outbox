@@ -44,6 +44,13 @@ public interface MetricsExporter {
     void incrementDispatchDead();
 
     /**
+     * Increments the count of events deferred by a handler returning
+     * {@link outbox.DispatchResult.RetryAfter}.
+     */
+    default void incrementDispatchDeferred() {
+    }
+
+    /**
      * Records the current depth of both dispatch queues.
      *
      * @param hotDepth  number of events in the hot queue
@@ -100,6 +107,10 @@ public interface MetricsExporter {
 
         @Override
         public void incrementDispatchDead() {
+        }
+
+        @Override
+        public void incrementDispatchDeferred() {
         }
 
         @Override

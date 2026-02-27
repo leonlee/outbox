@@ -52,6 +52,7 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
     private final Counter dispatchSuccess;
     private final Counter dispatchFailure;
     private final Counter dispatchDead;
+    private final Counter dispatchDeferred;
     private final Gauge hotDepthGauge;
     private final Gauge coldDepthGauge;
     private final Gauge lagGauge;
@@ -107,6 +108,9 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
         this.dispatchDead = Counter.builder(namePrefix + ".dispatch.dead")
                 .description("Events moved to DEAD")
                 .register(registry);
+        this.dispatchDeferred = Counter.builder(namePrefix + ".dispatch.deferred")
+                .description("Events deferred by handler (retry-after without attempt increment)")
+                .register(registry);
 
         this.hotDepthGauge = Gauge.builder(namePrefix + ".queue.hot.depth", hotDepth, AtomicInteger::get)
                 .register(registry);
@@ -160,6 +164,12 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
     }
 
     @Override
+    public void incrementDispatchDeferred() {
+        if (closed) return;
+        dispatchDeferred.increment();
+    }
+
+    @Override
     public void recordQueueDepths(int hotDepth, int coldDepth) {
         if (closed) return;
         this.hotDepth.set(hotDepth);
@@ -195,7 +205,7 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
         closed = true;
         RuntimeException first = null;
         for (Meter meter : List.of(hotEnqueued, hotDropped, coldEnqueued,
-                dispatchSuccess, dispatchFailure, dispatchDead,
+                dispatchSuccess, dispatchFailure, dispatchDead, dispatchDeferred,
                 hotDepthGauge, coldDepthGauge, lagGauge,
                 dispatchLatency, listenerDuration)) {
             try {

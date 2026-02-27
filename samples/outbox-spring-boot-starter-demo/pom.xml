@@ -14,7 +14,7 @@
 
     <groupId>io.github.leonlee</groupId>
     <artifactId>outbox-spring-boot-starter-demo</artifactId>
-    <version>0.8.3-SNAPSHOT</version>
+    <version>0.8.3</version>
     <name>outbox-spring-boot-starter-demo</name>
     <description>Spring Boot Starter demo — zero-config auto-configuration</description>
 

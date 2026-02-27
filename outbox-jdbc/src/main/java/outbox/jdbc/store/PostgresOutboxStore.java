@@ -67,7 +67,7 @@ public final class PostgresOutboxStore extends AbstractJdbcOutboxStore {
                 " AND created_at <= ? ORDER BY created_at LIMIT ?" +
                 " FOR UPDATE SKIP LOCKED" +
                 ") RETURNING event_id, event_type, aggregate_type, aggregate_id, " +
-                "tenant_id, payload, headers, attempts, created_at";
+                "tenant_id, payload, headers, attempts, created_at, available_at";
         return JdbcTemplate.updateReturning(conn, sql, EVENT_ROW_MAPPER,
                 ownerId, Timestamp.from(nowMs), Timestamp.from(now),
                 Timestamp.from(lockExpiry), Timestamp.from(recentCutoff), limit);

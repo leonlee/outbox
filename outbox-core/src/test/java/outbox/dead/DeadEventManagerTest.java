@@ -40,7 +40,7 @@ class DeadEventManagerTest {
 
     private static OutboxEvent deadEvent(String eventId) {
         return new OutboxEvent(eventId, "TestEvent", "Agg", "agg-1", null,
-                "{}", null, 3, Instant.now());
+                "{}", null, 3, Instant.now(), null);
     }
 
     @Test
@@ -140,35 +140,33 @@ class DeadEventManagerTest {
     }
 
     @Test
-    void queryReturnsEmptyOnSqlException() {
+    void queryThrowsOnSqlException() {
         OutboxStore store = stubStore(List.of(), 0, 0);
         DeadEventManager manager = new DeadEventManager(failingProvider(), store);
 
-        List<OutboxEvent> result = manager.query(null, null, 10);
-
-        assertTrue(result.isEmpty());
+        assertThrows(RuntimeException.class, () -> manager.query(null, null, 10));
     }
 
     @Test
-    void replayReturnsFalseOnSqlException() {
+    void replayThrowsOnSqlException() {
         OutboxStore store = stubStore(List.of(), 0, 0);
         DeadEventManager manager = new DeadEventManager(failingProvider(), store);
 
-        assertFalse(manager.replay("evt-1"));
+        assertThrows(RuntimeException.class, () -> manager.replay("evt-1"));
     }
 
     @Test
-    void countReturnsZeroOnSqlException() {
+    void countThrowsOnSqlException() {
         OutboxStore store = stubStore(List.of(), 0, 0);
         DeadEventManager manager = new DeadEventManager(failingProvider(), store);
 
-        assertEquals(0, manager.count(null));
+        assertThrows(RuntimeException.class, () -> manager.count(null));
     }
 
     // ── Store-level RuntimeException (e.g. OutboxStoreException) ────
 
     @Test
-    void queryReturnsEmptyOnStoreRuntimeException() {
+    void queryThrowsOnStoreRuntimeException() {
         OutboxStore store = new StubOutboxStore() {
             @Override
             public List<OutboxEvent> queryDead(Connection conn, String eventType,
@@ -178,12 +176,11 @@ class DeadEventManagerTest {
         };
         DeadEventManager manager = new DeadEventManager(dummyProvider(), store);
 
-        List<OutboxEvent> result = manager.query(null, null, 10);
-        assertTrue(result.isEmpty());
+        assertThrows(RuntimeException.class, () -> manager.query(null, null, 10));
     }
 
     @Test
-    void replayReturnsFalseOnStoreRuntimeException() {
+    void replayThrowsOnStoreRuntimeException() {
         OutboxStore store = new StubOutboxStore() {
             @Override
             public int replayDead(Connection conn, String eventId) {
@@ -192,11 +189,11 @@ class DeadEventManagerTest {
         };
         DeadEventManager manager = new DeadEventManager(dummyProvider(), store);
 
-        assertFalse(manager.replay("evt-1"));
+        assertThrows(RuntimeException.class, () -> manager.replay("evt-1"));
     }
 
     @Test
-    void countReturnsZeroOnStoreRuntimeException() {
+    void countThrowsOnStoreRuntimeException() {
         OutboxStore store = new StubOutboxStore() {
             @Override
             public int countDead(Connection conn, String eventType) {
@@ -205,11 +202,11 @@ class DeadEventManagerTest {
         };
         DeadEventManager manager = new DeadEventManager(dummyProvider(), store);
 
-        assertEquals(0, manager.count(null));
+        assertThrows(RuntimeException.class, () -> manager.count(null));
     }
 
     @Test
-    void replayAllReturnsZeroOnStoreRuntimeException() {
+    void replayAllThrowsOnStoreRuntimeException() {
         OutboxStore store = new StubOutboxStore() {
             @Override
             public List<OutboxEvent> queryDead(Connection conn, String eventType,
@@ -219,7 +216,7 @@ class DeadEventManagerTest {
         };
         DeadEventManager manager = new DeadEventManager(dummyProvider(), store);
 
-        assertEquals(0, manager.replayAll(null, null, 10));
+        assertThrows(RuntimeException.class, () -> manager.replayAll(null, null, 10));
     }
 
     private static OutboxStore stubStore(List<OutboxEvent> queryResult,

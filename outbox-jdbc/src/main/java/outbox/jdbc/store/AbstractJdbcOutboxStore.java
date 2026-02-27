@@ -36,16 +36,20 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     protected static final String TERMINAL_STATUS_IN =
             "(" + EventStatus.DONE.code() + "," + EventStatus.DEAD.code() + ")";
 
-    protected static final JdbcTemplate.RowMapper<OutboxEvent> EVENT_ROW_MAPPER = rs -> new OutboxEvent(
-            rs.getString("event_id"),
-            rs.getString("event_type"),
-            rs.getString("aggregate_type"),
-            rs.getString("aggregate_id"),
-            rs.getString("tenant_id"),
-            rs.getString("payload"),
-            rs.getString("headers"),
-            rs.getInt("attempts"),
-            Objects.requireNonNull(rs.getTimestamp("created_at"), "created_at is null").toInstant());
+    protected static final JdbcTemplate.RowMapper<OutboxEvent> EVENT_ROW_MAPPER = rs -> {
+        Timestamp availTs = rs.getTimestamp("available_at");
+        return new OutboxEvent(
+                rs.getString("event_id"),
+                rs.getString("event_type"),
+                rs.getString("aggregate_type"),
+                rs.getString("aggregate_id"),
+                rs.getString("tenant_id"),
+                rs.getString("payload"),
+                rs.getString("headers"),
+                rs.getInt("attempts"),
+                Objects.requireNonNull(rs.getTimestamp("created_at"), "created_at is null").toInstant(),
+                availTs != null ? availTs.toInstant() : null);
+    };
 
     private final String tableName;
     private final JsonCodec jsonCodec;
@@ -210,7 +214,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     @Override
     public List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit) {
         String sql = "SELECT event_id, event_type, aggregate_type, aggregate_id, tenant_id, " +
-                "payload, headers, attempts, created_at " +
+                "payload, headers, attempts, created_at, available_at " +
                 "FROM " + tableName() + " WHERE status IN " + PENDING_STATUS_IN +
                 " AND available_at <= ? AND created_at <= ? " +
                 "ORDER BY created_at LIMIT ?";
@@ -257,7 +261,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
      */
     protected List<OutboxEvent> selectClaimed(Connection conn, String ownerId, Instant lockedAt) {
         String sql = "SELECT event_id, event_type, aggregate_type, aggregate_id, " +
-                "tenant_id, payload, headers, attempts, created_at " +
+                "tenant_id, payload, headers, attempts, created_at, available_at " +
                 "FROM " + tableName() + " WHERE locked_by=? AND locked_at=? ORDER BY created_at";
         return JdbcTemplate.query(conn, sql, EVENT_ROW_MAPPER, ownerId, Timestamp.from(lockedAt));
     }
@@ -266,7 +270,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     public List<OutboxEvent> queryDead(Connection conn, String eventType, String aggregateType, int limit) {
         StringBuilder sql = new StringBuilder(
                 "SELECT event_id, event_type, aggregate_type, aggregate_id, tenant_id, " +
-                        "payload, headers, attempts, created_at FROM " + tableName() +
+                        "payload, headers, attempts, created_at, available_at FROM " + tableName() +
                         " WHERE status=" + EventStatus.DEAD.code());
         List<Object> params = new java.util.ArrayList<>();
         if (eventType != null) {

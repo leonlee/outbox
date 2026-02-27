@@ -161,13 +161,37 @@ public final class DefaultJsonCodec implements JsonCodec {
                             throw new IllegalArgumentException("Invalid unicode escape");
                         }
                         String hex = input.substring(i + 2, i + 6);
+                        int unit;
                         try {
-                            int codePoint = Integer.parseInt(hex, 16);
-                            sb.append((char) codePoint);
+                            unit = Integer.parseInt(hex, 16);
                         } catch (NumberFormatException ex) {
                             throw new IllegalArgumentException("Invalid unicode escape", ex);
                         }
                         i += 6;
+                        // Handle surrogate pairs: high surrogate must be followed by \uDC00-\uDFFF
+                        if (Character.isHighSurrogate((char) unit)) {
+                            if (i + 5 < input.length() && input.charAt(i) == '\\' && input.charAt(i + 1) == 'u') {
+                                String lowHex = input.substring(i + 2, i + 6);
+                                int low;
+                                try {
+                                    low = Integer.parseInt(lowHex, 16);
+                                } catch (NumberFormatException ex) {
+                                    throw new IllegalArgumentException("Invalid unicode escape in surrogate pair", ex);
+                                }
+                                if (!Character.isLowSurrogate((char) low)) {
+                                    throw new IllegalArgumentException("High surrogate not followed by low surrogate");
+                                }
+                                sb.append((char) unit);
+                                sb.append((char) low);
+                                i += 6;
+                            } else {
+                                throw new IllegalArgumentException("High surrogate not followed by low surrogate");
+                            }
+                        } else if (Character.isLowSurrogate((char) unit)) {
+                            throw new IllegalArgumentException("Unexpected low surrogate without preceding high surrogate");
+                        } else {
+                            sb.append((char) unit);
+                        }
                         break;
                     default:
                         throw new IllegalArgumentException("Unsupported escape sequence: \\" + next);

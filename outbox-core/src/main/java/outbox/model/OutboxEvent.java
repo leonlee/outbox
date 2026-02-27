@@ -18,6 +18,7 @@ public record OutboxEvent(
         String payloadJson,
         String headersJson,
         int attempts,
-        Instant createdAt
+        Instant createdAt,
+        Instant availableAt
 ) {
 }

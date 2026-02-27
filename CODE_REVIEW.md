@@ -54,61 +54,36 @@ in auto-config's `WRITER_ONLY` case.
 
 ---
 
-## Open Findings
-
-### [M1] `OutboxPoller.markDead` catches only `SQLException`
+### [M1] `OutboxPoller.markDead` catches only `SQLException` — Fixed
 **Severity:** Medium | **File:** `outbox-core/.../poller/OutboxPoller.java:213-220`
 
-Same pattern as the fixed H1 issue. If `outboxStore.markDead()` throws a `RuntimeException`,
-it propagates uncaught. The caller (`dispatchRow`) has a catch at line 187-190 that logs
-and continues, so the impact is limited to a logged error rather than silent data corruption.
-Still, the pattern should be consistent with the fix applied to `OutboxDispatcher.withConnection`.
-
-```java
-// Current
-} catch (SQLException e) {
-    logger.log(Level.SEVERE, "Failed to mark DEAD for eventId=" + eventId, e);
-}
-
-// Should be
-} catch (SQLException | RuntimeException e) {
-    logger.log(Level.SEVERE, "Failed to mark DEAD for eventId=" + eventId, e);
-}
-```
+Same pattern as H1. Broadened catch to `SQLException | RuntimeException`.
 
 ---
 
-### [M2] `convertToEnvelope` doesn't reconstruct `availableAt`
+### [M2] `convertToEnvelope` doesn't reconstruct `availableAt` — Fixed
 **Severity:** Low | **File:** `outbox-core/.../poller/OutboxPoller.java:200-211`
 
-When the poller converts a database row back to an `EventEnvelope`, `availableAt` is not
-reconstructed from the `available_at` column (the column isn't even in the SELECT). The
-dispatched envelope will have `availableAt() == null` even if the original had a delayed
-delivery time. This has no correctness impact (the SQL already filtered by
-`available_at <= ?`), but listeners that inspect `availableAt` for observability will see
-`null` for poller-sourced events.
+Added `available_at` to all SELECT queries (`pollPending`, `selectClaimed`, `queryDead`,
+PostgreSQL `RETURNING`), added `availableAt` field to `OutboxEvent` record, and set it on
+the reconstructed `EventEnvelope` in `convertToEnvelope`.
 
 ---
 
-### [L1] `DefaultJsonCodec` doesn't validate lone surrogates
+### [L1] `DefaultJsonCodec` doesn't validate lone surrogates — Fixed
 **Severity:** Low | **File:** `outbox-core/.../util/DefaultJsonCodec.java:159-170`
 
-The `\uXXXX` handler parses 4 hex digits and casts to `char`. This is correct for
-well-formed JSON where supplementary characters are encoded as surrogate pairs
-(`\uD83D\uDE00`). However, malformed JSON with a lone surrogate (`\uD800` not followed by
-a low surrogate) produces an invalid Java string. This is unlikely since headers are
-typically ASCII, and the codec is only used for `Map<String, String>` headers — not
-arbitrary user content.
+Added surrogate pair validation: high surrogates must be followed by `\uDC00-\uDFFF`,
+lone low surrogates are rejected.
 
 ---
 
-### [L2] `DeadEventManager.query` and `count` return defaults on failure
-**Severity:** Low | **File:** `outbox-core/.../dead/DeadEventManager.java:42-49, 111-119`
+### [L2] `DeadEventManager` returns defaults on failure — Fixed
+**Severity:** Low | **File:** `outbox-core/.../dead/DeadEventManager.java`
 
-`query()` returns `List.of()` and `count()` returns `0` on database failure, which is
-indistinguishable from "no dead events." Callers have no way to detect whether the
-operation failed or genuinely found nothing. The errors are logged at SEVERE level, so
-operators can detect failures via logs, but programmatic callers cannot.
+Changed from swallowing exceptions (returning `List.of()` / `0` / `false`) to wrapping
+`SQLException` in `RuntimeException` and letting `RuntimeException` propagate. Callers
+can now distinguish database failures from empty results.
 
 ---
 

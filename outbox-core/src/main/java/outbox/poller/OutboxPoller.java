@@ -199,22 +199,25 @@ public final class OutboxPoller implements AutoCloseable {
 
     private EventEnvelope convertToEnvelope(OutboxEvent row) {
         Map<String, String> headers = jsonCodec.parseObject(row.headersJson());
-        return EventEnvelope.builder(row.eventType())
+        var builder = EventEnvelope.builder(row.eventType())
                 .eventId(row.eventId())
                 .occurredAt(row.createdAt())
                 .aggregateType(row.aggregateType())
                 .aggregateId(row.aggregateId())
                 .tenantId(row.tenantId())
                 .headers(headers)
-                .payloadJson(row.payloadJson())
-                .build();
+                .payloadJson(row.payloadJson());
+        if (row.availableAt() != null) {
+            builder.availableAt(row.availableAt());
+        }
+        return builder.build();
     }
 
     private void markDead(String eventId, Exception failure) {
         try (Connection conn = connectionProvider.getConnection()) {
             conn.setAutoCommit(true);
             outboxStore.markDead(conn, eventId, failure == null ? null : failure.getMessage());
-        } catch (SQLException e) {
+        } catch (SQLException | RuntimeException e) {
             logger.log(Level.SEVERE, "Failed to mark DEAD for eventId=" + eventId, e);
         }
     }

@@ -112,11 +112,14 @@ Hot path is optional: supply an `WriterHook` (for example, `DispatcherWriterHook
 
 - **Write inside TX**: `OutboxWriter.write(...)` inserts into `outbox_event` using the same JDBC connection as your
   business work.
-- **After-commit hook**: `DispatcherWriterHook` enqueues the event into the hot queue after commit. If the queue is
+- **After-commit hook**: `DispatcherWriterHook` enqueues the event into the hot queue after commit. Delayed events
+  (with `availableAt` or `deliverAfter`) are skipped — the poller delivers them at the scheduled time. If the queue is
   full, the event stays in the DB.
 - **Dispatch**: `OutboxDispatcher` drains hot/cold queues, routes to a single listener via `handleEvent()`, and updates
   status based on `DispatchResult` (`DONE`, `DEFERRED`, `RETRY`, or `DEAD`).
 - **Fallback**: `OutboxPoller` periodically scans/claims pending rows and enqueues them into the cold queue.
+- **Delayed delivery**: Use `EventEnvelope.builder(...).deliverAfter(Duration.ofMinutes(30))` or
+  `.availableAt(futureInstant)` to schedule future delivery. The poller picks them up when `available_at` arrives.
 - **At-least-once**: listeners may see duplicates. Always dedupe downstream by `eventId`.
 - **Purge**: `OutboxPurgeScheduler` periodically deletes terminal events (DONE/DEAD) older than a configurable retention
   period to prevent table bloat.

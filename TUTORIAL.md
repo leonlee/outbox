@@ -1640,3 +1640,49 @@ registry.register("WebhookDelivery", new EventListener() {
 | `DispatchResult.retryAfter()` | Not incremented | Polling external state, waiting for preconditions |
 | `RetryAfterException`         | Incremented     | Transient failures with known recovery delay      |
 | Regular exception             | Incremented     | Unexpected failures (uses framework RetryPolicy)  |
+
+---
+
+## 17. Delayed Message Delivery
+
+Schedule events for future delivery using `availableAt` or `deliverAfter` on the `EventEnvelope` builder. The event is
+inserted immediately (within the current transaction), but the poller only picks it up when `available_at` arrives.
+Delayed events bypass the hot queue entirely.
+
+### 17.1 Absolute Time
+
+```java
+// Send a reminder email in 24 hours
+writer.write(EventEnvelope.builder("ReminderEmail")
+        .aggregateType("User")
+        .aggregateId("user-123")
+        .availableAt(Instant.now().plus(Duration.ofHours(24)))
+        .payloadJson("{\"userId\":\"user-123\",\"template\":\"reminder\"}")
+        .build());
+```
+
+### 17.2 Relative Delay
+
+```java
+// Retry a webhook call in 30 minutes
+writer.write(EventEnvelope.builder("WebhookRetry")
+        .deliverAfter(Duration.ofMinutes(30))
+        .payloadJson("{\"url\":\"https://example.com/hook\",\"attempt\":2}")
+        .build());
+```
+
+`deliverAfter` computes `availableAt = occurredAt + deliverAfter` at build time.
+
+### 17.3 Validation Rules
+
+- `availableAt` and `deliverAfter` are **mutually exclusive** — setting both throws `IllegalArgumentException`
+- `deliverAfter` must be **positive** (zero or negative throws `IllegalArgumentException`)
+- `availableAt` must not be **before** `occurredAt`
+- Both reject `null` with `NullPointerException`
+
+### 17.4 How It Works
+
+1. `OutboxWriter` inserts the event with `available_at` set to the resolved time (or `occurredAt` if immediate)
+2. `DispatcherWriterHook` checks `event.isDelayed()` and **skips** delayed events on the hot path
+3. `OutboxPoller` respects `available_at <= now` — the event becomes eligible when its time arrives
+4. The `incrementHotSkippedDelayed()` metric tracks how many events were deferred to the poller

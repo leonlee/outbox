@@ -178,7 +178,8 @@ outbox-jdbc/src/main/java/
   insert → `afterWrite` (observational) → tx commit/rollback → `afterCommit`/`afterRollback` (swallowed).
   `WriterHook.NOOP` does nothing (poller-only mode).
 - **DispatcherWriterHook** (`outbox.dispatch`): `WriterHook` implementation that bridges to the dispatcher's hot queue.
-  `afterCommit` enqueues each event individually as `QueuedEvent(event, HOT, 0)`. Accepts optional `MetricsExporter`.
+  `afterCommit` enqueues each event individually as `QueuedEvent(event, HOT, 0)`. Skips delayed events
+  (`isDelayed()`) — they stay in DB for the poller to deliver at `availableAt`. Accepts optional `MetricsExporter`.
 - **DispatcherPollerHandler** (`outbox.dispatch`): `OutboxPollerHandler` implementation that bridges to the dispatcher's
   cold queue.
 - **QueuedEvent** (`outbox.dispatch`): Simple record `(EventEnvelope envelope, Source source, int attempts)` wrapping a
@@ -198,8 +199,8 @@ outbox-jdbc/src/main/java/
 - **DeadEventManager** (`outbox.dead`): Connection-managed facade for querying, counting, and replaying DEAD events.
   Constructor takes `ConnectionProvider` + `OutboxStore`.
 - **MicrometerMetricsExporter** (`outbox.micrometer`): Micrometer-based `MetricsExporter` implementation with counters
-  and gauges. Tracks `incrementDispatchDeferred` for handler-deferred events. Supports custom `namePrefix` for
-  multi-instance use.
+  and gauges. Tracks `incrementDispatchDeferred` for handler-deferred events and `incrementHotSkippedDelayed` for
+  delayed events bypassing the hot path. Supports custom `namePrefix` for multi-instance use.
 - **DispatchResult**: Sealed interface returned by `EventListener.handleEvent()`. `Done` (singleton) marks event
   complete. `RetryAfter(Duration)` defers re-delivery without counting against `maxAttempts`.
 - **RetryAfterException**: RuntimeException with handler-specified retry delay. Unlike `DispatchResult.RetryAfter`,
@@ -210,7 +211,7 @@ outbox-jdbc/src/main/java/
 1. `OutboxWriter.writeAll()` runs `WriterHook.beforeWrite` → `OutboxStore.insertBatch` → `WriterHook.afterWrite` within
    caller's transaction
 2. After commit, `WriterHook.afterCommit` fires (e.g., `DispatcherWriterHook` enqueues each event individually to
-   OutboxDispatcher hot queue)
+   OutboxDispatcher hot queue; delayed events with `availableAt` are skipped — the poller delivers them later)
 3. If hot queue full, event is dropped (logged) and poller picks it up later
 4. OutboxDispatcher workers process events one at a time: acquire in-flight → run interceptors → find listener via
    `(aggregateType, eventType)` → call `listener.handleEvent()` → handle DispatchResult:

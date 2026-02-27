@@ -322,8 +322,11 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 | headers       | Map<String,String> | No       | empty map                                    |
 | payloadJson   | String             | Yes*     | -                                            |
 | payloadBytes  | byte[]             | Yes*     | -                                            |
+| availableAt   | Instant            | No       | null (immediate — uses occurredAt)           |
+| deliverAfter  | Duration           | No       | null (builder-only, resolves to availableAt) |
 
 *Either payloadJson or payloadBytes must be set, not both.
+**Either availableAt or deliverAfter may be set, not both. deliverAfter must be positive.
 
 ### 5.2 Constraints
 
@@ -331,6 +334,12 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 - Payload MUST be serialized once and reused for DB insert and dispatch
 - EventEnvelope is immutable (defensive copies for bytes and headers)
 - Header map MUST NOT contain null keys.
+- `availableAt` and `deliverAfter` are mutually exclusive; setting both throws `IllegalArgumentException`
+- `deliverAfter` must be positive (> 0); zero or negative throws `IllegalArgumentException`
+- `availableAt` must not be before `occurredAt`; violation throws `IllegalArgumentException`
+- `availableAt(null)` and `deliverAfter(null)` throw `NullPointerException` (fail-fast at setter)
+- When `deliverAfter` is set, `availableAt` is resolved to `occurredAt + deliverAfter`
+- `isDelayed()` returns true when `availableAt != null && availableAt.isAfter(occurredAt)`
 
 ### 5.3 Builder Pattern
 
@@ -349,6 +358,18 @@ EventEnvelope envelope = EventEnvelope.builder("UserCreated")
 
 // Shorthand
 EventEnvelope envelope = EventEnvelope.ofJson("UserCreated", "{}");
+
+// Delayed delivery — absolute time
+EventEnvelope delayed = EventEnvelope.builder("ReminderEmail")
+        .availableAt(Instant.now().plus(Duration.ofHours(24)))
+        .payloadJson("{\"userId\":\"123\"}")
+        .build();
+
+// Delayed delivery — relative duration
+EventEnvelope delayed2 = EventEnvelope.builder("RetryWebhook")
+        .deliverAfter(Duration.ofMinutes(30))
+        .payloadJson("{\"url\":\"https://...\"}")
+        .build();
 ```
 
 ### 5.4 Multi-Tenancy Support
@@ -538,7 +559,8 @@ Lifecycle: `beforeWrite` (transform/suppress) → insert → `afterWrite` → tx
 
 - `beforeWrite` may return a modified list; returning null or empty suppresses the write
 - `afterWrite`/`afterCommit`/`afterRollback` exceptions are swallowed and logged
-- `DispatcherWriterHook` implements `afterCommit` to enqueue each event into the dispatcher's hot queue
+- `DispatcherWriterHook` implements `afterCommit` to enqueue each event into the dispatcher's hot queue.
+  Delayed events (`isDelayed()`) are skipped — they remain in the DB for the poller to deliver at `availableAt`.
 
 ---
 
@@ -1046,6 +1068,8 @@ Workers execute listeners synchronously (blocking). This provides natural rate l
 
 - `write()` MUST NOT throw
 - `DispatcherWriterHook` logs WARNING and increments metric when the hot queue drops
+- Delayed events (`isDelayed()`) are skipped entirely — not enqueued to the hot queue. The poller delivers them when
+  `available_at` arrives. `incrementHotSkippedDelayed()` metric is emitted.
 - Event remains in DB with status NEW
 - OutboxPoller or CDC picks up when workers have capacity
 
@@ -1125,6 +1149,8 @@ public interface MetricsExporter {
 
     default void incrementDispatchDeferred();  // handler returned RetryAfter
 
+    default void incrementHotSkippedDelayed(); // delayed event skipped on hot path
+
     void recordQueueDepths(int hotDepth, int coldDepth);
 
     void recordOldestLagMs(long lagMs);
@@ -1158,6 +1184,7 @@ MicrometerMetricsExporter(MeterRegistry registry, String namePrefix) // custom p
 | `{prefix}.dispatch.failure`    | Events failed (will retry)             |
 | `{prefix}.dispatch.dead`       | Events moved to DEAD                   |
 | `{prefix}.dispatch.deferred`   | Events deferred by handler (RetryAfter)|
+| `{prefix}.enqueue.hot.skipped.delayed` | Delayed events skipped on hot path |
 
 **Gauges (current value):**
 

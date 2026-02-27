@@ -263,6 +263,56 @@ class OutboxTest {
         });
     }
 
+    // ── WriterOnly rejects irrelevant config ──────────────────────────
+
+    @Test
+    void writerOnly_listenerRegistry_throwsUnsupported() {
+        assertThrows(UnsupportedOperationException.class, () ->
+                Outbox.writerOnly().listenerRegistry(STUB_REG));
+    }
+
+    @Test
+    void writerOnly_interceptor_throwsUnsupported() {
+        assertThrows(UnsupportedOperationException.class, () ->
+                Outbox.writerOnly().interceptor(new outbox.dispatch.EventInterceptor() {}));
+    }
+
+    @Test
+    void writerOnly_interceptors_throwsUnsupported() {
+        assertThrows(UnsupportedOperationException.class, () ->
+                Outbox.writerOnly().interceptors(List.of()));
+    }
+
+    @Test
+    void writerOnly_jsonCodec_throwsUnsupported() {
+        assertThrows(UnsupportedOperationException.class, () ->
+                Outbox.writerOnly().jsonCodec(outbox.util.JsonCodec.getDefault()));
+    }
+
+    @Test
+    void writerOnly_intervalMs_throwsUnsupported() {
+        assertThrows(UnsupportedOperationException.class, () ->
+                Outbox.writerOnly().intervalMs(1000));
+    }
+
+    @Test
+    void writerOnly_batchSize_throwsUnsupported() {
+        assertThrows(UnsupportedOperationException.class, () ->
+                Outbox.writerOnly().batchSize(10));
+    }
+
+    @Test
+    void writerOnly_skipRecent_throwsUnsupported() {
+        assertThrows(UnsupportedOperationException.class, () ->
+                Outbox.writerOnly().skipRecent(Duration.ofSeconds(5)));
+    }
+
+    @Test
+    void writerOnly_drainTimeoutMs_throwsUnsupported() {
+        assertThrows(UnsupportedOperationException.class, () ->
+                Outbox.writerOnly().drainTimeoutMs(3000));
+    }
+
     // ── Double-build rejection ──────────────────────────────────────
 
     @Test

@@ -297,7 +297,7 @@ public final class OutboxDispatcher implements AutoCloseable {
         try (Connection conn = connectionProvider.getConnection()) {
             conn.setAutoCommit(true);
             op.execute(conn);
-        } catch (SQLException e) {
+        } catch (SQLException | RuntimeException e) {
             logger.log(Level.SEVERE, "Failed to " + action + " for eventId=" + eventId, e);
         }
     }

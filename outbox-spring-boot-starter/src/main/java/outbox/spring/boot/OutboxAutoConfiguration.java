@@ -187,6 +187,9 @@ public class OutboxAutoConfiguration {
                         .connectionProvider(connectionProvider)
                         .txContext(txContext)
                         .outboxStore(outboxStore);
+                if (metrics != null) {
+                    builder.metrics(metrics);
+                }
                 if (props.getPurge().isEnabled()) {
                     String tableName = props.getTableName();
                     EventPurger purger = createAgeBasedPurger(outboxStore.name(), tableName);

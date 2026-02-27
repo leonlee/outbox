@@ -696,9 +696,10 @@ public final class Outbox implements AutoCloseable {
      * scenarios where events are consumed externally (e.g. Debezium).
      *
      * <p>Inherited builder methods for dispatcher/poller configuration
-     * ({@code listenerRegistry}, {@code interceptor}, {@code intervalMs},
-     * {@code batchSize}, {@code skipRecent}, {@code drainTimeoutMs}) are
-     * callable but have no effect in this mode.
+     * ({@code listenerRegistry}, {@code interceptor}, {@code interceptors},
+     * {@code jsonCodec}, {@code intervalMs}, {@code batchSize},
+     * {@code skipRecent}, {@code drainTimeoutMs}) are not supported in this
+     * mode and throw {@link UnsupportedOperationException}.
      */
     public static final class WriterOnlyBuilder extends AbstractBuilder<WriterOnlyBuilder> {
         private EventPurger purger;
@@ -707,6 +708,54 @@ public final class Outbox implements AutoCloseable {
         private long purgeIntervalSeconds = 3600;
 
         WriterOnlyBuilder() {
+        }
+
+        /** @throws UnsupportedOperationException always — not used in writer-only mode */
+        @Override
+        public WriterOnlyBuilder listenerRegistry(ListenerRegistry listenerRegistry) {
+            throw new UnsupportedOperationException("listenerRegistry is not used in writer-only mode");
+        }
+
+        /** @throws UnsupportedOperationException always — not used in writer-only mode */
+        @Override
+        public WriterOnlyBuilder jsonCodec(JsonCodec jsonCodec) {
+            throw new UnsupportedOperationException("jsonCodec is not used in writer-only mode");
+        }
+
+        /** @throws UnsupportedOperationException always — not used in writer-only mode */
+        @Override
+        public WriterOnlyBuilder interceptor(EventInterceptor interceptor) {
+            throw new UnsupportedOperationException("interceptor is not used in writer-only mode");
+        }
+
+        /** @throws UnsupportedOperationException always — not used in writer-only mode */
+        @Override
+        public WriterOnlyBuilder interceptors(List<EventInterceptor> interceptors) {
+            throw new UnsupportedOperationException("interceptors is not used in writer-only mode");
+        }
+
+        /** @throws UnsupportedOperationException always — not used in writer-only mode */
+        @Override
+        public WriterOnlyBuilder intervalMs(long intervalMs) {
+            throw new UnsupportedOperationException("intervalMs is not used in writer-only mode");
+        }
+
+        /** @throws UnsupportedOperationException always — not used in writer-only mode */
+        @Override
+        public WriterOnlyBuilder batchSize(int batchSize) {
+            throw new UnsupportedOperationException("batchSize is not used in writer-only mode");
+        }
+
+        /** @throws UnsupportedOperationException always — not used in writer-only mode */
+        @Override
+        public WriterOnlyBuilder skipRecent(Duration skipRecent) {
+            throw new UnsupportedOperationException("skipRecent is not used in writer-only mode");
+        }
+
+        /** @throws UnsupportedOperationException always — not used in writer-only mode */
+        @Override
+        public WriterOnlyBuilder drainTimeoutMs(long drainTimeoutMs) {
+            throw new UnsupportedOperationException("drainTimeoutMs is not used in writer-only mode");
         }
 
         /**
@@ -794,7 +843,7 @@ public final class Outbox implements AutoCloseable {
                     throw e;
                 }
             }
-            return new Outbox(writer, null, null, scheduler, null);
+            return new Outbox(writer, null, null, scheduler, metrics);
         }
     }
 }

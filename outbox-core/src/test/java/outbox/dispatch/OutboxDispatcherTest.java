@@ -695,6 +695,35 @@ class OutboxDispatcherTest {
     }
 
     @Test
+    void runtimeExceptionInMarkDoneDoesNotCauseRetry() throws Exception {
+        CountDownLatch doneLatch = new CountDownLatch(1);
+        var store = new StubOutboxStore() {
+            @Override
+            public int markDone(Connection conn, String eventId) {
+                doneLatch.countDown();
+                throw new RuntimeException("simulated store failure");
+            }
+        };
+
+        AtomicInteger listenerCallCount = new AtomicInteger();
+        var registry = new DefaultListenerRegistry()
+                .register("RTETest", event -> listenerCallCount.incrementAndGet());
+
+        try (var d = newDispatcher(1, 10, 10, registry, store)) {
+            d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("RTETest", "{}"), QueuedEvent.Source.HOT, 0));
+
+            assertTrue(doneLatch.await(3, TimeUnit.SECONDS));
+            // Give time for any erroneous retry
+            Thread.sleep(200);
+            // Listener should be called exactly once — the RuntimeException from markDone
+            // should be caught and logged, not propagate to handleFailure
+            assertEquals(1, listenerCallCount.get());
+            assertEquals(0, store.markRetryCount.get());
+            assertEquals(0, store.markDeadCount.get());
+        }
+    }
+
+    @Test
     void lambdaListenerBackwardCompat() throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<String> received = new AtomicReference<>();

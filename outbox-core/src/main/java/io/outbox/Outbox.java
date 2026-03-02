@@ -439,9 +439,9 @@ public final class Outbox implements AutoCloseable {
             OutboxWriter writer;
             if (hotPathEnabled) {
                 WriterHook writerHook = new DispatcherWriterHook(dispatcher, metrics);
-                writer = new OutboxWriter(txContext, outboxStore, writerHook);
+                writer = new DefaultOutboxWriter(txContext, outboxStore, writerHook);
             } else {
-                writer = new OutboxWriter(txContext, outboxStore);
+                writer = new DefaultOutboxWriter(txContext, outboxStore);
             }
             return new Outbox(writer, poller, dispatcher, null, metrics);
         }
@@ -824,7 +824,7 @@ public final class Outbox implements AutoCloseable {
         public Outbox build() {
             validateRequired();
             markBuilt();
-            OutboxWriter writer = new OutboxWriter(txContext, outboxStore);
+            OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore);
             OutboxPurgeScheduler scheduler = null;
             if (purger != null) {
                 OutboxPurgeScheduler.Builder pb = OutboxPurgeScheduler.builder()

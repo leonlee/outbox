@@ -5,6 +5,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import io.outbox.EventEnvelope;
+import io.outbox.DefaultOutboxWriter;
 import io.outbox.OutboxWriter;
 import io.outbox.dispatch.DispatcherPollerHandler;
 import io.outbox.dispatch.DispatcherWriterHook;
@@ -64,7 +65,7 @@ class OutboxAcceptanceTest {
     @Test
     void atomicityRollbackDoesNotPersist() throws Exception {
         OutboxDispatcher dispatcher = dispatcher(0, 10, 10);
-        OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
         try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
             writer.write(EventEnvelope.ofJson("TestEvent", "{}"));
@@ -82,7 +83,7 @@ class OutboxAcceptanceTest {
                 .register("UserCreated", event -> latch.countDown());
 
         OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers);
-        OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
         String eventId;
         try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
@@ -101,7 +102,7 @@ class OutboxAcceptanceTest {
         OutboxDispatcher noWorkers = dispatcher(0, 1, 1);
         noWorkers.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("Preload", "{}"), QueuedEvent.Source.HOT, 0));
 
-        OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(noWorkers));
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(noWorkers));
 
         String eventId;
         try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
@@ -145,7 +146,7 @@ class OutboxAcceptanceTest {
                 });
 
         OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers, 3);
-        OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
         String eventId;
         try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
@@ -186,7 +187,7 @@ class OutboxAcceptanceTest {
                 });
 
         OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers);
-        OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
         java.util.List<String> eventIds;
         try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
@@ -220,7 +221,7 @@ class OutboxAcceptanceTest {
                 });
 
         OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
-        OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
         // Write a delayed event — availableAt is in the past so the poller can pick it up immediately
         // but the hot path should still skip it because isDelayed() was true at write time

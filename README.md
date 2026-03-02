@@ -57,6 +57,7 @@ Artifacts are published to [Maven Central](https://central.sonatype.com/namespac
 - `outbox-spring-boot-starter`: Spring Boot auto-configuration with `@OutboxListener` annotation.
 - `outbox-spring-adapter`: optional `TxContext` implementation for Spring (without Boot).
 - `outbox-micrometer`: Micrometer metrics bridge for Prometheus/Grafana.
+- `outbox-testing`: test fixtures (`InMemoryOutboxStore`, `StubTxContext`, `OutboxTestSupport`) for unit testing without JDBC.
 - `samples/outbox-demo`: minimal, non-Spring demo (H2).
 - `samples/outbox-spring-demo`: Spring demo app (manual wiring).
 - `samples/outbox-spring-boot-starter-demo`: Spring Boot Starter demo (zero-config auto-configuration).

@@ -31,6 +31,8 @@ For the full technical specification, see [SPEC.md](SPEC.md).
 14. [Custom JsonCodec](#14-custom-jsoncodec)
 15. [Ordered Delivery](#15-ordered-delivery)
 16. [Handler-Controlled Retry Timing](#16-handler-controlled-retry-timing)
+17. [Delayed Message Delivery](#17-delayed-message-delivery)
+18. [Testing](#18-testing)
 
 ---
 
@@ -206,7 +208,7 @@ poller.
 start();
 
 JdbcTransactionManager txManager = new JdbcTransactionManager(connectionProvider, txContext);
-OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
+OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
 try(
 JdbcTransactionManager.Transaction tx = txManager.begin()){
@@ -300,7 +302,7 @@ public final class OutboxExample {
                 .build();
         poller.start();
 
-        OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
         try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
             writer.write("UserCreated", "{\"id\":123}");
@@ -653,7 +655,7 @@ public class OutboxConfiguration {
             TxContext txContext,
             AbstractJdbcOutboxStore outboxStore,
             OutboxDispatcher dispatcher) {
-        return new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
+        return new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
     }
 }
 ```
@@ -774,8 +776,8 @@ OutboxWriter writer = outbox.writer();
 import io.outbox.OutboxWriter;
 import io.outbox.WriterHook;
 
-OutboxWriter writer = new OutboxWriter(txContext, outboxStore);
-// or: new OutboxWriter(txContext, outboxStore, WriterHook.NOOP)
+OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore);
+// or: new DefaultOutboxWriter(txContext, outboxStore, WriterHook.NOOP)
 ```
 
 If you enable both `DispatcherWriterHook` and CDC, you must dedupe downstream or choose one primary delivery path.
@@ -841,7 +843,7 @@ ordersPoller.
 start();
 
 var ordersTxManager = new JdbcTransactionManager(ordersConn, ordersTx);
-var ordersWriter = new OutboxWriter(ordersTx, ordersOutboxStore,
+var ordersWriter = new DefaultOutboxWriter(ordersTx, ordersOutboxStore,
         new DispatcherWriterHook(ordersDispatcher));
 
 // --- Inventory stack (same pattern, different datasource) ---
@@ -871,7 +873,7 @@ invPoller.
 start();
 
 var invTxManager = new JdbcTransactionManager(invConn, invTx);
-var invWriter = new OutboxWriter(invTx, invOutboxStore,
+var invWriter = new DefaultOutboxWriter(invTx, invOutboxStore,
         new DispatcherWriterHook(invDispatcher));
 
 // --- Publish to each stack independently ---
@@ -1535,7 +1537,7 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
         .build();
 
 // No DispatcherWriterHook — hot path disabled
-OutboxWriter writer = new OutboxWriter(txContext, outboxStore);
+OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore);
 
 // Single-node poller reads in DB insertion order
 OutboxPoller poller = OutboxPoller.builder()
@@ -1686,3 +1688,211 @@ writer.write(EventEnvelope.builder("WebhookRetry")
 2. `DispatcherWriterHook` checks `event.isDelayed()` and **skips** delayed events on the hot path
 3. `OutboxPoller` respects `available_at <= now` — the event becomes eligible when its time arrives
 4. The `incrementHotSkippedDelayed()` metric tracks how many events were deferred to the poller
+
+---
+
+## 18. Testing
+
+The `outbox-testing` module provides in-memory test fixtures so you can unit test outbox code without a database.
+
+**Maven dependency:**
+
+```xml
+<dependency>
+    <groupId>io.github.leonlee</groupId>
+    <artifactId>outbox-testing</artifactId>
+    <version>${outbox.version}</version>
+    <scope>test</scope>
+</dependency>
+```
+
+### 18.1 Unit Testing with OutboxTestSupport
+
+The fastest way to set up a test environment — no JDBC, no H2, no Spring:
+
+```java
+import io.outbox.EventEnvelope;
+import io.outbox.testing.OutboxTestSupport;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+
+class OrderServiceTest {
+
+    @Test
+    void orderPlacedEventIsWritten() {
+        var test = OutboxTestSupport.create()
+            .register("OrderPlaced", event -> {
+                // verify listener receives the event
+                assertTrue(event.payloadJson().contains("order-42"));
+            })
+            .build();
+
+        // Simulate writing an event inside a transaction
+        String eventId = test.writer().write(
+            EventEnvelope.builder("OrderPlaced")
+                .aggregateType("Order")
+                .aggregateId("order-42")
+                .payloadJson("{\"orderId\":\"order-42\",\"amount\":99.99}")
+                .build());
+
+        // Verify the event was stored
+        assertNotNull(eventId);
+        assertEquals(1, test.store().size());
+
+        // Trigger afterCommit hooks (simulates transaction commit)
+        test.txContext().runAfterCommit();
+    }
+}
+```
+
+### 18.2 Using Individual Test Fixtures
+
+For more control, use the fixtures directly:
+
+```java
+import io.outbox.DefaultOutboxWriter;
+import io.outbox.EventEnvelope;
+import io.outbox.model.EventStatus;
+import io.outbox.testing.InMemoryOutboxStore;
+import io.outbox.testing.RecordingWriterHook;
+import io.outbox.testing.StubTxContext;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+
+class OutboxWriteTest {
+
+    @Test
+    void writerHookLifecycle() {
+        var txContext = new StubTxContext();
+        var store = new InMemoryOutboxStore();
+        var hook = new RecordingWriterHook();
+        var writer = new DefaultOutboxWriter(txContext, store, hook);
+
+        writer.write(EventEnvelope.ofJson("Test", "{\"key\":\"value\"}"));
+
+        // Verify hook phases
+        assertEquals(1, hook.beforeWriteCount());
+        assertEquals(1, hook.afterWriteCount());
+
+        // Simulate commit
+        txContext.runAfterCommit();
+        assertEquals(1, hook.afterCommitCount());
+
+        // Inspect stored event
+        assertEquals(EventStatus.NEW, store.statusOf(store.all().get(0).eventId()));
+    }
+}
+```
+
+### 18.3 Mocking OutboxWriter
+
+`OutboxWriter` is an interface, so you can mock it directly with any mocking framework:
+
+```java
+// With Mockito
+OutboxWriter mockWriter = mock(OutboxWriter.class);
+when(mockWriter.write(any(EventEnvelope.class))).thenReturn("test-id");
+
+// Or with a simple lambda/anonymous class
+OutboxWriter stubWriter = new OutboxWriter() {
+    @Override
+    public String write(EventEnvelope event) { return "stub-id"; }
+    @Override
+    public String write(String eventType, String payloadJson) { return "stub-id"; }
+    @Override
+    public String write(EventType eventType, String payloadJson) { return "stub-id"; }
+    @Override
+    public List<String> writeAll(List<EventEnvelope> events) {
+        return events.stream().map(e -> "stub-id").toList();
+    }
+};
+```
+
+### 18.4 Testing Listeners in Isolation
+
+`EventListener` is a `@FunctionalInterface` — test listeners independently of the outbox infrastructure:
+
+```java
+@Test
+void listenerProcessesEvent() throws Exception {
+    // Define the listener
+    EventListener listener = event -> {
+        var payload = JsonCodec.getDefault().fromJson(event.payloadJson());
+        assertEquals("order-42", payload.get("orderId"));
+    };
+
+    // Test it directly with a synthetic event
+    EventEnvelope event = EventEnvelope.builder("OrderPlaced")
+        .aggregateType("Order")
+        .aggregateId("order-42")
+        .payloadJson("{\"orderId\":\"order-42\"}")
+        .build();
+
+    listener.onEvent(event);
+}
+```
+
+### 18.5 Integration Testing with H2
+
+For integration tests that verify SQL and the full write/dispatch lifecycle, use H2 in-memory:
+
+```java
+import io.outbox.DefaultOutboxWriter;
+import io.outbox.EventEnvelope;
+import io.outbox.Outbox;
+import io.outbox.jdbc.DataSourceConnectionProvider;
+import io.outbox.jdbc.store.JdbcOutboxStores;
+import io.outbox.jdbc.tx.JdbcTransactionManager;
+import io.outbox.jdbc.tx.ThreadLocalTxContext;
+import io.outbox.registry.DefaultListenerRegistry;
+import org.h2.jdbcx.JdbcDataSource;
+import org.junit.jupiter.api.Test;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+class OutboxIntegrationTest {
+
+    @Test
+    void endToEndWithH2() throws Exception {
+        // Setup H2
+        JdbcDataSource ds = new JdbcDataSource();
+        ds.setURL("jdbc:h2:mem:test;MODE=MySQL;DB_CLOSE_DELAY=-1");
+        // Run schema DDL (see Section 1)
+
+        var store = JdbcOutboxStores.detect(ds);
+        var connProvider = new DataSourceConnectionProvider(ds);
+        var txContext = new ThreadLocalTxContext();
+        var txManager = new JdbcTransactionManager(connProvider, txContext);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry()
+            .register("OrderPlaced", event -> latch.countDown());
+
+        try (Outbox outbox = Outbox.singleNode()
+                .connectionProvider(connProvider)
+                .txContext(txContext)
+                .outboxStore(store)
+                .listenerRegistry(registry)
+                .build()) {
+
+            try (var tx = txManager.begin()) {
+                outbox.writer().write(EventEnvelope.ofJson("OrderPlaced",
+                    "{\"orderId\":\"order-1\"}"));
+                tx.commit();
+            }
+
+            assertTrue(latch.await(5, TimeUnit.SECONDS));
+        }
+    }
+}
+```
+
+### 18.6 Available Test Fixtures
+
+| Class | Description |
+|-------|-------------|
+| `OutboxTestSupport` | Convenience builder that wires all fixtures together |
+| `InMemoryOutboxStore` | `ConcurrentHashMap`-backed `OutboxStore` — supports all operations |
+| `StubTxContext` | Controllable `TxContext` with `runAfterCommit()`/`runAfterRollback()` |
+| `RecordingWriterHook` | `WriterHook` that records all lifecycle phase invocations |
+| `NoOpConnectionProvider` | `ConnectionProvider` returning null (sufficient for `InMemoryOutboxStore`) |

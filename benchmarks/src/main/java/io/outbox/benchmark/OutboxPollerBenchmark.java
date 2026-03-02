@@ -14,6 +14,7 @@ import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Warmup;
 import io.outbox.EventEnvelope;
+import io.outbox.DefaultOutboxWriter;
 import io.outbox.OutboxWriter;
 import io.outbox.benchmark.BenchmarkDataSourceFactory.DatabaseSetup;
 import io.outbox.jdbc.DataSourceConnectionProvider;
@@ -67,7 +68,7 @@ public class OutboxPollerBenchmark {
         txContext = new ThreadLocalTxContext();
         txManager = new JdbcTransactionManager(connectionProvider, txContext);
         outboxStore = db.store();
-        writer = new OutboxWriter(txContext, outboxStore);
+        writer = new DefaultOutboxWriter(txContext, outboxStore);
     }
 
     @Setup(Level.Invocation)

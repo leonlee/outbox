@@ -26,7 +26,7 @@ class OutboxWriterTest {
         StubTxContext txContext = new StubTxContext(false);
         RecordingOutboxStore store = new RecordingOutboxStore();
 
-        OutboxWriter writer = new OutboxWriter(txContext, store);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store);
 
         assertThrows(IllegalStateException.class, () ->
                 writer.write(EventEnvelope.ofJson("Test", "{}")));
@@ -38,7 +38,7 @@ class OutboxWriterTest {
         RecordingOutboxStore store = new RecordingOutboxStore();
         RecordingHook hook = new RecordingHook();
 
-        OutboxWriter writer = new OutboxWriter(txContext, store, hook);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store, hook);
 
         writer.write(EventEnvelope.ofJson("Test", "{}"));
 
@@ -54,7 +54,7 @@ class OutboxWriterTest {
         RecordingOutboxStore store = new RecordingOutboxStore();
         RecordingHook hook = new RecordingHook();
 
-        OutboxWriter writer = new OutboxWriter(txContext, store, hook);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store, hook);
 
         List<EventEnvelope> events = List.of(
                 EventEnvelope.ofJson("A", "{}"),
@@ -73,7 +73,7 @@ class OutboxWriterTest {
         RecordingOutboxStore store = new RecordingOutboxStore();
         RecordingHook hook = new RecordingHook();
 
-        OutboxWriter writer = new OutboxWriter(txContext, store, hook);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store, hook);
 
         writer.writeAll(List.of(EventEnvelope.ofJson("A", "{}")));
 
@@ -88,7 +88,7 @@ class OutboxWriterTest {
         RecordingOutboxStore store = new RecordingOutboxStore();
         RecordingHook hook = new RecordingHook();
 
-        OutboxWriter writer = new OutboxWriter(txContext, store, hook);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store, hook);
 
         List<EventEnvelope> events = List.of(
                 EventEnvelope.ofJson("A", "{}"),
@@ -107,7 +107,7 @@ class OutboxWriterTest {
         RecordingOutboxStore store = new RecordingOutboxStore();
         RecordingHook hook = new RecordingHook();
 
-        OutboxWriter writer = new OutboxWriter(txContext, store, hook);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store, hook);
 
         List<EventEnvelope> events = List.of(
                 EventEnvelope.ofJson("A", "{}"),
@@ -134,7 +134,7 @@ class OutboxWriterTest {
             }
         };
 
-        OutboxWriter writer = new OutboxWriter(txContext, store, transformHook);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store, transformHook);
 
         List<String> ids = writer.writeAll(List.of(
                 EventEnvelope.ofJson("Original1", "{}"),
@@ -160,7 +160,7 @@ class OutboxWriterTest {
             }
         };
 
-        OutboxWriter writer = new OutboxWriter(txContext, store, throwingHook);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store, throwingHook);
 
         assertThrows(RuntimeException.class, () ->
                 writer.writeAll(List.of(EventEnvelope.ofJson("Test", "{}"))));
@@ -179,7 +179,7 @@ class OutboxWriterTest {
             }
         };
 
-        OutboxWriter writer = new OutboxWriter(txContext, store, suppressHook);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store, suppressHook);
 
         String id = writer.write(EventEnvelope.ofJson("Test", "{}"));
         assertNull(id);
@@ -198,7 +198,7 @@ class OutboxWriterTest {
             }
         };
 
-        OutboxWriter writer = new OutboxWriter(txContext, store, nullHook);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store, nullHook);
 
         List<String> ids = writer.writeAll(List.of(EventEnvelope.ofJson("Test", "{}")));
         assertTrue(ids.isEmpty());
@@ -217,7 +217,7 @@ class OutboxWriterTest {
             }
         };
 
-        OutboxWriter writer = new OutboxWriter(txContext, store, emptyHook);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store, emptyHook);
 
         List<String> ids = writer.writeAll(List.of(EventEnvelope.ofJson("Test", "{}")));
         assertTrue(ids.isEmpty());
@@ -236,7 +236,7 @@ class OutboxWriterTest {
             }
         };
 
-        OutboxWriter writer = new OutboxWriter(txContext, store, throwingAfterWrite);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store, throwingAfterWrite);
 
         List<String> ids = assertDoesNotThrow(() ->
                 writer.writeAll(List.of(EventEnvelope.ofJson("Test", "{}"))));
@@ -249,7 +249,7 @@ class OutboxWriterTest {
         StubTxContext txContext = new StubTxContext(true);
         RecordingOutboxStore store = new RecordingOutboxStore();
 
-        OutboxWriter writer = new OutboxWriter(txContext, store);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store);
 
         String eventId = writer.write("UserCreated", "{\"id\":1}");
         assertNotNull(eventId);
@@ -261,7 +261,7 @@ class OutboxWriterTest {
         StubTxContext txContext = new StubTxContext(true);
         RecordingOutboxStore store = new RecordingOutboxStore();
 
-        OutboxWriter writer = new OutboxWriter(txContext, store);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store);
 
         EventType eventType = StringEventType.of("OrderPlaced");
         String eventId = writer.write(eventType, "{\"orderId\":1}");
@@ -274,7 +274,7 @@ class OutboxWriterTest {
         StubTxContext txContext = new StubTxContext(true);
         RecordingOutboxStore store = new RecordingOutboxStore();
 
-        OutboxWriter writer = new OutboxWriter(txContext, store);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store);
 
         List<EventEnvelope> events = List.of(
                 EventEnvelope.ofJson("EventA", "{}"),
@@ -292,7 +292,7 @@ class OutboxWriterTest {
         StubTxContext txContext = new StubTxContext(false);
         RecordingOutboxStore store = new RecordingOutboxStore();
 
-        OutboxWriter writer = new OutboxWriter(txContext, store);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store);
 
         assertThrows(IllegalStateException.class, () ->
                 writer.writeAll(List.of(EventEnvelope.ofJson("Test", "{}"))));
@@ -304,7 +304,7 @@ class OutboxWriterTest {
         RecordingOutboxStore store = new RecordingOutboxStore();
         RecordingHook hook = new RecordingHook();
 
-        OutboxWriter writer = new OutboxWriter(txContext, store, hook);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store, hook);
 
         List<String> ids = writer.writeAll(List.of());
         assertTrue(ids.isEmpty());
@@ -318,7 +318,7 @@ class OutboxWriterTest {
         RecordingOutboxStore store = new RecordingOutboxStore();
         RecordingHook hook = new RecordingHook();
 
-        OutboxWriter writer = new OutboxWriter(txContext, store, hook);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store, hook);
 
         writer.write(EventEnvelope.ofJson("A", "{}"));
         writer.write(EventEnvelope.ofJson("B", "{}"));
@@ -343,7 +343,7 @@ class OutboxWriterTest {
             }
         };
 
-        OutboxWriter writer = new OutboxWriter(txContext, store, throwingHook);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store, throwingHook);
         writer.write(EventEnvelope.ofJson("Test", "{}"));
 
         assertDoesNotThrow(txContext::runAfterCommit);
@@ -361,7 +361,7 @@ class OutboxWriterTest {
             }
         };
 
-        OutboxWriter writer = new OutboxWriter(txContext, store, throwingHook);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store, throwingHook);
         writer.write(EventEnvelope.ofJson("Test", "{}"));
 
         assertDoesNotThrow(txContext::runAfterRollback);
@@ -372,7 +372,7 @@ class OutboxWriterTest {
         StubTxContext txContext = new StubTxContext(true);
         RecordingOutboxStore store = new RecordingOutboxStore();
 
-        OutboxWriter writer = new OutboxWriter(txContext, store);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, store);
 
         writer.write(EventEnvelope.ofJson("Test", "{}"));
 

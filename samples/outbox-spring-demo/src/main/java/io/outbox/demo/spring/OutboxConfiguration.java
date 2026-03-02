@@ -6,6 +6,7 @@ import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.event.EventListener;
+import io.outbox.DefaultOutboxWriter;
 import io.outbox.OutboxWriter;
 import io.outbox.dispatch.DefaultInFlightTracker;
 import io.outbox.dispatch.DispatcherPollerHandler;
@@ -103,6 +104,6 @@ public class OutboxConfiguration {
             AbstractJdbcOutboxStore outboxStore,
             OutboxDispatcher dispatcher
     ) {
-        return new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
+        return new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
     }
 }

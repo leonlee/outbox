@@ -86,7 +86,7 @@
  * poller.start();
  *
  * var txManager = new JdbcTransactionManager(connProvider, txContext);
- * var writer    = new OutboxWriter(txContext, outboxStore,
+ * var writer    = new DefaultOutboxWriter(txContext, outboxStore,
  *                     new DispatcherWriterHook(dispatcher));
  *
  * try (var tx = txManager.begin()) {

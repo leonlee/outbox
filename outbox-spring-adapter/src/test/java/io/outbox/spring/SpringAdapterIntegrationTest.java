@@ -10,6 +10,7 @@ import org.springframework.transaction.support.DefaultTransactionDefinition;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import io.outbox.EventEnvelope;
+import io.outbox.DefaultOutboxWriter;
 import io.outbox.OutboxWriter;
 import io.outbox.dispatch.DispatcherWriterHook;
 import io.outbox.dispatch.ExponentialBackoffRetryPolicy;
@@ -70,7 +71,7 @@ class SpringAdapterIntegrationTest {
                 .register("UserCreated", event -> latch.countDown());
 
         OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
-        OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
         TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
         String eventId;
@@ -95,7 +96,7 @@ class SpringAdapterIntegrationTest {
                 .register("UserCreated", event -> latch.countDown());
 
         OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
-        OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
         TransactionStatus status = txManager.getTransaction(new DefaultTransactionDefinition());
         String eventId;

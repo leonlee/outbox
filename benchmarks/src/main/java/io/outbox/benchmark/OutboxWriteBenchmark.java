@@ -13,6 +13,7 @@ import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Warmup;
+import io.outbox.DefaultOutboxWriter;
 import io.outbox.OutboxWriter;
 import io.outbox.benchmark.BenchmarkDataSourceFactory.DatabaseSetup;
 import io.outbox.jdbc.DataSourceConnectionProvider;
@@ -59,7 +60,7 @@ public class OutboxWriteBenchmark {
         connectionProvider = new DataSourceConnectionProvider(dataSource);
         txContext = new ThreadLocalTxContext();
         txManager = new JdbcTransactionManager(connectionProvider, txContext);
-        writer = new OutboxWriter(txContext, db.store());
+        writer = new DefaultOutboxWriter(txContext, db.store());
         payload = "{\"data\":\"" + "x".repeat(Math.max(0, payloadSize - 11)) + "\"}";
     }
 

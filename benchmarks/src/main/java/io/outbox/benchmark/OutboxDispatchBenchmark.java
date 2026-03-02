@@ -14,6 +14,7 @@ import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
+import io.outbox.DefaultOutboxWriter;
 import io.outbox.OutboxWriter;
 import io.outbox.benchmark.BenchmarkDataSourceFactory.DatabaseSetup;
 import io.outbox.dispatch.DispatcherWriterHook;
@@ -82,7 +83,7 @@ public class OutboxDispatchBenchmark {
                 .coldQueueCapacity(100)
                 .build();
 
-        writer = new OutboxWriter(txContext, db.store(), new DispatcherWriterHook(dispatcher));
+        writer = new DefaultOutboxWriter(txContext, db.store(), new DispatcherWriterHook(dispatcher));
         payload = "{\"data\":\"" + "x".repeat(Math.max(0, payloadSize - 11)) + "\"}";
     }
 

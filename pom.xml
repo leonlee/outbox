@@ -38,6 +38,7 @@
         <module>outbox-spring-adapter</module>
         <module>outbox-micrometer</module>
         <module>outbox-spring-boot-starter</module>
+        <module>outbox-testing</module>
         <module>benchmarks</module>
         <module>samples</module>
     </modules>

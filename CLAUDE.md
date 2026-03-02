@@ -33,6 +33,8 @@ are available for advanced wiring.
 - **outbox-micrometer**: Micrometer metrics bridge (`MicrometerMetricsExporter`) for Prometheus/Grafana.
 - **outbox-spring-boot-starter**: Spring Boot auto-configuration starter. Auto-wires `Outbox`, `OutboxWriter`, store,
   poller, dispatcher from `application.properties`. `@OutboxListener` annotation for declarative listener registration.
+- **outbox-testing**: Test fixtures for unit testing without JDBC: `InMemoryOutboxStore`, `StubTxContext`,
+  `RecordingWriterHook`, `NoOpConnectionProvider`, `OutboxTestSupport`.
 - **benchmarks**: JMH benchmarks for write throughput, dispatch latency, and poller throughput (not published).
 - **samples/outbox-demo**: Simple runnable demo with H2 (no Spring).
 - **samples/outbox-spring-demo**: Spring Boot demo with REST API (manual wiring).
@@ -47,7 +49,8 @@ outbox-core/src/main/java/
     └── outbox/
         │  # Main API (root package)
         ├── Outbox.java (composite builder: singleNode/multiNode/ordered)
-        ├── OutboxWriter.java
+        ├── OutboxWriter.java (interface)
+        ├── DefaultOutboxWriter.java (default implementation)
         ├── EventEnvelope.java
         ├── EventType.java (interface)
         ├── AggregateType.java (interface)
@@ -172,7 +175,9 @@ outbox-jdbc/src/main/java/
   zero-dependency implementation (singleton via `JsonCodec.getDefault()`). Injectable into `AbstractJdbcOutboxStore`,
   `OutboxPoller`, and `JdbcOutboxStores.detect()` for users who prefer Jackson/Gson.
 - **TableNames**: Shared utility in `io.outbox.jdbc` for table name validation (regex `[a-zA-Z_][a-zA-Z0-9_]*`).
-- **OutboxWriter**: Primary entry point for writing events. `write()` delegates to `writeAll()`. Lifecycle:
+- **OutboxWriter**: Interface for writing events. Four methods: `write(EventEnvelope)`, `write(String, String)`,
+  `write(EventType, String)`, `writeAll(List)`. Default implementation is `DefaultOutboxWriter`.
+- **DefaultOutboxWriter**: `OutboxWriter` implementation. `write()` delegates to `writeAll()`. Lifecycle:
   `WriterHook.beforeWrite` (may transform) → `OutboxStore.insertBatch` → `afterWrite` → tx commit/rollback →
   `afterCommit`/`afterRollback`. Single callback registered per batch. Constructor accepts optional `WriterHook` (
   defaults to `NOOP`).

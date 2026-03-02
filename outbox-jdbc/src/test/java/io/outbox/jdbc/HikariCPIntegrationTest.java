@@ -6,6 +6,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import io.outbox.EventEnvelope;
+import io.outbox.DefaultOutboxWriter;
 import io.outbox.OutboxWriter;
 import io.outbox.dispatch.DispatcherPollerHandler;
 import io.outbox.dispatch.DispatcherWriterHook;
@@ -74,7 +75,7 @@ class HikariCPIntegrationTest {
                 .register("PoolEvent", event -> latch.countDown());
 
         OutboxDispatcher dispatcher = dispatcher(1, 100, 100, registry);
-        OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
         String eventId;
         try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
@@ -96,7 +97,7 @@ class HikariCPIntegrationTest {
                 .register("CycleEvent", event -> latch.countDown());
 
         OutboxDispatcher dispatcher = dispatcher(2, 100, 100, registry);
-        OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
 
         List<String> eventIds = new ArrayList<>();
         for (int i = 0; i < 20; i++) {
@@ -137,7 +138,7 @@ class HikariCPIntegrationTest {
             executor.submit(() -> {
                 ThreadLocalTxContext localTxCtx = new ThreadLocalTxContext();
                 JdbcTransactionManager localTxMgr = new JdbcTransactionManager(connectionProvider, localTxCtx);
-                OutboxWriter localWriter = new OutboxWriter(localTxCtx, outboxStore, hook);
+                OutboxWriter localWriter = new DefaultOutboxWriter(localTxCtx, outboxStore, hook);
                 for (int i = 0; i < eventsPerThread; i++) {
                     try (JdbcTransactionManager.Transaction tx = localTxMgr.begin()) {
                         String id = localWriter.write(
@@ -165,7 +166,7 @@ class HikariCPIntegrationTest {
     @Test
     void pollerThroughPool() throws Exception {
         // Insert events without dispatcher (poller-only)
-        OutboxWriter writer = new OutboxWriter(txContext, outboxStore);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore);
 
         List<String> eventIds = new ArrayList<>();
         for (int i = 0; i < 5; i++) {
@@ -215,7 +216,7 @@ class HikariCPIntegrationTest {
 
     @Test
     void rollbackReturnsConnectionToPool() throws Exception {
-        OutboxWriter writer = new OutboxWriter(txContext, outboxStore);
+        OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore);
 
         try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
             writer.write(EventEnvelope.ofJson("RollbackEvent", "{}"));

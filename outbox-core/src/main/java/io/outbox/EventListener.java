@@ -46,6 +46,7 @@ package io.outbox;
  * @see io.outbox.registry.ListenerRegistry
  * @see io.outbox.registry.DefaultListenerRegistry
  */
+@FunctionalInterface
 public interface EventListener {
 
     /**

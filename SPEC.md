@@ -96,7 +96,7 @@ Core interfaces, hooks, dispatcher, poller, and registries. **Zero external depe
 
 Packages:
 
-- `io.outbox` - Main API: Outbox (composite builder), OutboxWriter, EventEnvelope, EventType, AggregateType, EventListener,
+- `io.outbox` - Main API: Outbox (composite builder), OutboxWriter (interface), DefaultOutboxWriter, EventEnvelope, EventType, AggregateType, EventListener,
   DispatchResult, RetryAfterException, WriterHook
 - `io.outbox.spi` - Extension point interfaces: TxContext, ConnectionProvider, OutboxStore, EventPurger, MetricsExporter
 - `io.outbox.model` - Domain objects: OutboxEvent, EventStatus
@@ -506,18 +506,20 @@ build();
 ### 7.1 OutboxWriter
 
 ```java
-public final class OutboxWriter {
-    public OutboxWriter(TxContext txContext, OutboxStore outboxStore);
+public interface OutboxWriter {
+    String write(EventEnvelope event);              // returns null if suppressed
 
-    public OutboxWriter(TxContext txContext, OutboxStore outboxStore, WriterHook writerHook);
+    String write(String eventType, String payloadJson);  // returns null if suppressed
 
-    public String write(EventEnvelope event);              // returns null if suppressed
+    String write(EventType eventType, String payloadJson); // returns null if suppressed
 
-    public String write(String eventType, String payloadJson);  // returns null if suppressed
+    List<String> writeAll(List<EventEnvelope> events);  // returns empty list if suppressed
+}
 
-    public String write(EventType eventType, String payloadJson); // returns null if suppressed
+public final class DefaultOutboxWriter implements OutboxWriter {
+    public DefaultOutboxWriter(TxContext txContext, OutboxStore outboxStore);
 
-    public List<String> writeAll(List<EventEnvelope> events);  // returns empty list if suppressed
+    public DefaultOutboxWriter(TxContext txContext, OutboxStore outboxStore, WriterHook writerHook);
 }
 ```
 
@@ -867,7 +869,7 @@ public interface OutboxPollerHandler {
 
 For high-QPS workloads, CDC can replace the in-process poller and hot-path hook:
 
-- Construct `OutboxWriter` without a hook (or with `WriterHook.NOOP`)
+- Construct `DefaultOutboxWriter` without a hook (or with `WriterHook.NOOP`)
 - Do not start `OutboxPoller`
 - CDC consumer publishes downstream; status updates are optional in CDC-only mode
 - If you do not mark DONE, treat the table as append-only and apply retention (e.g., partitioning + TTL)
@@ -886,6 +888,7 @@ For high-QPS workloads, CDC can replace the in-process poller and hot-path hook:
  * Each (aggregateType, eventType) pair maps to exactly one listener.
  * For cross-cutting concerns (audit, logging), use EventInterceptor.
  */
+@FunctionalInterface
 public interface EventListener {
     void onEvent(EventEnvelope event) throws Exception;
 

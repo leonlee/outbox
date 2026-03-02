@@ -22,6 +22,10 @@
  *       (H2, MySQL, PostgreSQL)</li>
  *   <li><b>outbox-spring-adapter</b> — optional {@linkplain io.outbox.spring Spring transaction
  *       integration}</li>
+ *   <li><b>outbox-micrometer</b> — optional {@linkplain io.outbox.micrometer Micrometer metrics
+ *       bridge}</li>
+ *   <li><b>outbox-spring-boot-starter</b> — Spring Boot
+ *       {@linkplain io.outbox.spring.boot auto-configuration} with {@code @OutboxListener}</li>
  * </ul>
  *
  * <h2>Quick Start (composite builder)</h2>

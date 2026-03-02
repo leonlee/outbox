@@ -208,6 +208,70 @@ class OutboxAcceptanceTest {
         dispatcher.close();
     }
 
+    @Test
+    void delayedEventSkipsHotPathAndIsDeliveredByPoller() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<EventEnvelope> captured =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        DefaultListenerRegistry listeners = new DefaultListenerRegistry()
+                .register("DelayedE2E", e -> {
+                    captured.set(e);
+                    latch.countDown();
+                });
+
+        OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
+        OutboxWriter writer = new OutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
+
+        // Write a delayed event — availableAt is in the past so the poller can pick it up immediately
+        // but the hot path should still skip it because isDelayed() was true at write time
+        java.time.Instant availableAt = java.time.Instant.now().minusSeconds(1)
+                .truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+        java.time.Instant occurredAt = java.time.Instant.now().minusSeconds(60)
+                .truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+
+        String eventId;
+        try (JdbcTransactionManager.Transaction tx = txManager.begin()) {
+            eventId = writer.write(EventEnvelope.builder("DelayedE2E")
+                    .occurredAt(occurredAt)
+                    .availableAt(availableAt)
+                    .payloadJson("{\"delayed\":true}")
+                    .build());
+            tx.commit();
+        }
+
+        // Hot path should NOT have dispatched it (it's delayed)
+        Thread.sleep(200);
+        assertEquals(EventStatus.NEW.code(), getStatus(eventId),
+                "Delayed event should not be dispatched via hot path");
+
+        // Poller should pick it up since available_at is in the past
+        try (OutboxPoller poller = OutboxPoller.builder()
+                .connectionProvider(connectionProvider)
+                .outboxStore(outboxStore)
+                .handler(new DispatcherPollerHandler(dispatcher))
+                .skipRecent(Duration.ofMillis(0))
+                .batchSize(10)
+                .intervalMs(10)
+                .build()) {
+            for (int i = 0; i < 20 && getStatus(eventId) != EventStatus.DONE.code(); i++) {
+                poller.poll();
+                Thread.sleep(25);
+            }
+        }
+
+        assertTrue(latch.await(2, TimeUnit.SECONDS), "Listener should have been invoked");
+        awaitStatus(eventId, EventStatus.DONE, 2_000);
+
+        // Verify the reconstructed envelope preserves availableAt
+        assertNotNull(captured.get());
+        assertEquals(availableAt, captured.get().availableAt(),
+                "Reconstructed envelope should preserve availableAt");
+        assertTrue(captured.get().isDelayed(),
+                "Reconstructed envelope should report isDelayed()=true");
+
+        dispatcher.close();
+    }
+
     private OutboxDispatcher dispatcher(int workers, int hotCapacity, int coldCapacity) {
         return dispatcher(workers, hotCapacity, coldCapacity, new DefaultListenerRegistry());
     }

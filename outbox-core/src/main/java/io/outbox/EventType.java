@@ -24,9 +24,11 @@ public interface EventType {
      * Returns the string representation of this event type.
      * This value is persisted to the database and used for routing.
      *
+     * <p>Enum implementations inherit {@link Enum#name()} automatically.
+     * Non-enum implementations (records, classes) must override this method
+     * to return a stable, human-readable name.
+     *
      * @return the event type name, never null
      */
-    default String name() {
-        return this.getClass().getName();
-    }
+    String name();
 }

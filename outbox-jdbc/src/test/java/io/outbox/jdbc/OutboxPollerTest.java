@@ -299,6 +299,156 @@ class OutboxPollerTest {
     }
 
     @Test
+    void pollerReconstructsAvailableAtOnEnvelope() throws Exception {
+        Instant availableAt = Instant.now().minusSeconds(30).truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+        EventEnvelope delayed = EventEnvelope.builder("DelayedRecon")
+                .eventId("evt-recon")
+                .occurredAt(Instant.now().minusSeconds(120).truncatedTo(java.time.temporal.ChronoUnit.MILLIS))
+                .availableAt(availableAt)
+                .payloadJson("{}")
+                .build();
+        insertEvent(delayed);
+
+        AtomicReference<EventEnvelope> captured = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        DefaultListenerRegistry listeners = new DefaultListenerRegistry()
+                .register("DelayedRecon", e -> {
+                    captured.set(e);
+                    latch.countDown();
+                });
+
+        OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+                .connectionProvider(connectionProvider)
+                .outboxStore(outboxStore)
+                .listenerRegistry(listeners)
+                .retryPolicy(attempts -> 0L)
+                .workerCount(1)
+                .hotQueueCapacity(10)
+                .coldQueueCapacity(10)
+                .build();
+
+        try (OutboxPoller poller = OutboxPoller.builder()
+                .connectionProvider(connectionProvider)
+                .outboxStore(outboxStore)
+                .handler(new DispatcherPollerHandler(dispatcher))
+                .skipRecent(Duration.ZERO)
+                .batchSize(10)
+                .intervalMs(10)
+                .build()) {
+            poller.poll();
+            latch.await(2, TimeUnit.SECONDS);
+        }
+
+        assertNotNull(captured.get(), "Listener should have received the event");
+        assertEquals(availableAt, captured.get().availableAt(),
+                "convertToEnvelope should reconstruct availableAt from OutboxEvent");
+        assertEquals(delayed.occurredAt(), captured.get().occurredAt(),
+                "convertToEnvelope should reconstruct occurredAt from OutboxEvent");
+
+        dispatcher.close();
+    }
+
+    @Test
+    void pollerReconstructsNullAvailableAtAsImmediateEvent() throws Exception {
+        // Immediate event: availableAt == occurredAt (no delay)
+        Instant occurredAt = Instant.now().minusSeconds(60).truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+        EventEnvelope immediate = EventEnvelope.builder("ImmediateRecon")
+                .eventId("evt-imm-recon")
+                .occurredAt(occurredAt)
+                .payloadJson("{}")
+                .build();
+        insertEvent(immediate);
+
+        AtomicReference<EventEnvelope> captured = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        DefaultListenerRegistry listeners = new DefaultListenerRegistry()
+                .register("ImmediateRecon", e -> {
+                    captured.set(e);
+                    latch.countDown();
+                });
+
+        OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+                .connectionProvider(connectionProvider)
+                .outboxStore(outboxStore)
+                .listenerRegistry(listeners)
+                .retryPolicy(attempts -> 0L)
+                .workerCount(1)
+                .hotQueueCapacity(10)
+                .coldQueueCapacity(10)
+                .build();
+
+        try (OutboxPoller poller = OutboxPoller.builder()
+                .connectionProvider(connectionProvider)
+                .outboxStore(outboxStore)
+                .handler(new DispatcherPollerHandler(dispatcher))
+                .skipRecent(Duration.ZERO)
+                .batchSize(10)
+                .intervalMs(10)
+                .build()) {
+            poller.poll();
+            latch.await(2, TimeUnit.SECONDS);
+        }
+
+        assertNotNull(captured.get(), "Listener should have received the event");
+        // For immediate events, availableAt falls back to occurredAt in the store,
+        // so the reconstructed envelope should have availableAt == occurredAt
+        // which means isDelayed() is false
+        assertFalse(captured.get().isDelayed(),
+                "Immediate event should not be marked as delayed after reconstruction");
+
+        dispatcher.close();
+    }
+
+    @Test
+    void claimModeReconstructsAvailableAtOnEnvelope() throws Exception {
+        Instant availableAt = Instant.now().minusSeconds(30).truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+        EventEnvelope delayed = EventEnvelope.builder("ClaimRecon")
+                .eventId("evt-claim-recon")
+                .occurredAt(Instant.now().minusSeconds(120).truncatedTo(java.time.temporal.ChronoUnit.MILLIS))
+                .availableAt(availableAt)
+                .payloadJson("{}")
+                .build();
+        insertEvent(delayed);
+
+        AtomicReference<EventEnvelope> captured = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        DefaultListenerRegistry listeners = new DefaultListenerRegistry()
+                .register("ClaimRecon", e -> {
+                    captured.set(e);
+                    latch.countDown();
+                });
+
+        OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+                .connectionProvider(connectionProvider)
+                .outboxStore(outboxStore)
+                .listenerRegistry(listeners)
+                .retryPolicy(attempts -> 0L)
+                .workerCount(1)
+                .hotQueueCapacity(10)
+                .coldQueueCapacity(10)
+                .build();
+
+        try (OutboxPoller poller = OutboxPoller.builder()
+                .connectionProvider(connectionProvider)
+                .outboxStore(outboxStore)
+                .handler(new DispatcherPollerHandler(dispatcher))
+                .skipRecent(Duration.ZERO)
+                .batchSize(10)
+                .intervalMs(10)
+                .claimLocking("recon-owner", Duration.ofMinutes(5))
+                .build()) {
+            poller.poll();
+            latch.await(2, TimeUnit.SECONDS);
+        }
+
+        assertNotNull(captured.get(), "Listener should have received the event");
+        assertEquals(availableAt, captured.get().availableAt(),
+                "Claim-mode convertToEnvelope should reconstruct availableAt");
+
+        dispatcher.close();
+    }
+
+    @Test
     void startIsIdempotent() {
         OutboxDispatcher dispatcher = OutboxDispatcher.builder()
                 .connectionProvider(connectionProvider)

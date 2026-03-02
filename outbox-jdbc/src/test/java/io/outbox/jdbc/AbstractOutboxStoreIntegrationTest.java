@@ -322,6 +322,86 @@ abstract class AbstractOutboxStoreIntegrationTest {
     }
 
     @Test
+    void claimPendingExcludesDelayedEvents() throws Exception {
+        Instant future = Instant.now().plusSeconds(3600);
+        EventEnvelope delayed = EventEnvelope.builder("ClaimDelayed")
+                .payloadJson("{}")
+                .availableAt(future)
+                .build();
+        EventEnvelope immediate = EventEnvelope.ofJson("ClaimImmediate", "{}");
+
+        try (Connection conn = dataSource().getConnection()) {
+            conn.setAutoCommit(true);
+            store().insertNew(conn, delayed);
+            store().insertNew(conn, immediate);
+
+            Instant now = Instant.now();
+            Instant lockExpiry = now.minusSeconds(60);
+            List<OutboxEvent> claimed = store().claimPending(conn, "owner-1", now, lockExpiry, Duration.ZERO, 10);
+            assertEquals(1, claimed.size());
+            assertEquals(immediate.eventId(), claimed.get(0).eventId());
+        }
+    }
+
+    @Test
+    void claimPendingExcludesRetryWithFutureAvailableAt() throws Exception {
+        EventEnvelope envelope = EventEnvelope.ofJson("ClaimRetry", "{}");
+
+        try (Connection conn = dataSource().getConnection()) {
+            conn.setAutoCommit(true);
+            store().insertNew(conn, envelope);
+
+            // Mark retry with future available_at
+            Instant futureAt = Instant.now().plusSeconds(3600);
+            store().markRetry(conn, envelope.eventId(), futureAt, "will retry later");
+
+            Instant now = Instant.now();
+            Instant lockExpiry = now.minusSeconds(60);
+            List<OutboxEvent> claimed = store().claimPending(conn, "owner-1", now, lockExpiry, Duration.ZERO, 10);
+            assertTrue(claimed.isEmpty(), "claimPending should exclude events with future available_at from markRetry");
+        }
+    }
+
+    @Test
+    void claimPendingExcludesDeferredWithFutureAvailableAt() throws Exception {
+        EventEnvelope envelope = EventEnvelope.ofJson("ClaimDefer", "{}");
+
+        try (Connection conn = dataSource().getConnection()) {
+            conn.setAutoCommit(true);
+            store().insertNew(conn, envelope);
+
+            // Defer with future available_at
+            Instant futureAt = Instant.now().plusSeconds(3600);
+            store().markDeferred(conn, envelope.eventId(), futureAt);
+
+            Instant now = Instant.now();
+            Instant lockExpiry = now.minusSeconds(60);
+            List<OutboxEvent> claimed = store().claimPending(conn, "owner-1", now, lockExpiry, Duration.ZERO, 10);
+            assertTrue(claimed.isEmpty(), "claimPending should exclude events with future available_at from markDeferred");
+        }
+    }
+
+    @Test
+    void claimPendingIncludesEventsAfterAvailableAtPasses() throws Exception {
+        EventEnvelope envelope = EventEnvelope.ofJson("ClaimAfterDelay", "{}");
+
+        try (Connection conn = dataSource().getConnection()) {
+            conn.setAutoCommit(true);
+            store().insertNew(conn, envelope);
+
+            // Defer to a past time (simulating delay has elapsed)
+            Instant pastAt = Instant.now().minusSeconds(10);
+            store().markDeferred(conn, envelope.eventId(), pastAt);
+
+            Instant now = Instant.now();
+            Instant lockExpiry = now.minusSeconds(60);
+            List<OutboxEvent> claimed = store().claimPending(conn, "owner-1", now, lockExpiry, Duration.ZERO, 10);
+            assertEquals(1, claimed.size(), "claimPending should include events whose available_at has passed");
+            assertEquals(envelope.eventId(), claimed.get(0).eventId());
+        }
+    }
+
+    @Test
     void autoDetectFromDataSource() {
         AbstractJdbcOutboxStore detected = JdbcOutboxStores.detect(dataSource());
         assertEquals(store().name(), detected.name());

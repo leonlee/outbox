@@ -39,9 +39,11 @@ public interface AggregateType {
      * Returns the string representation of this aggregate type.
      * This value is persisted to the database.
      *
+     * <p>Enum implementations inherit {@link Enum#name()} automatically.
+     * Non-enum implementations (records, classes) must override this method
+     * to return a stable, human-readable name.
+     *
      * @return the aggregate type name, never null
      */
-    default String name() {
-        return this.getClass().getName();
-    }
+    String name();
 }

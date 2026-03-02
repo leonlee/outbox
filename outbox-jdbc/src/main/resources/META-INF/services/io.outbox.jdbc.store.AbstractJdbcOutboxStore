@@ -1,0 +1,3 @@
+io.outbox.jdbc.store.MySqlOutboxStore
+io.outbox.jdbc.store.PostgresOutboxStore
+io.outbox.jdbc.store.H2OutboxStore

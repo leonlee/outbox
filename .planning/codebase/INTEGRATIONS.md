@@ -32,10 +32,10 @@ their own implementations.
 
 **Connection Management:**
 
-- Abstraction: `outbox.spi.ConnectionProvider` interface
-- Implementation: `outbox.jdbc.DataSourceConnectionProvider` - wraps `javax.sql.DataSource`
+- Abstraction: `io.outbox.spi.ConnectionProvider` interface
+- Implementation: `io.outbox.jdbc.DataSourceConnectionProvider` - wraps `javax.sql.DataSource`
 - Pool: Optional `com.zaxxer.HikariCP` 5.1.0 (used in benchmarks, not required)
-- Spring Integration: `outbox.spring.SpringTxContext` bridges Spring's `DataSourceUtils` for Spring-managed connections
+- Spring Integration: `io.outbox.spring.SpringTxContext` bridges Spring's `DataSourceUtils` for Spring-managed connections
 
 **Schema:**
 
@@ -78,12 +78,12 @@ No caching layer or distributed cache integration. In-flight event deduplication
 
 **Abstraction Layer:**
 
-- Interface: `outbox.spi.TxContext`
+- Interface: `io.outbox.spi.TxContext`
 - Implementations:
-    - `outbox.jdbc.tx.ThreadLocalTxContext` - Manual JDBC transaction management (ThreadLocal storage of active
+    - `io.outbox.jdbc.tx.ThreadLocalTxContext` - Manual JDBC transaction management (ThreadLocal storage of active
       connection + transaction state)
-    - `outbox.jdbc.tx.JdbcTransactionManager` - Executor for manual commit/rollback
-    - `outbox.spring.SpringTxContext` - Spring Framework integration (`TransactionSynchronizationManager`,
+    - `io.outbox.jdbc.tx.JdbcTransactionManager` - Executor for manual commit/rollback
+    - `io.outbox.spring.SpringTxContext` - Spring Framework integration (`TransactionSynchronizationManager`,
       `DataSourceUtils`)
 
 **Lifecycle:**
@@ -95,7 +95,7 @@ No caching layer or distributed cache integration. In-flight event deduplication
 
 **Spring Integration:**
 
-- Class: `outbox.spring.SpringTxContext`
+- Class: `io.outbox.spring.SpringTxContext`
 - Depends on: `org.springframework:spring-jdbc`, `org.springframework:spring-tx` (provided scope)
 - Usage: Registered in Spring config (see `OutboxConfiguration` in samples)
 - Bridges: Obtains connections via `DataSourceUtils.getConnection()` and registers callbacks via
@@ -105,8 +105,8 @@ No caching layer or distributed cache integration. In-flight event deduplication
 
 **Metrics Export:**
 
-- Interface: `outbox.spi.MetricsExporter`
-- Implementation: `outbox.micrometer.MicrometerMetricsExporter` (Micrometer bridge)
+- Interface: `io.outbox.spi.MetricsExporter`
+- Implementation: `io.outbox.micrometer.MicrometerMetricsExporter` (Micrometer bridge)
 - Library: `io.micrometer:micrometer-core` 1.14.5 (provided scope - optional)
 
 **Exported Metrics:**
@@ -237,49 +237,49 @@ None for the framework itself. Applications using the framework configure via:
 
 The framework defines several extension interfaces for custom implementations:
 
-**`outbox.spi.TxContext`**
+**`io.outbox.spi.TxContext`**
 
 - Purpose: Abstract transaction lifecycle
 - Used by: `OutboxWriter`, `OutboxDispatcher`
 - Implementations: `ThreadLocalTxContext`, `SpringTxContext`
 
-**`outbox.spi.ConnectionProvider`**
+**`io.outbox.spi.ConnectionProvider`**
 
 - Purpose: Abstract connection acquisition
 - Used by: `OutboxDispatcher`, `OutboxPoller`, `DeadEventManager`
 - Implementation: `DataSourceConnectionProvider`
 
-**`outbox.spi.OutboxStore`**
+**`io.outbox.spi.OutboxStore`**
 
 - Purpose: Persistence contract (insert, mark done/retry/dead, poll, claim)
 - Used by: `OutboxWriter`, `OutboxDispatcher`, `OutboxPoller`
 - Implementation: `AbstractJdbcOutboxStore` hierarchy (H2, MySQL, PostgreSQL)
 
-**`outbox.spi.EventPurger`**
+**`io.outbox.spi.EventPurger`**
 
 - Purpose: Purge old/terminal events
 - Used by: `OutboxPurgeScheduler`
 - Implementations: `AbstractJdbcEventPurger` hierarchy (status-based), `AbstractJdbcAgeBasedPurger` hierarchy (CDC mode)
 
-**`outbox.spi.MetricsExporter`**
+**`io.outbox.spi.MetricsExporter`**
 
 - Purpose: Export metrics
 - Used by: `OutboxDispatcher`, `OutboxPoller`, `DispatcherWriterHook`
 - Implementation: `MicrometerMetricsExporter`
 
-**`outbox.util.JsonCodec`**
+**`io.outbox.util.JsonCodec`**
 
 - Purpose: Serialize/deserialize event headers (Map<String,String> ↔ JSON)
 - Used by: `AbstractJdbcOutboxStore`, `OutboxPoller`
 - Implementation: `DefaultJsonCodec` (built-in, zero-dependency)
 
-**`outbox.EventListener`**
+**`io.outbox.EventListener`**
 
 - Purpose: Handle dispatched events
 - Used by: `OutboxDispatcher` (via `ListenerRegistry`)
 - User-provided: Applications implement to handle events
 
-**`outbox.dispatch.EventInterceptor`**
+**`io.outbox.dispatch.EventInterceptor`**
 
 - Purpose: Cross-cutting hooks (audit, logging, metrics)
 - Used by: `OutboxDispatcher` (before/after dispatch)

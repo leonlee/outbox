@@ -7,7 +7,7 @@
 **Files:**
 
 - Classes: `UpperCamelCase` (e.g., `OutboxWriter.java`, `EventEnvelope.java`)
-- Packages: lowercase dot-separated, feature-scoped (e.g., `outbox.dispatch`, `outbox.registry`, `outbox.jdbc.store`)
+- Packages: lowercase dot-separated, feature-scoped (e.g., `io.outbox.dispatch`, `io.outbox.registry`, `io.outbox.jdbc.store`)
 - Test files: Class name + `Test` suffix (e.g., `OutboxWriterTest.java`)
 - Integration tests: Class name + `IntegrationTest` suffix (e.g., `SpringAdapterIntegrationTest.java`)
 
@@ -64,7 +64,7 @@ private EventEnvelope(Builder builder) {
 1. `package` declaration
 2. Blank line
 3. `import` statements (organized by domain)
-    - Within-project imports (`outbox.*`) first
+    - Within-project imports (`io.outbox.*`) first
     - External imports (`com.github.f4b6a3.*`, `javax.sql.*`) next
     - Java standard library (`java.*`) last
     - No wildcard imports
@@ -76,10 +76,10 @@ private EventEnvelope(Builder builder) {
 - No aliasing used; fully qualified names
 - Example from `OutboxWriter.java`:
   ```java
-  package outbox;
+  package io.outbox;
 
-  import outbox.spi.OutboxStore;
-  import outbox.spi.TxContext;
+  import io.outbox.spi.OutboxStore;
+  import io.outbox.spi.TxContext;
 
   import java.sql.Connection;
   import java.util.ArrayList;
@@ -200,7 +200,7 @@ public final class ExponentialBackoffRetryPolicy implements RetryPolicy {
 **Package-level documentation:**
 
 - Use `package-info.java` in each package with module overview
-- Example: `outbox-core/src/main/java/outbox/package-info.java` documents main API entry points
+- Example: `outbox-core/src/main/java/io/outbox/package-info.java` documents main API entry points
 
 ## Function Design
 
@@ -249,10 +249,10 @@ public List<String> writeAll(List<EventEnvelope> events) {
 
 **Exports:**
 
-- Each module has a clear public API in root package (e.g., `outbox.OutboxWriter`, `outbox.spi.OutboxStore`)
-- SPI interfaces in `spi` sub-package (e.g., `outbox.spi.TxContext`, `outbox.spi.OutboxStore`)
-- Feature implementations in feature packages (e.g., `outbox.dispatch.*`, `outbox.poller.*`)
-- Utilities in `util` sub-package (e.g., `outbox.util.JsonCodec`)
+- Each module has a clear public API in root package (e.g., `io.outbox.OutboxWriter`, `io.outbox.spi.OutboxStore`)
+- SPI interfaces in `spi` sub-package (e.g., `io.outbox.spi.TxContext`, `io.outbox.spi.OutboxStore`)
+- Feature implementations in feature packages (e.g., `io.outbox.dispatch.*`, `io.outbox.poller.*`)
+- Utilities in `util` sub-package (e.g., `io.outbox.util.JsonCodec`)
 
 **Barrel Files:**
 
@@ -262,7 +262,7 @@ public List<String> writeAll(List<EventEnvelope> events) {
 **Package Structure Example:**
 
 ```
-outbox-core/src/main/java/outbox/
+outbox-core/src/main/java/io/outbox/
 ├── package-info.java          # Root API docs
 ├── Outbox.java                # Composite builder (main entry point)
 ├── OutboxWriter.java          # Main API
@@ -294,7 +294,7 @@ outbox-core/src/main/java/outbox/
     └── DaemonThreadFactory.java
 ```
 
-**JDBC Implementation Package (`outbox.jdbc`):**
+**JDBC Implementation Package (`io.outbox.jdbc`):**
 
 - Root: JdbcTemplate, DataSourceConnectionProvider, TableNames, OutboxStoreException
 - `store/`: AbstractJdbcOutboxStore hierarchy (H2/MySQL/PostgreSQL subclasses)

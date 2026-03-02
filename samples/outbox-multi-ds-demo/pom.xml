@@ -38,7 +38,7 @@
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
                 <configuration>
-                    <mainClass>outbox.demo.multids.MultiDatasourceDemo</mainClass>
+                    <mainClass>io.outbox.demo.multids.MultiDatasourceDemo</mainClass>
                 </configuration>
             </plugin>
         </plugins>

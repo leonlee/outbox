@@ -96,16 +96,16 @@ Core interfaces, hooks, dispatcher, poller, and registries. **Zero external depe
 
 Packages:
 
-- `outbox` - Main API: Outbox (composite builder), OutboxWriter, EventEnvelope, EventType, AggregateType, EventListener,
+- `io.outbox` - Main API: Outbox (composite builder), OutboxWriter, EventEnvelope, EventType, AggregateType, EventListener,
   DispatchResult, RetryAfterException, WriterHook
-- `outbox.spi` - Extension point interfaces: TxContext, ConnectionProvider, OutboxStore, EventPurger, MetricsExporter
-- `outbox.model` - Domain objects: OutboxEvent, EventStatus
-- `outbox.dispatch` - OutboxDispatcher, retry policy, inflight tracking
-- `outbox.poller` - OutboxPoller, OutboxPollerHandler
-- `outbox.registry` - Listener registry
-- `outbox.purge` - OutboxPurgeScheduler (scheduled purge of terminal events)
-- `outbox.dead` - DeadEventManager (connection-managed facade for dead event queries)
-- `outbox.util` - JsonCodec (interface), DefaultJsonCodec (built-in zero-dependency implementation)
+- `io.outbox.spi` - Extension point interfaces: TxContext, ConnectionProvider, OutboxStore, EventPurger, MetricsExporter
+- `io.outbox.model` - Domain objects: OutboxEvent, EventStatus
+- `io.outbox.dispatch` - OutboxDispatcher, retry policy, inflight tracking
+- `io.outbox.poller` - OutboxPoller, OutboxPollerHandler
+- `io.outbox.registry` - Listener registry
+- `io.outbox.purge` - OutboxPurgeScheduler (scheduled purge of terminal events)
+- `io.outbox.dead` - DeadEventManager (connection-managed facade for dead event queries)
+- `io.outbox.util` - JsonCodec (interface), DefaultJsonCodec (built-in zero-dependency implementation)
 
 ### 2.2 outbox-jdbc
 
@@ -113,14 +113,14 @@ JDBC outbox store hierarchy, event purger hierarchy, and manual transaction help
 
 Packages:
 
-- `outbox.jdbc` — Shared utilities: JdbcTemplate, OutboxStoreException, DataSourceConnectionProvider
-- `outbox.jdbc.store` — OutboxStore hierarchy (ServiceLoader-registered)
-- `outbox.jdbc.purge` — EventPurger hierarchy
-- `outbox.jdbc.tx` — Transaction management
+- `io.outbox.jdbc` — Shared utilities: JdbcTemplate, OutboxStoreException, DataSourceConnectionProvider
+- `io.outbox.jdbc.store` — OutboxStore hierarchy (ServiceLoader-registered)
+- `io.outbox.jdbc.purge` — EventPurger hierarchy
+- `io.outbox.jdbc.tx` — Transaction management
 
 Classes by package:
 
-**`outbox.jdbc.store`**
+**`io.outbox.jdbc.store`**
 
 - `AbstractJdbcOutboxStore` - Base outbox store with shared SQL, row mapper, and H2-compatible default claim
 - `H2OutboxStore` - H2 (inherits default subquery-based claim)
@@ -128,19 +128,19 @@ Classes by package:
 - `PostgresOutboxStore` - PostgreSQL (FOR UPDATE SKIP LOCKED + RETURNING claim)
 - `JdbcOutboxStores` - ServiceLoader registry with `detect(DataSource)` auto-detection
 
-**`outbox.jdbc.purge`**
+**`io.outbox.jdbc.purge`**
 
 - `AbstractJdbcEventPurger` - Base event purger with subquery-based DELETE (H2/PostgreSQL default)
 - `H2EventPurger` - H2 (inherits default)
 - `MySqlEventPurger` - MySQL/TiDB (DELETE...ORDER BY...LIMIT)
 - `PostgresEventPurger` - PostgreSQL (inherits default)
 
-**`outbox.jdbc.tx`**
+**`io.outbox.jdbc.tx`**
 
 - `ThreadLocalTxContext` - ThreadLocal-based TxContext for manual transactions
 - `JdbcTransactionManager` - Helper for manual JDBC transactions
 
-**`outbox.jdbc`** (root)
+**`io.outbox.jdbc`** (root)
 
 - `JdbcTemplate` - Lightweight JDBC helper (update, query, updateReturning)
 - `OutboxStoreException` - JDBC-layer exception
@@ -1352,7 +1352,7 @@ default int countDead(Connection conn, String eventType);
 
 ### 18.3 DeadEventManager
 
-`DeadEventManager` (`outbox.dead`) is a convenience facade that manages connection lifecycle internally using a
+`DeadEventManager` (`io.outbox.dead`) is a convenience facade that manages connection lifecycle internally using a
 `ConnectionProvider`:
 
 ```java

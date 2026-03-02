@@ -107,14 +107,14 @@ The simplest way to set up the outbox — `Outbox.singleNode()` wires the dispat
 poller, and writer into a single `AutoCloseable`:
 
 ```java
-import outbox.Outbox;
-import outbox.OutboxWriter;
-import outbox.EventEnvelope;
-import outbox.registry.DefaultListenerRegistry;
-import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.store.JdbcOutboxStores;
-import outbox.jdbc.tx.JdbcTransactionManager;
-import outbox.jdbc.tx.ThreadLocalTxContext;
+import io.outbox.Outbox;
+import io.outbox.OutboxWriter;
+import io.outbox.EventEnvelope;
+import io.outbox.registry.DefaultListenerRegistry;
+import io.outbox.jdbc.DataSourceConnectionProvider;
+import io.outbox.jdbc.store.JdbcOutboxStores;
+import io.outbox.jdbc.tx.JdbcTransactionManager;
+import io.outbox.jdbc.tx.ThreadLocalTxContext;
 
 import javax.sql.DataSource;
 
@@ -158,19 +158,19 @@ For custom `InFlightTracker`, per-component lifecycle, or other advanced scenari
 wire the components individually:
 
 ```java
-import outbox.EventEnvelope;
-import outbox.OutboxWriter;
-import outbox.spi.MetricsExporter;
-import outbox.dispatch.DispatcherWriterHook;
-import outbox.dispatch.DispatcherPollerHandler;
-import outbox.dispatch.EventInterceptor;
-import outbox.dispatch.OutboxDispatcher;
-import outbox.poller.OutboxPoller;
-import outbox.registry.DefaultListenerRegistry;
-import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.store.JdbcOutboxStores;
-import outbox.jdbc.tx.JdbcTransactionManager;
-import outbox.jdbc.tx.ThreadLocalTxContext;
+import io.outbox.EventEnvelope;
+import io.outbox.OutboxWriter;
+import io.outbox.spi.MetricsExporter;
+import io.outbox.dispatch.DispatcherWriterHook;
+import io.outbox.dispatch.DispatcherPollerHandler;
+import io.outbox.dispatch.EventInterceptor;
+import io.outbox.dispatch.OutboxDispatcher;
+import io.outbox.poller.OutboxPoller;
+import io.outbox.registry.DefaultListenerRegistry;
+import io.outbox.jdbc.DataSourceConnectionProvider;
+import io.outbox.jdbc.store.JdbcOutboxStores;
+import io.outbox.jdbc.tx.JdbcTransactionManager;
+import io.outbox.jdbc.tx.ThreadLocalTxContext;
 
 import javax.sql.DataSource;
 import java.time.Duration;
@@ -226,18 +226,18 @@ commit();
 ## 3. Full End-to-End Example (H2 In-Memory)
 
 ```java
-import outbox.EventEnvelope;
-import outbox.OutboxWriter;
-import outbox.spi.MetricsExporter;
-import outbox.dispatch.DispatcherWriterHook;
-import outbox.dispatch.DispatcherPollerHandler;
-import outbox.dispatch.OutboxDispatcher;
-import outbox.poller.OutboxPoller;
-import outbox.registry.DefaultListenerRegistry;
-import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.store.H2OutboxStore;
-import outbox.jdbc.tx.JdbcTransactionManager;
-import outbox.jdbc.tx.ThreadLocalTxContext;
+import io.outbox.EventEnvelope;
+import io.outbox.OutboxWriter;
+import io.outbox.spi.MetricsExporter;
+import io.outbox.dispatch.DispatcherWriterHook;
+import io.outbox.dispatch.DispatcherPollerHandler;
+import io.outbox.dispatch.OutboxDispatcher;
+import io.outbox.poller.OutboxPoller;
+import io.outbox.registry.DefaultListenerRegistry;
+import io.outbox.jdbc.DataSourceConnectionProvider;
+import io.outbox.jdbc.store.H2OutboxStore;
+import io.outbox.jdbc.tx.JdbcTransactionManager;
+import io.outbox.jdbc.tx.ThreadLocalTxContext;
 
 import org.h2.jdbcx.JdbcDataSource;
 
@@ -321,9 +321,9 @@ public final class OutboxExample {
 You can use enums (or any class) implementing `EventType` and `AggregateType` for compile-time safety:
 
 ```java
-import outbox.AggregateType;
-import outbox.EventEnvelope;
-import outbox.EventType;
+import io.outbox.AggregateType;
+import io.outbox.EventEnvelope;
+import io.outbox.EventType;
 
 enum UserEvents implements EventType {
     USER_CREATED;
@@ -568,19 +568,19 @@ control over bean wiring or are not using Spring Boot.
 Wire all outbox beans in a `@Configuration` class:
 
 ```java
-import outbox.OutboxWriter;
-import outbox.dispatch.DefaultInFlightTracker;
-import outbox.dispatch.DispatcherWriterHook;
-import outbox.dispatch.DispatcherPollerHandler;
-import outbox.dispatch.EventInterceptor;
-import outbox.dispatch.OutboxDispatcher;
-import outbox.poller.OutboxPoller;
-import outbox.registry.DefaultListenerRegistry;
-import outbox.spi.TxContext;
-import outbox.spring.SpringTxContext;
-import outbox.jdbc.store.AbstractJdbcOutboxStore;
-import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.store.JdbcOutboxStores;
+import io.outbox.OutboxWriter;
+import io.outbox.dispatch.DefaultInFlightTracker;
+import io.outbox.dispatch.DispatcherWriterHook;
+import io.outbox.dispatch.DispatcherPollerHandler;
+import io.outbox.dispatch.EventInterceptor;
+import io.outbox.dispatch.OutboxDispatcher;
+import io.outbox.poller.OutboxPoller;
+import io.outbox.registry.DefaultListenerRegistry;
+import io.outbox.spi.TxContext;
+import io.outbox.spring.SpringTxContext;
+import io.outbox.jdbc.store.AbstractJdbcOutboxStore;
+import io.outbox.jdbc.DataSourceConnectionProvider;
+import io.outbox.jdbc.store.JdbcOutboxStores;
 
 import javax.sql.DataSource;
 import java.time.Duration;
@@ -771,8 +771,8 @@ OutboxWriter writer = outbox.writer();
 ### Manual wiring (advanced)
 
 ```java
-import outbox.OutboxWriter;
-import outbox.WriterHook;
+import io.outbox.OutboxWriter;
+import io.outbox.WriterHook;
 
 OutboxWriter writer = new OutboxWriter(txContext, outboxStore);
 // or: new OutboxWriter(txContext, outboxStore, WriterHook.NOOP)
@@ -937,9 +937,9 @@ degrade poller query performance. `OutboxPurgeScheduler` periodically deletes th
 ### Basic Setup
 
 ```java
-import outbox.purge.OutboxPurgeScheduler;
-import outbox.jdbc.purge.H2EventPurger;   // or MySqlEventPurger, PostgresEventPurger
-import outbox.jdbc.DataSourceConnectionProvider;
+import io.outbox.purge.OutboxPurgeScheduler;
+import io.outbox.jdbc.purge.H2EventPurger;   // or MySqlEventPurger, PostgresEventPurger
+import io.outbox.jdbc.DataSourceConnectionProvider;
 
 import java.time.Duration;
 
@@ -1093,9 +1093,9 @@ import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 import io.opentelemetry.context.propagation.TextMapGetter;
 
-import outbox.dispatch.EventInterceptor;
-import outbox.model.OutboxEvent;
-import outbox.util.JsonCodec;
+import io.outbox.dispatch.EventInterceptor;
+import io.outbox.model.OutboxEvent;
+import io.outbox.util.JsonCodec;
 
 Tracer tracer = GlobalOpenTelemetry.getTracer("outbox-dispatcher");
 
@@ -1179,9 +1179,9 @@ connection-managed facade to query, replay, and count these events.
 ### Setup
 
 ```java
-import outbox.dead.DeadEventManager;
-import outbox.jdbc.DataSourceConnectionProvider;
-import outbox.jdbc.store.JdbcOutboxStores;
+import io.outbox.dead.DeadEventManager;
+import io.outbox.jdbc.DataSourceConnectionProvider;
+import io.outbox.jdbc.store.JdbcOutboxStores;
 
 DataSource dataSource = /* your DataSource */;
 var connectionProvider = new DataSourceConnectionProvider(dataSource);
@@ -1273,7 +1273,7 @@ Micrometer `MeterRegistry` for export to Prometheus, Grafana, Datadog, etc.
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
-import outbox.micrometer.MicrometerMetricsExporter;
+import io.outbox.micrometer.MicrometerMetricsExporter;
 
 MeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
 MicrometerMetricsExporter metrics = new MicrometerMetricsExporter(registry);
@@ -1375,7 +1375,7 @@ classpath, you can replace it for better performance or compatibility.
 ```java
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import outbox.util.JsonCodec;
+import io.outbox.util.JsonCodec;
 
 import java.util.Collections;
 import java.util.Map;

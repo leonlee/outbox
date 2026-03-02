@@ -1,0 +1,206 @@
+package io.outbox.micrometer;
+
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.DistributionSummary;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+class MicrometerMetricsExporterTest {
+
+    private SimpleMeterRegistry registry;
+    private MicrometerMetricsExporter exporter;
+
+    @BeforeEach
+    void setUp() {
+        registry = new SimpleMeterRegistry();
+        exporter = new MicrometerMetricsExporter(registry);
+    }
+
+    @Test
+    void incrementHotEnqueued() {
+        exporter.incrementHotEnqueued();
+        exporter.incrementHotEnqueued();
+        assertEquals(2.0, counter("outbox.enqueue.hot").count());
+    }
+
+    @Test
+    void incrementHotDropped() {
+        exporter.incrementHotDropped();
+        assertEquals(1.0, counter("outbox.enqueue.hot.dropped").count());
+    }
+
+    @Test
+    void incrementColdEnqueued() {
+        exporter.incrementColdEnqueued();
+        exporter.incrementColdEnqueued();
+        exporter.incrementColdEnqueued();
+        assertEquals(3.0, counter("outbox.enqueue.cold").count());
+    }
+
+    @Test
+    void incrementDispatchSuccess() {
+        exporter.incrementDispatchSuccess();
+        assertEquals(1.0, counter("outbox.dispatch.success").count());
+    }
+
+    @Test
+    void incrementDispatchFailure() {
+        exporter.incrementDispatchFailure();
+        assertEquals(1.0, counter("outbox.dispatch.failure").count());
+    }
+
+    @Test
+    void incrementDispatchDead() {
+        exporter.incrementDispatchDead();
+        assertEquals(1.0, counter("outbox.dispatch.dead").count());
+    }
+
+    @Test
+    void incrementDispatchDeferred() {
+        exporter.incrementDispatchDeferred();
+        exporter.incrementDispatchDeferred();
+        assertEquals(2.0, counter("outbox.dispatch.deferred").count());
+    }
+
+    @Test
+    void incrementHotSkippedDelayed() {
+        exporter.incrementHotSkippedDelayed();
+        exporter.incrementHotSkippedDelayed();
+        exporter.incrementHotSkippedDelayed();
+        assertEquals(3.0, counter("outbox.enqueue.hot.skipped.delayed").count());
+    }
+
+    @Test
+    void recordQueueDepths() {
+        exporter.recordQueueDepths(42, 7);
+        assertEquals(42.0, gauge("outbox.queue.hot.depth").value());
+        assertEquals(7.0, gauge("outbox.queue.cold.depth").value());
+
+        exporter.recordQueueDepths(0, 0);
+        assertEquals(0.0, gauge("outbox.queue.hot.depth").value());
+        assertEquals(0.0, gauge("outbox.queue.cold.depth").value());
+    }
+
+    @Test
+    void recordOldestLagMs() {
+        exporter.recordOldestLagMs(12345L);
+        assertEquals(12345.0, gauge("outbox.lag.oldest.ms").value());
+
+        exporter.recordOldestLagMs(0L);
+        assertEquals(0.0, gauge("outbox.lag.oldest.ms").value());
+    }
+
+    @Test
+    void recordDispatchLatencyMs() {
+        exporter.recordDispatchLatencyMs(50L);
+        exporter.recordDispatchLatencyMs(150L);
+        DistributionSummary summary = summary("outbox.dispatch.latency.ms");
+        assertEquals(2, summary.count());
+        assertEquals(100.0, summary.mean());
+    }
+
+    @Test
+    void recordListenerDurationMs() {
+        exporter.recordListenerDurationMs(10L);
+        exporter.recordListenerDurationMs(30L);
+        DistributionSummary summary = summary("outbox.dispatch.listener.duration.ms");
+        assertEquals(2, summary.count());
+        assertEquals(20.0, summary.mean());
+    }
+
+    @Test
+    void customNamePrefix() {
+        var custom = new MicrometerMetricsExporter(registry, "orders.outbox");
+        custom.incrementHotEnqueued();
+        custom.recordQueueDepths(10, 5);
+        custom.recordOldestLagMs(500L);
+        custom.recordDispatchLatencyMs(42L);
+        custom.recordListenerDurationMs(7L);
+
+        assertEquals(1.0, counter("orders.outbox.enqueue.hot").count());
+        assertEquals(10.0, gauge("orders.outbox.queue.hot.depth").value());
+        assertEquals(5.0, gauge("orders.outbox.queue.cold.depth").value());
+        assertEquals(500.0, gauge("orders.outbox.lag.oldest.ms").value());
+        assertEquals(1, summary("orders.outbox.dispatch.latency.ms").count());
+        assertEquals(1, summary("orders.outbox.dispatch.listener.duration.ms").count());
+    }
+
+    @Test
+    void nullRegistryThrows() {
+        assertThrows(NullPointerException.class, () -> new MicrometerMetricsExporter(null));
+    }
+
+    @Test
+    void nullPrefixThrows() {
+        assertThrows(NullPointerException.class, () -> new MicrometerMetricsExporter(registry, null));
+    }
+
+    @Test
+    void emptyPrefixThrows() {
+        assertThrows(IllegalArgumentException.class, () -> new MicrometerMetricsExporter(registry, ""));
+    }
+
+    @Test
+    void trailingDotPrefixThrows() {
+        assertThrows(IllegalArgumentException.class, () -> new MicrometerMetricsExporter(registry, "outbox."));
+    }
+
+    @Test
+    void closeRemovesAllMeters() {
+        exporter.incrementHotEnqueued();
+        exporter.incrementDispatchDeferred();
+        exporter.incrementHotSkippedDelayed();
+        exporter.recordQueueDepths(5, 3);
+        exporter.recordOldestLagMs(100L);
+        exporter.recordDispatchLatencyMs(10L);
+        exporter.recordListenerDurationMs(5L);
+
+        exporter.close();
+
+        assertNull(registry.find("outbox.enqueue.hot").counter());
+        assertNull(registry.find("outbox.dispatch.deferred").counter());
+        assertNull(registry.find("outbox.enqueue.hot.skipped.delayed").counter());
+        assertNull(registry.find("outbox.queue.hot.depth").gauge());
+        assertNull(registry.find("outbox.lag.oldest.ms").gauge());
+        assertNull(registry.find("outbox.dispatch.latency.ms").summary());
+        assertNull(registry.find("outbox.dispatch.listener.duration.ms").summary());
+    }
+
+    @Test
+    void newExporterAfterCloseReadsFreshGauges() {
+        exporter.recordQueueDepths(99, 88);
+        exporter.close();
+
+        var fresh = new MicrometerMetricsExporter(registry);
+        fresh.recordQueueDepths(1, 2);
+
+        assertEquals(1.0, gauge("outbox.queue.hot.depth").value());
+        assertEquals(2.0, gauge("outbox.queue.cold.depth").value());
+        fresh.close();
+    }
+
+    private Counter counter(String name) {
+        Counter c = registry.find(name).counter();
+        assertNotNull(c, "Counter not found: " + name);
+        return c;
+    }
+
+    private Gauge gauge(String name) {
+        Gauge g = registry.find(name).gauge();
+        assertNotNull(g, "Gauge not found: " + name);
+        return g;
+    }
+
+    private DistributionSummary summary(String name) {
+        DistributionSummary s = registry.find(name).summary();
+        assertNotNull(s, "DistributionSummary not found: " + name);
+        return s;
+    }
+}

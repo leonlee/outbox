@@ -7,7 +7,7 @@
 ```
 outbox/
 ├── outbox-core/                    # Core API, zero external deps (except ULID)
-│   ├── src/main/java/outbox/
+│   ├── src/main/java/io/outbox/
 │   │   ├── Outbox.java            # Composite builder (singleNode/multiNode/ordered/writerOnly)
 │   │   ├── OutboxWriter.java      # Primary write entry point
 │   │   ├── EventEnvelope.java     # Immutable event with ULID, metadata, payload
@@ -60,10 +60,10 @@ outbox/
 │   │       ├── JsonCodec.java      # Event headers codec interface
 │   │       └── DefaultJsonCodec.java # Zero-dependency JSON codec
 │   │
-│   └── src/test/java/outbox/      # Unit/integration tests (*Test.java)
+│   └── src/test/java/io/outbox/      # Unit/integration tests (*Test.java)
 │
 ├── outbox-jdbc/                    # JDBC persistence & transaction management
-│   ├── src/main/java/outbox/jdbc/
+│   ├── src/main/java/io/outbox/jdbc/
 │   │   ├── JdbcTemplate.java       # Lightweight query helper (update, query, updateReturning)
 │   │   ├── TableNames.java         # Table name validation (regex: [a-zA-Z_][a-zA-Z0-9_]*)
 │   │   ├── OutboxStoreException.java
@@ -75,7 +75,7 @@ outbox/
 │   │   │   ├── MySqlOutboxStore.java # UPDATE...ORDER BY...LIMIT claim
 │   │   │   ├── PostgresOutboxStore.java # FOR UPDATE SKIP LOCKED + RETURNING
 │   │   │   ├── JdbcOutboxStores.java # ServiceLoader registry + detect(DataSource) auto-detection
-│   │   │   └── META-INF/services/outbox.jdbc.store.AbstractJdbcOutboxStore (ServiceLoader)
+│   │   │   └── META-INF/services/io.outbox.jdbc.store.AbstractJdbcOutboxStore (ServiceLoader)
 │   │   │
 │   │   ├── purge/                  # EventPurger JDBC hierarchies
 │   │   │   ├── AbstractJdbcEventPurger.java # Status-based: terminal events only (DONE+DEAD)
@@ -91,17 +91,17 @@ outbox/
 │   │       ├── ThreadLocalTxContext.java # TxContext → ThreadLocal JDBC
 │   │       └── JdbcTransactionManager.java # Manual transaction API
 │   │
-│   └── src/test/java/outbox/jdbc/
+│   └── src/test/java/io/outbox/jdbc/
 │
 ├── outbox-spring-adapter/          # Optional Spring integration
-│   ├── src/main/java/outbox/spring/
+│   ├── src/main/java/io/outbox/spring/
 │   │   └── SpringTxContext.java    # TxContext → Spring PlatformTransactionManager
-│   └── src/test/java/outbox/spring/
+│   └── src/test/java/io/outbox/spring/
 │
 ├── outbox-micrometer/              # Optional Micrometer metrics
-│   ├── src/main/java/outbox/micrometer/
+│   ├── src/main/java/io/outbox/micrometer/
 │   │   └── MicrometerMetricsExporter.java # MetricsExporter → Micrometer counters/gauges
-│   └── src/test/java/outbox/micrometer/
+│   └── src/test/java/io/outbox/micrometer/
 │
 ├── benchmarks/                      # JMH performance benchmarks (not published)
 │   ├── OutboxWriteBenchmark.java
@@ -111,16 +111,16 @@ outbox/
 │
 ├── samples/                         # Example applications
 │   ├── outbox-demo/                # Simple JDBC demo with H2 (no Spring)
-│   │   └── src/main/java/outbox/demo/OutboxDemo.java
+│   │   └── src/main/java/io/outbox/demo/OutboxDemo.java
 │   │
 │   ├── outbox-spring-demo/         # Spring Boot REST API demo
-│   │   └── src/main/java/outbox/demo/spring/
+│   │   └── src/main/java/io/outbox/demo/spring/
 │   │       ├── Application.java
 │   │       ├── EventController.java # POST /events/user-created, /events/order-placed
 │   │       └── OutboxConfiguration.java # @Bean OutboxWriter, EventListener registry
 │   │
 │   └── outbox-multi-ds-demo/       # Multi-datasource demo (Orders + Inventory H2s)
-│       └── src/main/java/outbox/demo/multids/MultiDatasourceDemo.java
+│       └── src/main/java/io/outbox/demo/multids/MultiDatasourceDemo.java
 │
 ├── .planning/                       # GSD planning documents (generated)
 │   └── codebase/                    # ARCHITECTURE.md, STRUCTURE.md, etc.
@@ -178,10 +178,10 @@ outbox/
 
 **Entry Points:**
 
-- `outbox-core/src/main/java/outbox/Outbox.java`: Main composite builder (singleNode, multiNode, ordered, writerOnly)
-- `outbox-core/src/main/java/outbox/OutboxWriter.java`: Event write API (write, writeAll)
-- `samples/outbox-demo/src/main/java/outbox/demo/OutboxDemo.java`: Minimal runnable example
-- `samples/outbox-spring-demo/src/main/java/outbox/demo/spring/Application.java`: Spring Boot demo
+- `outbox-core/src/main/java/io/outbox/Outbox.java`: Main composite builder (singleNode, multiNode, ordered, writerOnly)
+- `outbox-core/src/main/java/io/outbox/OutboxWriter.java`: Event write API (write, writeAll)
+- `samples/outbox-demo/src/main/java/io/outbox/demo/OutboxDemo.java`: Minimal runnable example
+- `samples/outbox-spring-demo/src/main/java/io/outbox/demo/spring/Application.java`: Spring Boot demo
 
 **Configuration:**
 
@@ -194,20 +194,20 @@ outbox/
 
 **Core Logic:**
 
-- `outbox-core/src/main/java/outbox/dispatch/OutboxDispatcher.java`: Dual-queue processor, fair draining
-- `outbox-core/src/main/java/outbox/poller/OutboxPoller.java`: Scheduled poller (single/multi-node modes)
-- `outbox-jdbc/src/main/java/outbox/jdbc/store/AbstractJdbcOutboxStore.java`: Base persistence, subclass overrides for
+- `outbox-core/src/main/java/io/outbox/dispatch/OutboxDispatcher.java`: Dual-queue processor, fair draining
+- `outbox-core/src/main/java/io/outbox/poller/OutboxPoller.java`: Scheduled poller (single/multi-node modes)
+- `outbox-jdbc/src/main/java/io/outbox/jdbc/store/AbstractJdbcOutboxStore.java`: Base persistence, subclass overrides for
   DB-specific claim strategies
-- `outbox-core/src/main/java/outbox/registry/DefaultListenerRegistry.java`: Event routing by (aggregateType, eventType)
+- `outbox-core/src/main/java/io/outbox/registry/DefaultListenerRegistry.java`: Event routing by (aggregateType, eventType)
 
 **Testing:**
 
-- `outbox-core/src/test/java/outbox/`: ~80+ tests (OutboxDispatcherTest, OutboxPollerTest, ListenerRegistryTest,
+- `outbox-core/src/test/java/io/outbox/`: ~80+ tests (OutboxDispatcherTest, OutboxPollerTest, ListenerRegistryTest,
   EventEnvelopeTest, etc.)
-- `outbox-jdbc/src/test/java/outbox/jdbc/`: ~40+ tests (store/tx/purge integrations with H2)
+- `outbox-jdbc/src/test/java/io/outbox/jdbc/`: ~40+ tests (store/tx/purge integrations with H2)
 - Test pattern: H2 in-memory database, *Test suffix, JUnit Jupiter
-- `outbox-spring-adapter/src/test/java/outbox/spring/SpringTxContextTest.java`
-- `outbox-micrometer/src/test/java/outbox/micrometer/MicrometerMetricsExporterTest.java`
+- `outbox-spring-adapter/src/test/java/io/outbox/spring/SpringTxContextTest.java`
+- `outbox-micrometer/src/test/java/io/outbox/micrometer/MicrometerMetricsExporterTest.java`
 
 ## Naming Conventions
 
@@ -219,7 +219,7 @@ outbox/
 
 **Directories:**
 
-- Packages: `outbox.featureName` (e.g., outbox.dispatch, outbox.jdbc.store, outbox.spring)
+- Packages: `io.outbox.featureName` (e.g., io.outbox.dispatch, io.outbox.jdbc.store, io.outbox.spring)
 - Module structure: `outbox-<feature>` (e.g., outbox-core, outbox-jdbc, outbox-spring-adapter)
 
 **Code:**
@@ -233,33 +233,33 @@ outbox/
 
 **New Feature (e.g., event filtering, circuit breaker):**
 
-- Primary code: `outbox-core/src/main/java/outbox/<featureName>/` (new package)
-- Tests: `outbox-core/src/test/java/outbox/<featureName>/<FeatureName>Test.java`
-- Example: EventInterceptor chain → `outbox-core/src/main/java/outbox/dispatch/EventInterceptor.java` (interface)
+- Primary code: `outbox-core/src/main/java/io/outbox/<featureName>/` (new package)
+- Tests: `outbox-core/src/test/java/io/outbox/<featureName>/<FeatureName>Test.java`
+- Example: EventInterceptor chain → `outbox-core/src/main/java/io/outbox/dispatch/EventInterceptor.java` (interface)
 
 **New Component/Module (e.g., Debezium integration):**
 
-- Implementation: `outbox-<component>/src/main/java/outbox/<component>/`
+- Implementation: `outbox-<component>/src/main/java/io/outbox/<component>/`
 - POM: `outbox-<component>/pom.xml`
-- Tests: `outbox-<component>/src/test/java/outbox/<component>/`
+- Tests: `outbox-<component>/src/test/java/io/outbox/<component>/`
 - Register via pom.xml `<modules>` in parent and dependency in samples/other modules as needed
 
 **Utilities:**
 
-- Shared helpers: `outbox-core/src/main/java/outbox/util/` (e.g., DaemonThreadFactory.java, JsonCodec.java)
-- JDBC utilities: `outbox-jdbc/src/main/java/outbox/jdbc/` (root, e.g., JdbcTemplate.java, TableNames.java)
-- Spring-specific: `outbox-spring-adapter/src/main/java/outbox/spring/`
+- Shared helpers: `outbox-core/src/main/java/io/outbox/util/` (e.g., DaemonThreadFactory.java, JsonCodec.java)
+- JDBC utilities: `outbox-jdbc/src/main/java/io/outbox/jdbc/` (root, e.g., JdbcTemplate.java, TableNames.java)
+- Spring-specific: `outbox-spring-adapter/src/main/java/io/outbox/spring/`
 
 **Database-Specific Code:**
 
-- OutboxStore subclass: `outbox-jdbc/src/main/java/outbox/jdbc/store/<Database>OutboxStore.java`
-- EventPurger subclass: `outbox-jdbc/src/main/java/outbox/jdbc/purge/<Database>EventPurger.java` (status-based) or
+- OutboxStore subclass: `outbox-jdbc/src/main/java/io/outbox/jdbc/store/<Database>OutboxStore.java`
+- EventPurger subclass: `outbox-jdbc/src/main/java/io/outbox/jdbc/purge/<Database>EventPurger.java` (status-based) or
   `<Database>AgeBasedPurger.java` (age-based)
-- Register in `META-INF/services/outbox.jdbc.store.AbstractJdbcOutboxStore` (ServiceLoader)
+- Register in `META-INF/services/io.outbox.jdbc.store.AbstractJdbcOutboxStore` (ServiceLoader)
 
 **Samples/Documentation:**
 
-- Demo applications: `samples/outbox-<demo>/src/main/java/outbox/demo/<demo>/`
+- Demo applications: `samples/outbox-<demo>/src/main/java/io/outbox/demo/<demo>/`
 - Docs: Root level `.md` files (README.md, SPEC.md, TUTORIAL.md, CLAUDE.md)
 
 ## Special Directories
@@ -279,7 +279,7 @@ outbox/
 **META-INF/services/:**
 
 - Purpose: ServiceLoader registry for pluggable implementations
-- Location: `outbox-jdbc/target/classes/META-INF/services/outbox.jdbc.store.AbstractJdbcOutboxStore`
+- Location: `outbox-jdbc/target/classes/META-INF/services/io.outbox.jdbc.store.AbstractJdbcOutboxStore`
 - Contains: Fully qualified class names, one per line (H2OutboxStore, MySqlOutboxStore, PostgresOutboxStore)
 - Generated: Yes (built from source)
 - Committed: No (generated at build time)

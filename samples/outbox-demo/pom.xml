@@ -38,7 +38,7 @@
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
                 <configuration>
-                    <mainClass>outbox.demo.OutboxDemo</mainClass>
+                    <mainClass>io.outbox.demo.OutboxDemo</mainClass>
                 </configuration>
             </plugin>
         </plugins>

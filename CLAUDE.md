@@ -43,112 +43,114 @@ are available for advanced wiring.
 
 ```
 outbox-core/src/main/java/
-└── outbox/
-    │  # Main API (root package)
-    ├── Outbox.java (composite builder: singleNode/multiNode/ordered)
-    ├── OutboxWriter.java
-    ├── EventEnvelope.java
-    ├── EventType.java (interface)
-    ├── AggregateType.java (interface)
-    ├── StringEventType.java (record)
-    ├── StringAggregateType.java (record)
-    ├── EventListener.java (interface)
-    ├── DispatchResult.java (sealed interface: Done, RetryAfter)
-    ├── RetryAfterException.java
-    ├── WriterHook.java (interface)
-    │
-    │  # SPI - Extension Point Interfaces
-    ├── spi/
-    │   ├── TxContext.java
-    │   ├── ConnectionProvider.java
-    │   ├── OutboxStore.java
-    │   ├── EventPurger.java
-    │   └── MetricsExporter.java (contains Noop inner class)
-    │
-    │  # Model - Domain objects
-    ├── model/
-    │   ├── OutboxEvent.java (record)
-    │   └── EventStatus.java
-    │
-    │  # Feature Packages
-    ├── dispatch/
-    │   ├── OutboxDispatcher.java
-    │   ├── DispatcherWriterHook.java (WriterHook → hot queue bridge)
-    │   ├── DispatcherPollerHandler.java (OutboxPollerHandler → cold queue bridge)
-    │   ├── RetryPolicy.java (interface)
-    │   ├── ExponentialBackoffRetryPolicy.java
-    │   ├── InFlightTracker.java (interface)
-    │   ├── DefaultInFlightTracker.java
-    │   ├── QueuedEvent.java (record)
-    │   ├── EventInterceptor.java (interface)
-    │   └── UnroutableEventException.java
-    │
-    ├── poller/
-    │   ├── OutboxPoller.java
-    │   └── OutboxPollerHandler.java (interface)
-    │
-    ├── dead/
-    │   └── DeadEventManager.java
-    │
-    ├── purge/
-    │   └── OutboxPurgeScheduler.java
-    │
-    ├── registry/
-    │   ├── ListenerRegistry.java (interface)
-    │   └── DefaultListenerRegistry.java
-    │
-    └── util/
-        ├── DaemonThreadFactory.java
-        ├── JsonCodec.java (interface)
-        └── DefaultJsonCodec.java
+└── io/
+    └── outbox/
+        │  # Main API (root package)
+        ├── Outbox.java (composite builder: singleNode/multiNode/ordered)
+        ├── OutboxWriter.java
+        ├── EventEnvelope.java
+        ├── EventType.java (interface)
+        ├── AggregateType.java (interface)
+        ├── StringEventType.java (record)
+        ├── StringAggregateType.java (record)
+        ├── EventListener.java (interface)
+        ├── DispatchResult.java (sealed interface: Done, RetryAfter)
+        ├── RetryAfterException.java
+        ├── WriterHook.java (interface)
+        │
+        │  # SPI - Extension Point Interfaces
+        ├── spi/
+        │   ├── TxContext.java
+        │   ├── ConnectionProvider.java
+        │   ├── OutboxStore.java
+        │   ├── EventPurger.java
+        │   └── MetricsExporter.java (contains Noop inner class)
+        │
+        │  # Model - Domain objects
+        ├── model/
+        │   ├── OutboxEvent.java (record)
+        │   └── EventStatus.java
+        │
+        │  # Feature Packages
+        ├── dispatch/
+        │   ├── OutboxDispatcher.java
+        │   ├── DispatcherWriterHook.java (WriterHook → hot queue bridge)
+        │   ├── DispatcherPollerHandler.java (OutboxPollerHandler → cold queue bridge)
+        │   ├── RetryPolicy.java (interface)
+        │   ├── ExponentialBackoffRetryPolicy.java
+        │   ├── InFlightTracker.java (interface)
+        │   ├── DefaultInFlightTracker.java
+        │   ├── QueuedEvent.java (record)
+        │   ├── EventInterceptor.java (interface)
+        │   └── UnroutableEventException.java
+        │
+        ├── poller/
+        │   ├── OutboxPoller.java
+        │   └── OutboxPollerHandler.java (interface)
+        │
+        ├── dead/
+        │   └── DeadEventManager.java
+        │
+        ├── purge/
+        │   └── OutboxPurgeScheduler.java
+        │
+        ├── registry/
+        │   ├── ListenerRegistry.java (interface)
+        │   └── DefaultListenerRegistry.java
+        │
+        └── util/
+            ├── DaemonThreadFactory.java
+            ├── JsonCodec.java (interface)
+            └── DefaultJsonCodec.java
 
 outbox-jdbc/src/main/java/
-└── outbox/jdbc/
-    │  # Shared JDBC utilities (root package)
-    ├── JdbcTemplate.java
-    ├── TableNames.java
-    ├── OutboxStoreException.java
-    ├── DataSourceConnectionProvider.java
-    │
-    │  # OutboxStore hierarchy
-    ├── store/
-    │   ├── AbstractJdbcOutboxStore.java
-    │   ├── H2OutboxStore.java
-    │   ├── MySqlOutboxStore.java
-    │   ├── PostgresOutboxStore.java
-    │   └── JdbcOutboxStores.java
-    │
-    │  # EventPurger hierarchy (status-based: terminal events only)
-    ├── purge/
-    │   ├── AbstractJdbcEventPurger.java
-    │   ├── H2EventPurger.java
-    │   ├── MySqlEventPurger.java
-    │   ├── PostgresEventPurger.java
-    │   │  # Age-based purger hierarchy (all events by age, for CDC)
-    │   ├── AbstractJdbcAgeBasedPurger.java
-    │   ├── H2AgeBasedPurger.java
-    │   ├── MySqlAgeBasedPurger.java
-    │   └── PostgresAgeBasedPurger.java
-    │
-    │  # Transaction management
-    └── tx/
-        ├── ThreadLocalTxContext.java
-        └── JdbcTransactionManager.java
+└── io/
+    └── outbox/jdbc/
+        │  # Shared JDBC utilities (root package)
+        ├── JdbcTemplate.java
+        ├── TableNames.java
+        ├── OutboxStoreException.java
+        ├── DataSourceConnectionProvider.java
+        │
+        │  # OutboxStore hierarchy
+        ├── store/
+        │   ├── AbstractJdbcOutboxStore.java
+        │   ├── H2OutboxStore.java
+        │   ├── MySqlOutboxStore.java
+        │   ├── PostgresOutboxStore.java
+        │   └── JdbcOutboxStores.java
+        │
+        │  # EventPurger hierarchy (status-based: terminal events only)
+        ├── purge/
+        │   ├── AbstractJdbcEventPurger.java
+        │   ├── H2EventPurger.java
+        │   ├── MySqlEventPurger.java
+        │   ├── PostgresEventPurger.java
+        │   │  # Age-based purger hierarchy (all events by age, for CDC)
+        │   ├── AbstractJdbcAgeBasedPurger.java
+        │   ├── H2AgeBasedPurger.java
+        │   ├── MySqlAgeBasedPurger.java
+        │   └── PostgresAgeBasedPurger.java
+        │
+        │  # Transaction management
+        └── tx/
+            ├── ThreadLocalTxContext.java
+            └── JdbcTransactionManager.java
 ```
 
 ### Key Abstractions
 
 - **TxContext**: Abstracts transaction lifecycle (`isTransactionActive()`, `currentConnection()`, `afterCommit()`,
-  `afterRollback()`). Implementations: `ThreadLocalTxContext` (`outbox.jdbc.tx`, JDBC), `SpringTxContext` (Spring).
+  `afterRollback()`). Implementations: `ThreadLocalTxContext` (`io.outbox.jdbc.tx`, JDBC), `SpringTxContext` (Spring).
 - **OutboxStore**: Persistence contract (`insertNew`, `insertBatch`, `markDone`, `markRetry`, `markDead`, `markDeferred`,
   `pollPending`, `claimPending`, `queryDead`, `replayDead`, `countDead`). `insertBatch` defaults to looping `insertNew`;
   `AbstractJdbcOutboxStore` overrides with `addBatch/executeBatch`. Implemented by `AbstractJdbcOutboxStore` hierarchy
-  in `outbox.jdbc.store`.
-- **AbstractJdbcOutboxStore** (`outbox.jdbc.store`): Base JDBC outbox store with shared SQL, row mapper, and
+  in `io.outbox.jdbc.store`.
+- **AbstractJdbcOutboxStore** (`io.outbox.jdbc.store`): Base JDBC outbox store with shared SQL, row mapper, and
   H2-compatible default `claimPending`. Subclasses: `H2OutboxStore`, `MySqlOutboxStore` (UPDATE...ORDER BY...LIMIT),
   `PostgresOutboxStore` (FOR UPDATE SKIP LOCKED + RETURNING).
-- **JdbcOutboxStores** (`outbox.jdbc.store`): Static utility with ServiceLoader registry (
-  `META-INF/services/outbox.jdbc.store.AbstractJdbcOutboxStore`) and `detect(DataSource)` auto-detection. Overloaded
+- **JdbcOutboxStores** (`io.outbox.jdbc.store`): Static utility with ServiceLoader registry (
+  `META-INF/services/io.outbox.jdbc.store.AbstractJdbcOutboxStore`) and `detect(DataSource)` auto-detection. Overloaded
   `detect(DataSource, JsonCodec)` creates new instances with a custom codec.
 - **Outbox**: Composite entry point that wires `OutboxWriter` and optionally `OutboxDispatcher`, `OutboxPoller`,
   `OutboxPurgeScheduler` into a single `AutoCloseable`. Four scenario builders via sealed `AbstractBuilder<B>` (CRTP):
@@ -169,7 +171,7 @@ outbox-jdbc/src/main/java/
 - **JsonCodec**: Interface for `Map<String, String>` ↔ JSON encoding/decoding. `DefaultJsonCodec` is the built-in
   zero-dependency implementation (singleton via `JsonCodec.getDefault()`). Injectable into `AbstractJdbcOutboxStore`,
   `OutboxPoller`, and `JdbcOutboxStores.detect()` for users who prefer Jackson/Gson.
-- **TableNames**: Shared utility in `outbox.jdbc` for table name validation (regex `[a-zA-Z_][a-zA-Z0-9_]*`).
+- **TableNames**: Shared utility in `io.outbox.jdbc` for table name validation (regex `[a-zA-Z_][a-zA-Z0-9_]*`).
 - **OutboxWriter**: Primary entry point for writing events. `write()` delegates to `writeAll()`. Lifecycle:
   `WriterHook.beforeWrite` (may transform) → `OutboxStore.insertBatch` → `afterWrite` → tx commit/rollback →
   `afterCommit`/`afterRollback`. Single callback registered per batch. Constructor accepts optional `WriterHook` (
@@ -177,12 +179,12 @@ outbox-jdbc/src/main/java/
 - **WriterHook**: Lifecycle hook for `OutboxWriter` batch writes. Phases: `beforeWrite` (transform, may abort) →
   insert → `afterWrite` (observational) → tx commit/rollback → `afterCommit`/`afterRollback` (swallowed).
   `WriterHook.NOOP` does nothing (poller-only mode).
-- **DispatcherWriterHook** (`outbox.dispatch`): `WriterHook` implementation that bridges to the dispatcher's hot queue.
+- **DispatcherWriterHook** (`io.outbox.dispatch`): `WriterHook` implementation that bridges to the dispatcher's hot queue.
   `afterCommit` enqueues each event individually as `QueuedEvent(event, HOT, 0)`. Skips delayed events
   (`isDelayed()`) — they stay in DB for the poller to deliver at `availableAt`. Accepts optional `MetricsExporter`.
-- **DispatcherPollerHandler** (`outbox.dispatch`): `OutboxPollerHandler` implementation that bridges to the dispatcher's
+- **DispatcherPollerHandler** (`io.outbox.dispatch`): `OutboxPollerHandler` implementation that bridges to the dispatcher's
   cold queue.
-- **QueuedEvent** (`outbox.dispatch`): Simple record `(EventEnvelope envelope, Source source, int attempts)` wrapping a
+- **QueuedEvent** (`io.outbox.dispatch`): Simple record `(EventEnvelope envelope, Source source, int attempts)` wrapping a
   single event with its origin (HOT/COLD) and attempt count.
 - **JdbcTemplate**: Lightweight JDBC helper (`update`, `query`, `updateReturning`) used by `AbstractJdbcOutboxStore`
   subclasses.
@@ -190,15 +192,15 @@ outbox-jdbc/src/main/java/
   as default. Unroutable events (no listener) are immediately marked DEAD.
 - **EventInterceptor**: Cross-cutting before/after hooks for audit, logging, metrics. `beforeDispatch` runs in
   registration order; `afterDispatch` in reverse. Replaces the old wildcard `registerAll()` pattern.
-- **EventPurger**: SPI for deleting events older than a cutoff. Two hierarchies in `outbox.jdbc.purge`: (1)
+- **EventPurger**: SPI for deleting events older than a cutoff. Two hierarchies in `io.outbox.jdbc.purge`: (1)
   status-based — `AbstractJdbcEventPurger` deletes only terminal events (DONE + DEAD), with `MySqlEventPurger` (
   `DELETE...ORDER BY...LIMIT`); (2) age-based — `AbstractJdbcAgeBasedPurger` deletes all events regardless of status (
   for CDC mode), with `MySqlAgeBasedPurger` (`DELETE...ORDER BY...LIMIT`).
 - **OutboxPurgeScheduler**: Scheduled component that purges terminal events on a configurable interval. Builder pattern,
   `AutoCloseable`, daemon threads (same lifecycle as `OutboxPoller`). Loops batches until `count < batchSize`.
-- **DeadEventManager** (`outbox.dead`): Connection-managed facade for querying, counting, and replaying DEAD events.
+- **DeadEventManager** (`io.outbox.dead`): Connection-managed facade for querying, counting, and replaying DEAD events.
   Constructor takes `ConnectionProvider` + `OutboxStore`.
-- **MicrometerMetricsExporter** (`outbox.micrometer`): Micrometer-based `MetricsExporter` implementation with counters
+- **MicrometerMetricsExporter** (`io.outbox.micrometer`): Micrometer-based `MetricsExporter` implementation with counters
   and gauges. Tracks `incrementDispatchDeferred` for handler-deferred events and `incrementHotSkippedDelayed` for
   delayed events bypassing the hot path. Supports custom `namePrefix` for multi-instance use.
 - **DispatchResult**: Sealed interface returned by `EventListener.handleEvent()`. `Done` (singleton) marks event
@@ -224,7 +226,7 @@ outbox-jdbc/src/main/java/
 ## Coding Style
 
 - 2-space indentation, braces on same line
-- Package names: `outbox.<feature>` (e.g., `outbox.dispatch`, `outbox.spi`)
+- Package names: `io.outbox.<feature>` (e.g., `io.outbox.dispatch`, `io.outbox.spi`)
 - Classes: `UpperCamelCase`, methods: `lowerCamelCase`, constants: `UPPER_SNAKE_CASE`
 - No formatter configured; match existing style
 

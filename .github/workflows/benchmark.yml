@@ -86,7 +86,7 @@ jobs:
             -Dbench.pg.password=postgres \
             -jar benchmarks/target/benchmarks.jar \
             -p "database=$BENCH_DATABASE" \
-            -wi 2 -i 3 -f 1 \
+            -wi 3 -i 5 -f 2 \
             -rf json -rff benchmarks/target/jmh-result.json \
             "$BENCH_FILTER"
 

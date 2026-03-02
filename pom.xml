@@ -49,7 +49,7 @@
         <junit.version>5.10.2</junit.version>
         <h2.version>2.2.224</h2.version>
         <spring.version>6.2.15</spring.version>
-        <ulid-creator.version>5.2.3</ulid-creator.version>
+        <ulid-creator.version>5.2.4</ulid-creator.version>
         <spring-boot.version>3.4.2</spring-boot.version>
         <micrometer.version>1.14.5</micrometer.version>
         <mysql-connector.version>9.6.0</mysql-connector.version>

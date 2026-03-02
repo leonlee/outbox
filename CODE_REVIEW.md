@@ -1,6 +1,6 @@
 # Code Review
 
-Full code review of the outbox framework. Last updated: 2026-02-28 (v0.8.4).
+Full code review of the outbox framework. Last updated: 2026-03-02 (v0.9.0).
 
 ## Fixed Issues
 

@@ -1,6 +1,6 @@
 # Code Review
 
-Full code review of the outbox framework. Last updated: 2026-03-02 (v0.9.0).
+Full code review of the outbox framework. Last updated: 2026-03-02 (v0.9.1-SNAPSHOT).
 
 ## Fixed Issues
 
@@ -84,6 +84,33 @@ lone low surrogates are rejected.
 Changed from swallowing exceptions (returning `List.of()` / `0` / `false`) to wrapping
 `SQLException` in `RuntimeException` and letting `RuntimeException` propagate. Callers
 can now distinguish database failures from empty results.
+
+---
+
+### [P1] `AggregateType.name()` / `EventType.name()` default returns `getClass().getName()` — Fixed
+**Severity:** High | **Files:** `outbox-core/.../AggregateType.java`, `outbox-core/.../EventType.java`
+
+Both interfaces had `default name() { return this.getClass().getName(); }`. Non-enum
+implementations (anonymous classes, lambdas) would persist unstable class names like
+`Foo$$Lambda$123/0x00000001` to the database, breaking listener routing on restart or
+across JVM versions.
+
+**Fix:** Made `name()` abstract. Enum implementations inherit `Enum.name()` automatically;
+records and classes must override explicitly. All existing implementations already did.
+
+---
+
+### [P2] `claimPending` missing `available_at` filtering tests — Fixed
+**Severity:** Medium | **Files:** `outbox-jdbc/.../AbstractOutboxStoreIntegrationTest.java`, `outbox-jdbc/.../OutboxPollerTest.java`, `outbox-jdbc/.../OutboxAcceptanceTest.java`
+
+`pollPending` had `available_at` filtering tests but `claimPending` did not. Also missing:
+`convertToEnvelope` `availableAt` reconstruction tests and end-to-end delayed delivery
+integration test.
+
+**Fix:** Added 8 tests: 4 for `claimPending` `available_at` filtering (delayed insert,
+markRetry, markDeferred, elapsed delay), 3 for `convertToEnvelope` reconstruction (poll,
+claim, immediate event), 1 end-to-end delayed delivery (hot skip → poller → DONE with
+`availableAt` preserved).
 
 ---
 

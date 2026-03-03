@@ -158,9 +158,8 @@ class HikariCPIntegrationTest {
 
         assertEquals(totalEvents, allIds.size());
         assertEquals(totalEvents, countRows());
-        assertEquals(0, hikariDs.getHikariPoolMXBean().getActiveConnections());
-
         dispatcher.close();
+        assertEquals(0, hikariDs.getHikariPoolMXBean().getActiveConnections());
     }
 
     @Test

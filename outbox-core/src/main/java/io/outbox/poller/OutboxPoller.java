@@ -12,6 +12,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -118,7 +119,7 @@ public final class OutboxPoller implements AutoCloseable {
                 return;
             }
 
-            Instant now = Instant.now();
+            Instant now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
             List<OutboxEvent> rows = fetchPendingRows(now);
             if (rows == null) {
                 return; // fetch failed — don't reset lag metric

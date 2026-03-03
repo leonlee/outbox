@@ -1,6 +1,6 @@
 # Codebase Structure
 
-**Analysis Date:** 2026-02-19
+**Analysis Date:** 2026-03-03
 
 ## Directory Layout
 
@@ -103,6 +103,20 @@ outbox/
 │   │   └── MicrometerMetricsExporter.java # MetricsExporter → Micrometer counters/gauges
 │   └── src/test/java/io/outbox/micrometer/
 │
+├── outbox-spring-boot-starter/      # Spring Boot Auto-configuration
+│   ├── src/main/java/io/outbox/spring/boot/
+│   │   ├── OutboxAutoConfiguration.java
+│   │   ├── OutboxProperties.java
+│   │   └── OutboxListener.java     # @OutboxListener annotation
+│   └── src/test/java/io/outbox/spring/boot/
+│
+├── outbox-testing/                  # Test fixtures for library consumers
+│   ├── src/main/java/io/outbox/testing/
+│   │   ├── InMemoryOutboxStore.java
+│   │   ├── StubTxContext.java
+│   │   └── OutboxTestSupport.java
+│   └── src/test/java/io/outbox/testing/
+│
 ├── benchmarks/                      # JMH performance benchmarks (not published)
 │   ├── OutboxWriteBenchmark.java
 │   ├── OutboxDispatchBenchmark.java
@@ -125,7 +139,7 @@ outbox/
 ├── .planning/                       # GSD planning documents (generated)
 │   └── codebase/                    # ARCHITECTURE.md, STRUCTURE.md, etc.
 │
-├── pom.xml                          # Parent pom (v0.7.0-SNAPSHOT, Java 17)
+├── pom.xml                          # Parent pom (v0.9.1-SNAPSHOT, Java 17)
 ├── CLAUDE.md                        # Development guide (build, release, architecture)
 ├── README.md                        # Project overview
 ├── SPEC.md                          # Technical specification (17 sections)
@@ -159,6 +173,18 @@ outbox/
 - Purpose: Micrometer metrics export (optional)
 - Contains: MicrometerMetricsExporter (counters, gauges)
 - Key files: `MicrometerMetricsExporter.java`
+
+**outbox-spring-boot-starter:**
+
+- Purpose: Spring Boot auto-configuration and @OutboxListener support
+- Contains: Auto-configuration classes, properties, and listener registrar
+- Key files: `OutboxAutoConfiguration.java`, `OutboxListener.java`
+
+**outbox-testing:**
+
+- Purpose: Test fixtures for consumers to write tests without JDBC
+- Contains: InMemory implementations of SPIs
+- Key files: `InMemoryOutboxStore.java`, `StubTxContext.java`
 
 **benchmarks:**
 

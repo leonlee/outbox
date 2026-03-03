@@ -64,7 +64,7 @@ public final class PostgresOutboxStore extends AbstractJdbcOutboxStore {
                 "SELECT event_id FROM " + tableName() +
                 " WHERE status IN " + PENDING_STATUS_IN + " AND available_at <= ?" +
                 " AND (locked_by IS NULL OR locked_at < ?)" +
-                " AND created_at <= ? ORDER BY created_at LIMIT ?" +
+                " AND created_at <= ? ORDER BY created_at, event_id LIMIT ?" +
                 " FOR UPDATE SKIP LOCKED" +
                 ") RETURNING event_id, event_type, aggregate_type, aggregate_id, " +
                 "tenant_id, payload, headers, attempts, created_at, available_at";

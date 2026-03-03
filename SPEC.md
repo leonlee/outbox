@@ -1249,7 +1249,7 @@ public interface EventPurger {
 }
 ```
 
-- Deletes terminal events (DONE + DEAD) where `COALESCE(done_at, created_at) < before`
+- Deletes terminal events (DONE + DEAD) where `done_at < before` (falls back to `created_at < before` when `done_at` is null)
 - Takes explicit `Connection` (caller controls transaction), matching the `OutboxStore` pattern
 - Returns count of rows deleted
 - `limit` caps the batch size per call to limit lock duration
@@ -1268,8 +1268,9 @@ public interface EventPurger {
 ```sql
 DELETE FROM outbox_event WHERE event_id IN (
   SELECT event_id FROM outbox_event
-  WHERE status IN (1, 3) AND COALESCE(done_at, created_at) < ?
-  ORDER BY created_at LIMIT ?
+  WHERE status IN (1, 3)
+    AND (done_at < ? OR (done_at IS NULL AND created_at < ?))
+  ORDER BY created_at, event_id LIMIT ?
 )
 ```
 
@@ -1277,8 +1278,9 @@ DELETE FROM outbox_event WHERE event_id IN (
 
 ```sql
 DELETE FROM outbox_event
-WHERE status IN (1, 3) AND COALESCE(done_at, created_at) < ?
-ORDER BY created_at LIMIT ?
+WHERE status IN (1, 3)
+  AND (done_at < ? OR (done_at IS NULL AND created_at < ?))
+ORDER BY created_at, event_id LIMIT ?
 ```
 
 All purger classes support a custom table name via constructor (validated with the same regex as

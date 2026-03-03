@@ -26,8 +26,8 @@ public final class MySqlEventPurger extends AbstractJdbcEventPurger {
     public int purge(Connection conn, Instant before, int limit) {
         String sql = "DELETE FROM " + tableName() +
                 " WHERE status IN " + TERMINAL_STATUS_IN +
-                " AND COALESCE(done_at, created_at) < ?" +
-                " ORDER BY created_at LIMIT ?";
-        return JdbcTemplate.update(conn, sql, Timestamp.from(before), limit);
+                " AND (done_at < ? OR (done_at IS NULL AND created_at < ?))" +
+                " ORDER BY created_at, event_id LIMIT ?";
+        return JdbcTemplate.update(conn, sql, Timestamp.from(before), Timestamp.from(before), limit);
     }
 }

@@ -22,7 +22,7 @@ public interface EventPurger {
      * Deletes terminal events (DONE + DEAD) created before the given cutoff.
      *
      * @param conn   the JDBC connection (caller controls transaction)
-     * @param before delete events where {@code COALESCE(done_at, created_at) < before}
+     * @param before delete events where {@code done_at < before} (or {@code created_at < before} if {@code done_at} is null)
      * @param limit  maximum number of rows to delete in this batch
      * @return the number of rows actually deleted
      */

@@ -27,14 +27,13 @@ import java.util.Objects;
  */
 public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     protected static final String DEFAULT_TABLE = TableNames.DEFAULT_TABLE;
-    private static final int MAX_ERROR_LENGTH = 4000;
-    private static final int MAX_BATCH_ROWS = 500;
-
+    protected static final int MAX_BATCH_ROWS = 500;
     protected static final String PENDING_STATUS_IN =
             "(" + EventStatus.NEW.code() + "," + EventStatus.RETRY.code() + ")";
-
     protected static final String TERMINAL_STATUS_IN =
             "(" + EventStatus.DONE.code() + "," + EventStatus.DEAD.code() + ")";
+
+    private static final int MAX_ERROR_LENGTH = 4000;
 
     protected static final JdbcTemplate.RowMapper<OutboxEvent> EVENT_ROW_MAPPER = rs -> {
         Timestamp availTs = rs.getTimestamp("available_at");
@@ -217,7 +216,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
                 "payload, headers, attempts, created_at, available_at " +
                 "FROM " + tableName() + " WHERE status IN " + PENDING_STATUS_IN +
                 " AND available_at <= ? AND created_at <= ? " +
-                "ORDER BY created_at LIMIT ?";
+                "ORDER BY created_at, event_id LIMIT ?";
         Instant recentCutoff = recentCutoff(now, skipRecent);
         return JdbcTemplate.query(conn, sql, EVENT_ROW_MAPPER,
                 Timestamp.from(now), Timestamp.from(recentCutoff), limit);
@@ -230,8 +229,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
      * claim overlapping rows because H2 does not support {@code FOR UPDATE SKIP LOCKED}.
      * This default is intended for testing and single-instance deployments only.
      * Production multi-instance deployments should use {@code PostgresOutboxStore}
-     * ({@code FOR UPDATE SKIP LOCKED}) or {@code MySqlOutboxStore}
-     * ({@code UPDATE ... ORDER BY ... LIMIT}).
+     * or {@code MySqlOutboxStore} (both use {@code FOR UPDATE SKIP LOCKED}).
      */
     @Override
     public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
@@ -246,7 +244,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
                 "SELECT event_id FROM " + tableName() +
                 " WHERE status IN " + PENDING_STATUS_IN + " AND available_at <= ?" +
                 " AND (locked_by IS NULL OR locked_at < ?)" +
-                " AND created_at <= ? ORDER BY created_at LIMIT ?)";
+                " AND created_at <= ? ORDER BY created_at, event_id LIMIT ?)";
         int updated = JdbcTemplate.update(conn, claimSql,
                 ownerId, Timestamp.from(nowMs), Timestamp.from(now),
                 Timestamp.from(lockExpiry), Timestamp.from(recentCutoff), limit);
@@ -262,7 +260,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     protected List<OutboxEvent> selectClaimed(Connection conn, String ownerId, Instant lockedAt) {
         String sql = "SELECT event_id, event_type, aggregate_type, aggregate_id, " +
                 "tenant_id, payload, headers, attempts, created_at, available_at " +
-                "FROM " + tableName() + " WHERE locked_by=? AND locked_at=? ORDER BY created_at";
+                "FROM " + tableName() + " WHERE locked_by=? AND locked_at=? ORDER BY created_at, event_id";
         return JdbcTemplate.query(conn, sql, EVENT_ROW_MAPPER, ownerId, Timestamp.from(lockedAt));
     }
 
@@ -281,7 +279,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
             sql.append(" AND aggregate_type=?");
             params.add(aggregateType);
         }
-        sql.append(" ORDER BY created_at LIMIT ?");
+        sql.append(" ORDER BY created_at, event_id LIMIT ?");
         params.add(limit);
         return JdbcTemplate.query(conn, sql.toString(), EVENT_ROW_MAPPER, params.toArray());
     }

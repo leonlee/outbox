@@ -140,6 +140,43 @@ class JdbcEventPurgerTest {
     }
 
     @Test
+    void purgeUsesCompletionTimeNotCreationTime() throws SQLException {
+        // Event created 10 days ago but completed 1 hour ago — should NOT be purged
+        // with a 1-day cutoff (retention is based on done_at, not created_at)
+        Instant oldCreated = Instant.now().minus(10, ChronoUnit.DAYS);
+        Instant recentDone = Instant.now().minus(1, ChronoUnit.HOURS);
+        insertEvent("recently-done", EventStatus.DONE, oldCreated, recentDone);
+
+        try (Connection conn = dataSource.getConnection()) {
+            conn.setAutoCommit(true);
+            int deleted = purger.purge(conn, Instant.now().minus(1, ChronoUnit.DAYS), 1000);
+
+            assertEquals(0, deleted);
+            assertTrue(eventExists("recently-done"));
+        }
+    }
+
+    @Test
+    void purgeHandlesNullDoneAtFallbackToCreatedAt() throws SQLException {
+        // DEAD event with null done_at and recent created_at — should NOT be purged
+        Instant recent = Instant.now().minus(1, ChronoUnit.HOURS);
+        insertEvent("recent-dead", EventStatus.DEAD, recent, null);
+
+        // Old DEAD event with null done_at — should be purged via created_at fallback
+        Instant old = Instant.now().minus(10, ChronoUnit.DAYS);
+        insertEvent("old-dead", EventStatus.DEAD, old, null);
+
+        try (Connection conn = dataSource.getConnection()) {
+            conn.setAutoCommit(true);
+            int deleted = purger.purge(conn, Instant.now().minus(1, ChronoUnit.DAYS), 1000);
+
+            assertEquals(1, deleted);
+            assertFalse(eventExists("old-dead"));
+            assertTrue(eventExists("recent-dead"));
+        }
+    }
+
+    @Test
     void customTableName() throws SQLException {
         try (Connection conn = dataSource.getConnection()) {
             conn.createStatement().execute(

@@ -1,6 +1,6 @@
 # Testing Patterns
 
-**Analysis Date:** 2025-02-19
+**Analysis Date:** 2026-03-03
 
 ## Test Framework
 
@@ -76,6 +76,11 @@ outbox-jdbc/src/test/java/outbox/jdbc/
 ├── OutboxCompositeTest.java
 ├── OutboxEdgeCaseTest.java
 └── DataSourceConnectionProviderTest.java
+
+outbox-testing/src/main/java/io/outbox/testing/
+├── InMemoryOutboxStore.java             # Pure memory store for unit tests
+├── StubTxContext.java                   # Manual commit/rollback control
+└── OutboxTestSupport.java              # Fluent test API
 ```
 
 ## Test Structure

@@ -103,12 +103,20 @@ public final class JdbcOutboxStores {
             throw new IllegalArgumentException("JDBC URL cannot be null or empty");
         }
 
+        String lowerUrl = jdbcUrl.toLowerCase();
+        AbstractJdbcOutboxStore best = null;
+        int bestLen = 0;
         for (AbstractJdbcOutboxStore store : STORES) {
             for (String prefix : store.jdbcUrlPrefixes()) {
-                if (jdbcUrl.toLowerCase().startsWith(prefix.toLowerCase())) {
-                    return store;
+                String lowerPrefix = prefix.toLowerCase();
+                if (lowerUrl.startsWith(lowerPrefix) && lowerPrefix.length() > bestLen) {
+                    best = store;
+                    bestLen = lowerPrefix.length();
                 }
             }
+        }
+        if (best != null) {
+            return best;
         }
 
         throw new IllegalArgumentException("No outbox store found for JDBC URL: " + jdbcUrl +

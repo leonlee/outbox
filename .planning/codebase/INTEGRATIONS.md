@@ -1,6 +1,6 @@
 # External Integrations
 
-**Analysis Date:** 2026-02-19
+**Analysis Date:** 2026-03-03
 
 ## APIs & External Services
 
@@ -21,12 +21,12 @@ their own implementations.
     - Connection: Via `javax.sql.DataSource` abstraction
 
 - **MySQL** 5.7+
-    - JDBC Driver: `mysql-connector-j` 8.3.0
+    - JDBC Driver: `mysql-connector-j` 9.6.0
     - Client: JDBC via `AbstractJdbcOutboxStore` (MySQL subclass: `MySqlOutboxStore`)
-    - Specialization: `DELETE...ORDER BY...LIMIT` support for efficient row claiming
+    - Specialization: `SELECT ... FOR UPDATE SKIP LOCKED` for row claiming; `DELETE...ORDER BY...LIMIT` for purge
 
 - **PostgreSQL** 10+
-    - JDBC Driver: `postgresql` 42.7.3
+    - JDBC Driver: `postgresql` 42.7.10
     - Client: JDBC via `AbstractJdbcOutboxStore` (PostgreSQL subclass: `PostgresOutboxStore`)
     - Specialization: `FOR UPDATE SKIP LOCKED` + `RETURNING` for row locking
 
@@ -41,9 +41,9 @@ their own implementations.
 
 - Auto-created on startup (samples use Spring's `spring.sql.init.mode=always`)
 - Schema SQL: `samples/outbox-spring-demo/src/main/resources/schema.sql`
-- Single table: `OUTBOX` with columns: `event_id`, `event_type`, `aggregate_type`, `aggregate_id`, `tenant_id`,
-  `occurred_at`, `payload`, `headers`, `status`, `created_at`, `updated_at`
-- Status enum: PENDING, DISPATCHING, DONE, RETRY, DEAD
+- Single table: `outbox_event` with columns: `event_id`, `event_type`, `aggregate_type`, `aggregate_id`, `tenant_id`,
+  `payload`, `headers`, `status`, `attempts`, `available_at`, `created_at`, `done_at`, `last_error`, `locked_by`, `locked_at`
+- Status enum: PENDING (0), DONE (1), RETRY (2), DEAD (3), DEFERRED (4)
 
 ## File Storage
 
@@ -99,7 +99,7 @@ No caching layer or distributed cache integration. In-flight event deduplication
 - Depends on: `org.springframework:spring-jdbc`, `org.springframework:spring-tx` (provided scope)
 - Usage: Registered in Spring config (see `OutboxConfiguration` in samples)
 - Bridges: Obtains connections via `DataSourceUtils.getConnection()` and registers callbacks via
-  `TransactionSynchronizationManager.registerSynchronization()`
+  `TransactionSynchronizationManager.registerSynchronization()`. In Spring Boot, the `outbox-spring-boot-starter` auto-detects listeners annotated with `@OutboxListener`.
 
 ## Monitoring & Observability
 

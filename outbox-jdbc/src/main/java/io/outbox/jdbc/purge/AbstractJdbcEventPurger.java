@@ -46,18 +46,17 @@ public abstract class AbstractJdbcEventPurger implements EventPurger {
      * <p>Default implementation uses a subquery to limit the batch size, which
      * works for H2 and PostgreSQL. MySQL overrides with {@code DELETE ... ORDER BY ... LIMIT}.
      *
-     * <p><strong>Index note:</strong> The {@code COALESCE(done_at, created_at)} expression
-     * prevents the database from using a plain index on either column. For high-volume
-     * tables, consider adding a functional index (e.g. PostgreSQL:
-     * {@code CREATE INDEX ON outbox_event (COALESCE(done_at, created_at)) WHERE status IN (1,3)}).
+     * <p>Uses an index-friendly OR pattern instead of {@code COALESCE}: the database
+     * can use an index on {@code done_at} for the first branch and {@code created_at}
+     * for the NULL fallback branch.
      */
     @Override
     public int purge(Connection conn, Instant before, int limit) {
         String sql = "DELETE FROM " + tableName() + " WHERE event_id IN (" +
                 "SELECT event_id FROM " + tableName() +
                 " WHERE status IN " + TERMINAL_STATUS_IN +
-                " AND COALESCE(done_at, created_at) < ?" +
-                " ORDER BY created_at LIMIT ?)";
-        return JdbcTemplate.update(conn, sql, Timestamp.from(before), limit);
+                " AND (done_at < ? OR (done_at IS NULL AND created_at < ?))" +
+                " ORDER BY created_at, event_id LIMIT ?)";
+        return JdbcTemplate.update(conn, sql, Timestamp.from(before), Timestamp.from(before), limit);
     }
 }

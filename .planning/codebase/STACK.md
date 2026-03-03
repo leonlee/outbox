@@ -1,6 +1,6 @@
 # Technology Stack
 
-**Analysis Date:** 2026-02-19
+**Analysis Date:** 2026-03-03
 
 ## Languages
 
@@ -19,7 +19,7 @@
 
 - Maven 3.x
 - Lockfile: `pom-lock.xml` not used; `pom.xml` files are the source of truth
-- Parent POM: `/Users/lee/Workspace/oss/outbox/pom.xml` (0.7.0-SNAPSHOT)
+- Parent POM: `/Users/lee/Workspace/oss/outbox/pom.xml` (0.9.1-SNAPSHOT)
 
 ## Frameworks
 
@@ -32,7 +32,7 @@
 
 **outbox-core:**
 
-- `ulid-creator` 5.2.3 - ULID generation for event IDs (`com.github.f4b6a3:ulid-creator`)
+- `ulid-creator` 5.2.4 - ULID generation for event IDs (`com.github.f4b6a3:ulid-creator`)
 
 **outbox-jdbc:**
 
@@ -71,8 +71,8 @@
 **Supported Databases:**
 
 - **H2** 2.2.224 - In-memory/file-based test database (default in samples)
-- **MySQL** `mysql-connector-j` 8.3.0 - Optional runtime JDBC driver
-- **PostgreSQL** `postgresql` 42.7.3 - Optional runtime JDBC driver
+- **MySQL** `mysql-connector-j` 9.6.0 - Optional runtime JDBC driver
+- **PostgreSQL** `postgresql` 42.7.10 - Optional runtime JDBC driver
 
 **Connection Pooling:**
 
@@ -147,6 +147,8 @@
 - `outbox-jdbc`
 - `outbox-spring-adapter`
 - `outbox-micrometer`
+- `outbox-spring-boot-starter`
+- `outbox-testing`
 
 **NOT Published:**
 

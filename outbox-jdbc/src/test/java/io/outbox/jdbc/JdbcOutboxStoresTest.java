@@ -146,6 +146,23 @@ class JdbcOutboxStoresTest {
     }
 
     @Test
+    void detectFromJdbcUrlIsCaseInsensitive() {
+        assertEquals("mysql", JdbcOutboxStores.detect("JDBC:MYSQL://localhost/db").name());
+        assertEquals("postgresql", JdbcOutboxStores.detect("Jdbc:PostgreSQL://localhost/db").name());
+        assertEquals("h2", JdbcOutboxStores.detect("JDBC:H2:mem:test").name());
+    }
+
+    @Test
+    void detectFromJdbcUrlPicksLongestMatchingPrefix() {
+        // jdbc:mysql: (11 chars) should be preferred over a hypothetical shorter prefix.
+        // Verify current stores resolve correctly — the longest-prefix algorithm ensures
+        // that if a more specific prefix (e.g. jdbc:mysql:aurora:) were registered,
+        // it would win over jdbc:mysql: for aurora URLs.
+        AbstractJdbcOutboxStore store = JdbcOutboxStores.detect("jdbc:mysql:aurora://cluster.rds.amazonaws.com/db");
+        assertEquals("mysql", store.name());
+    }
+
+    @Test
     void mySqlOutboxStoreHandlesTiDbPrefix() {
         AbstractJdbcOutboxStore mysql = JdbcOutboxStores.get("mysql");
         assertTrue(mysql.jdbcUrlPrefixes().contains("jdbc:mysql:"));

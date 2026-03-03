@@ -1026,7 +1026,7 @@ public OutboxPurgeScheduler purgeScheduler(
 ### How It Works
 
 1. Every `intervalSeconds`, the scheduler calculates `cutoff = now - retention`
-2. It deletes terminal events (status DONE or DEAD) where `COALESCE(done_at, created_at) < cutoff`
+2. It deletes terminal events (status DONE or DEAD) where `done_at < cutoff` (or `created_at < cutoff` when `done_at` is null)
 3. Deletion happens in batches of `batchSize`, each on its own auto-committed connection
 4. Batching continues until a batch deletes fewer than `batchSize` rows (backlog drained)
 5. Active events (NEW, RETRY) are never touched

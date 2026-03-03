@@ -52,7 +52,7 @@ public abstract class AbstractJdbcAgeBasedPurger implements EventPurger {
         String sql = "DELETE FROM " + tableName() + " WHERE event_id IN (" +
                 "SELECT event_id FROM " + tableName() +
                 " WHERE created_at < ?" +
-                " ORDER BY created_at LIMIT ?)";
+                " ORDER BY created_at, event_id LIMIT ?)";
         return JdbcTemplate.update(conn, sql, Timestamp.from(before), limit);
     }
 }

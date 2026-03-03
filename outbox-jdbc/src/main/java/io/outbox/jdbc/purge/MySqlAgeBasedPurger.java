@@ -26,7 +26,7 @@ public final class MySqlAgeBasedPurger extends AbstractJdbcAgeBasedPurger {
     public int purge(Connection conn, Instant before, int limit) {
         String sql = "DELETE FROM " + tableName() +
                 " WHERE created_at < ?" +
-                " ORDER BY created_at LIMIT ?";
+                " ORDER BY created_at, event_id LIMIT ?";
         return JdbcTemplate.update(conn, sql, Timestamp.from(before), limit);
     }
 }

@@ -2,7 +2,7 @@ package io.outbox.jdbc;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
-import org.testcontainers.containers.MySQLContainer;
+import org.testcontainers.mysql.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import io.outbox.jdbc.store.AbstractJdbcOutboxStore;
@@ -19,7 +19,7 @@ import java.sql.Connection;
 class MySqlOutboxStoreIntegrationTest extends AbstractOutboxStoreIntegrationTest {
 
     @Container
-    static final MySQLContainer<?> mysql = new MySQLContainer<>("mysql:8.0")
+    static final MySQLContainer mysql = new MySQLContainer("mysql:8.0")
             .withDatabaseName("outbox_test");
 
     private static final MySqlOutboxStore STORE = new MySqlOutboxStore();

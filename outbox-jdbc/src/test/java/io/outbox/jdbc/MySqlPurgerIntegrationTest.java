@@ -3,7 +3,7 @@ package io.outbox.jdbc;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.containers.MySQLContainer;
+import org.testcontainers.mysql.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import io.outbox.EventEnvelope;
@@ -24,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class MySqlPurgerIntegrationTest {
 
     @Container
-    static final MySQLContainer<?> mysql = new MySQLContainer<>("mysql:8.0")
+    static final MySQLContainer mysql = new MySQLContainer("mysql:8.0")
             .withDatabaseName("outbox_purge_test");
 
     private static SimpleDataSource dataSource;

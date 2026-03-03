@@ -2,7 +2,7 @@ package io.outbox.jdbc;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
-import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import io.outbox.jdbc.store.AbstractJdbcOutboxStore;
@@ -19,7 +19,7 @@ import java.sql.Connection;
 class PostgresOutboxStoreIntegrationTest extends AbstractOutboxStoreIntegrationTest {
 
     @Container
-    static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine")
+    static final PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:16-alpine")
             .withDatabaseName("outbox_test");
 
     private static final PostgresOutboxStore STORE = new PostgresOutboxStore();

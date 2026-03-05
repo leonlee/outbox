@@ -55,7 +55,7 @@
         <micrometer.version>1.14.5</micrometer.version>
         <mysql-connector.version>9.6.0</mysql-connector.version>
         <postgresql.version>42.7.10</postgresql.version>
-        <hikaricp.version>5.1.0</hikaricp.version>
+        <hikaricp.version>7.0.2</hikaricp.version>
         <testcontainers.version>2.0.3</testcontainers.version>
     </properties>
 

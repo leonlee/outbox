@@ -1,7 +1,7 @@
 package io.outbox.dispatch;
 
-import org.junit.jupiter.api.Test;
 import io.outbox.EventEnvelope;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;

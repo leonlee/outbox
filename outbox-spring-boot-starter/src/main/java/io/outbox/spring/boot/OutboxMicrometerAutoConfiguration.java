@@ -1,14 +1,14 @@
 package io.outbox.spring.boot;
 
 import io.micrometer.core.instrument.MeterRegistry;
+import io.outbox.micrometer.MicrometerMetricsExporter;
+import io.outbox.spi.MetricsExporter;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
-import io.outbox.micrometer.MicrometerMetricsExporter;
-import io.outbox.spi.MetricsExporter;
 
 /**
  * Auto-configuration for Micrometer metrics integration.

@@ -1,9 +1,9 @@
 package io.outbox.jdbc.tx;
 
+import io.outbox.jdbc.DataSourceConnectionProvider;
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import io.outbox.jdbc.DataSourceConnectionProvider;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;

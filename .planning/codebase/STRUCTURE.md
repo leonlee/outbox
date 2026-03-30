@@ -222,9 +222,11 @@ outbox/
 
 - `outbox-core/src/main/java/io/outbox/dispatch/OutboxDispatcher.java`: Dual-queue processor, fair draining
 - `outbox-core/src/main/java/io/outbox/poller/OutboxPoller.java`: Scheduled poller (single/multi-node modes)
-- `outbox-jdbc/src/main/java/io/outbox/jdbc/store/AbstractJdbcOutboxStore.java`: Base persistence, subclass overrides for
+- `outbox-jdbc/src/main/java/io/outbox/jdbc/store/AbstractJdbcOutboxStore.java`: Base persistence, subclass overrides
+  for
   DB-specific claim strategies
-- `outbox-core/src/main/java/io/outbox/registry/DefaultListenerRegistry.java`: Event routing by (aggregateType, eventType)
+- `outbox-core/src/main/java/io/outbox/registry/DefaultListenerRegistry.java`: Event routing by (aggregateType,
+  eventType)
 
 **Testing:**
 

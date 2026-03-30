@@ -7,6 +7,7 @@ Full code review of the outbox framework. Last updated: 2026-03-02 (v0.9.1-SNAPS
 Issues identified and fixed in commit `02fe82e`:
 
 ### [C2] Missing `spring-boot-configuration-processor` — Fixed
+
 **Severity:** Critical | **File:** `outbox-spring-boot-starter/pom.xml`
 
 The starter module had no `spring-boot-configuration-processor` dependency, so no
@@ -18,6 +19,7 @@ for `outbox.*` properties.
 ---
 
 ### [H1] `withConnection` catches only `SQLException` — Fixed
+
 **Severity:** High | **File:** `outbox-core/.../dispatch/OutboxDispatcher.java:296-303`
 
 `withConnection` only caught `SQLException`. If a store method threw `RuntimeException`
@@ -30,6 +32,7 @@ or marking DEAD an event whose listener already succeeded.
 ---
 
 ### [H2] `WriterOnlyBuilder` silently accepts irrelevant config — Fixed
+
 **Severity:** High | **File:** `outbox-core/.../Outbox.java` (WriterOnlyBuilder)
 
 `WriterOnlyBuilder` inherited `listenerRegistry()`, `interceptor()`, `interceptors()`,
@@ -43,7 +46,9 @@ any feedback.
 ---
 
 ### [H3] `WriterOnlyBuilder.build()` discards `MetricsExporter` — Fixed
-**Severity:** High | **Files:** `outbox-core/.../Outbox.java:797`, `outbox-spring-boot-starter/.../OutboxAutoConfiguration.java:185-198`
+
+**Severity:** High | **Files:** `outbox-core/.../Outbox.java:797`,
+`outbox-spring-boot-starter/.../OutboxAutoConfiguration.java:185-198`
 
 `WriterOnlyBuilder.build()` passed `null` for metrics to the `Outbox` constructor, so
 `Outbox.close()` never called `metrics.close()` — leaking Micrometer meters. Auto-config
@@ -55,6 +60,7 @@ in auto-config's `WRITER_ONLY` case.
 ---
 
 ### [M1] `OutboxPoller.markDead` catches only `SQLException` — Fixed
+
 **Severity:** Medium | **File:** `outbox-core/.../poller/OutboxPoller.java:213-220`
 
 Same pattern as H1. Broadened catch to `SQLException | RuntimeException`.
@@ -62,6 +68,7 @@ Same pattern as H1. Broadened catch to `SQLException | RuntimeException`.
 ---
 
 ### [M2] `convertToEnvelope` doesn't reconstruct `availableAt` — Fixed
+
 **Severity:** Low | **File:** `outbox-core/.../poller/OutboxPoller.java:200-211`
 
 Added `available_at` to all SELECT queries (`pollPending`, `selectClaimed`, `queryDead`,
@@ -71,6 +78,7 @@ the reconstructed `EventEnvelope` in `convertToEnvelope`.
 ---
 
 ### [L1] `DefaultJsonCodec` doesn't validate lone surrogates — Fixed
+
 **Severity:** Low | **File:** `outbox-core/.../util/DefaultJsonCodec.java:159-170`
 
 Added surrogate pair validation: high surrogates must be followed by `\uDC00-\uDFFF`,
@@ -79,6 +87,7 @@ lone low surrogates are rejected.
 ---
 
 ### [L2] `DeadEventManager` returns defaults on failure — Fixed
+
 **Severity:** Low | **File:** `outbox-core/.../dead/DeadEventManager.java`
 
 Changed from swallowing exceptions (returning `List.of()` / `0` / `false`) to wrapping
@@ -88,6 +97,7 @@ can now distinguish database failures from empty results.
 ---
 
 ### [P1] `AggregateType.name()` / `EventType.name()` default returns `getClass().getName()` — Fixed
+
 **Severity:** High | **Files:** `outbox-core/.../AggregateType.java`, `outbox-core/.../EventType.java`
 
 Both interfaces had `default name() { return this.getClass().getName(); }`. Non-enum
@@ -101,7 +111,9 @@ records and classes must override explicitly. All existing implementations alrea
 ---
 
 ### [P2] `claimPending` missing `available_at` filtering tests — Fixed
-**Severity:** Medium | **Files:** `outbox-jdbc/.../AbstractOutboxStoreIntegrationTest.java`, `outbox-jdbc/.../OutboxPollerTest.java`, `outbox-jdbc/.../OutboxAcceptanceTest.java`
+
+**Severity:** Medium | **Files:** `outbox-jdbc/.../AbstractOutboxStoreIntegrationTest.java`,
+`outbox-jdbc/.../OutboxPollerTest.java`, `outbox-jdbc/.../OutboxAcceptanceTest.java`
 
 `pollPending` had `available_at` filtering tests but `claimPending` did not. Also missing:
 `convertToEnvelope` `availableAt` reconstruction tests and end-to-end delayed delivery

@@ -6,7 +6,7 @@
     <parent>
         <groupId>io.github.leonlee</groupId>
         <artifactId>outbox-parent</artifactId>
-        <version>0.9.2-SNAPSHOT</version>
+        <version>0.9.2</version>
     </parent>
 
     <artifactId>outbox-spring-boot-starter</artifactId>
@@ -41,6 +41,13 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Optional: Jackson (for JacksonJsonCodec auto-config) -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
             <optional>true</optional>
         </dependency>
 

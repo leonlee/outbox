@@ -1,12 +1,12 @@
 package io.outbox;
 
-import org.junit.jupiter.api.Test;
 import io.outbox.model.OutboxEvent;
 import io.outbox.registry.DefaultListenerRegistry;
 import io.outbox.spi.ConnectionProvider;
 import io.outbox.spi.EventPurger;
 import io.outbox.spi.OutboxStore;
 import io.outbox.spi.TxContext;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -274,19 +274,14 @@ class OutboxTest {
     @Test
     void writerOnly_interceptor_throwsUnsupported() {
         assertThrows(UnsupportedOperationException.class, () ->
-                Outbox.writerOnly().interceptor(new io.outbox.dispatch.EventInterceptor() {}));
+                Outbox.writerOnly().interceptor(new io.outbox.dispatch.EventInterceptor() {
+                }));
     }
 
     @Test
     void writerOnly_interceptors_throwsUnsupported() {
         assertThrows(UnsupportedOperationException.class, () ->
                 Outbox.writerOnly().interceptors(List.of()));
-    }
-
-    @Test
-    void writerOnly_jsonCodec_throwsUnsupported() {
-        assertThrows(UnsupportedOperationException.class, () ->
-                Outbox.writerOnly().jsonCodec(io.outbox.util.JsonCodec.getDefault()));
     }
 
     @Test
@@ -372,6 +367,38 @@ class OutboxTest {
                     .drainTimeoutMs(1000)
                     .build()) {
                 assertNotNull(outbox.writer());
+            }
+        });
+    }
+
+    // ── deferStart ────────────────────────────────────────────────────
+
+    @Test
+    void singleNodeDeferStartThenExplicitStart() {
+        assertDoesNotThrow(() -> {
+            try (Outbox outbox = Outbox.singleNode()
+                    .connectionProvider(STUB_CP).txContext(STUB_TX)
+                    .outboxStore(STUB_STORE).listenerRegistry(STUB_REG)
+                    .workerCount(0).intervalMs(60_000)
+                    .deferStart(true)
+                    .build()) {
+                assertNotNull(outbox.writer());
+                outbox.start();
+            }
+        });
+    }
+
+    @Test
+    void startIsIdempotent() {
+        assertDoesNotThrow(() -> {
+            try (Outbox outbox = Outbox.singleNode()
+                    .connectionProvider(STUB_CP).txContext(STUB_TX)
+                    .outboxStore(STUB_STORE).listenerRegistry(STUB_REG)
+                    .workerCount(0).intervalMs(60_000)
+                    .deferStart(true)
+                    .build()) {
+                outbox.start();
+                outbox.start();
             }
         });
     }

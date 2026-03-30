@@ -1,9 +1,9 @@
 package io.outbox.spring;
 
+import io.outbox.spi.TxContext;
 import org.springframework.jdbc.datasource.DataSourceUtils;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
-import io.outbox.spi.TxContext;
 
 import javax.sql.DataSource;
 import java.sql.Connection;

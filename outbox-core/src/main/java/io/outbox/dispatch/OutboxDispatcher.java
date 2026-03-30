@@ -1,9 +1,10 @@
 package io.outbox.dispatch;
 
+import io.outbox.DispatchResult;
 import io.outbox.EventEnvelope;
 import io.outbox.EventListener;
-import io.outbox.DispatchResult;
 import io.outbox.RetryAfterException;
+import io.outbox.UnrecoverableException;
 import io.outbox.registry.ListenerRegistry;
 import io.outbox.spi.ConnectionProvider;
 import io.outbox.spi.MetricsExporter;
@@ -81,8 +82,8 @@ public final class OutboxDispatcher implements AutoCloseable {
         int hotQueueCapacity = builder.hotQueueCapacity;
         int coldQueueCapacity = builder.coldQueueCapacity;
 
-        if (maxAttempts < 1) {
-            throw new IllegalArgumentException("maxAttempts must be >= 1");
+        if (maxAttempts < 0) {
+            throw new IllegalArgumentException("maxAttempts must be >= 0");
         }
         if (workerCount < 0) {
             throw new IllegalArgumentException("workerCount must be >= 0");
@@ -198,7 +199,11 @@ public final class OutboxDispatcher implements AutoCloseable {
                 Instant nextAt = Instant.now().plus(retryAfter.delay());
                 markDeferred(eventId, nextAt);
                 metrics.incrementDispatchDeferred();
-            } else {
+            } else if (result instanceof DispatchResult.Dead dead) {
+                String reason = dead.reason() != null ? dead.reason() : "Listener returned Dead";
+                markDead(eventId, reason);
+                metrics.incrementDispatchDead();
+            } else if (result instanceof DispatchResult.Done) {
                 long latencyMs = Instant.now().toEpochMilli() - event.envelope().occurredAt().toEpochMilli();
                 if (latencyMs >= 0) {
                     metrics.recordDispatchLatencyMs(latencyMs);
@@ -227,10 +232,12 @@ public final class OutboxDispatcher implements AutoCloseable {
                 throw new UnroutableEventException("No listener for aggregateType="
                         + envelope.aggregateType() + ", eventType=" + envelope.eventType());
             }
-            DispatchResult result = listener.handleEvent(envelope);
+            DispatchResult result = Objects.requireNonNull(
+                    listener.onEvent(envelope),
+                    "EventListener.onEvent() must not return null");
 
             runAfterDispatch(envelope, null, completedBefore);
-            return result == null ? DispatchResult.DONE : result;
+            return result;
         } catch (Exception e) {
             runAfterDispatch(envelope, e, completedBefore);
             throw e;
@@ -249,10 +256,10 @@ public final class OutboxDispatcher implements AutoCloseable {
 
     private void handleFailure(QueuedEvent event, Exception failure) {
         String eventId = event.envelope().eventId();
-        if (failure instanceof UnroutableEventException) {
+        if (failure instanceof UnrecoverableException) {
             markDead(eventId, failure);
             metrics.incrementDispatchDead();
-            logger.log(Level.SEVERE, "Unroutable event marked DEAD: " + eventId, failure);
+            logger.log(Level.SEVERE, "Unrecoverable event marked DEAD: " + eventId, failure);
             return;
         }
 
@@ -291,6 +298,11 @@ public final class OutboxDispatcher implements AutoCloseable {
     private void markDead(String eventId, Exception failure) {
         withConnection("mark DEAD", eventId,
                 conn -> outboxStore.markDead(conn, eventId, failure == null ? null : failure.getMessage()));
+    }
+
+    private void markDead(String eventId, String reason) {
+        withConnection("mark DEAD", eventId,
+                conn -> outboxStore.markDead(conn, eventId, reason));
     }
 
     private void withConnection(String action, String eventId, SqlAction op) {

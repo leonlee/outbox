@@ -1,13 +1,6 @@
 package io.outbox.spring.boot;
 
-import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.context.annotation.Bean;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.outbox.Outbox;
 import io.outbox.OutboxWriter;
 import io.outbox.dispatch.EventInterceptor;
@@ -26,9 +19,18 @@ import io.outbox.jdbc.store.PostgresOutboxStore;
 import io.outbox.registry.DefaultListenerRegistry;
 import io.outbox.spi.ConnectionProvider;
 import io.outbox.spi.EventPurger;
+import io.outbox.spi.JsonCodec;
 import io.outbox.spi.MetricsExporter;
 import io.outbox.spi.TxContext;
 import io.outbox.spring.SpringTxContext;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
 
 import javax.sql.DataSource;
 import java.time.Duration;
@@ -49,6 +51,15 @@ import java.util.List;
 @ConditionalOnBean(DataSource.class)
 @EnableConfigurationProperties(OutboxProperties.class)
 public class OutboxAutoConfiguration {
+
+    @Bean
+    @ConditionalOnMissingBean(JsonCodec.class)
+    @ConditionalOnBean(ObjectMapper.class)
+    public JacksonJsonCodec jacksonJsonCodec(ObjectMapper objectMapper) {
+        JacksonJsonCodec codec = new JacksonJsonCodec(objectMapper);
+        JsonCodec.setDefault(codec);
+        return codec;
+    }
 
     @Bean
     @ConditionalOnMissingBean
@@ -118,6 +129,7 @@ public class OutboxAutoConfiguration {
                         .hotQueueCapacity(props.getDispatcher().getHotQueueCapacity())
                         .coldQueueCapacity(props.getDispatcher().getColdQueueCapacity())
                         .maxAttempts(props.getDispatcher().getMaxAttempts())
+                        .deferStart(true)
                         .drainTimeoutMs(props.getDispatcher().getDrainTimeoutMs())
                         .retryPolicy(retryPolicy)
                         .intervalMs(props.getPoller().getIntervalMs())
@@ -145,6 +157,7 @@ public class OutboxAutoConfiguration {
                         .hotQueueCapacity(props.getDispatcher().getHotQueueCapacity())
                         .coldQueueCapacity(props.getDispatcher().getColdQueueCapacity())
                         .maxAttempts(props.getDispatcher().getMaxAttempts())
+                        .deferStart(true)
                         .drainTimeoutMs(props.getDispatcher().getDrainTimeoutMs())
                         .retryPolicy(retryPolicy)
                         .intervalMs(props.getPoller().getIntervalMs())
@@ -170,6 +183,7 @@ public class OutboxAutoConfiguration {
                         .txContext(txContext)
                         .outboxStore(outboxStore)
                         .listenerRegistry(listenerRegistry)
+                        .deferStart(true)
                         .drainTimeoutMs(props.getDispatcher().getDrainTimeoutMs())
                         .intervalMs(props.getPoller().getIntervalMs())
                         .batchSize(props.getPoller().getBatchSize());
@@ -207,6 +221,12 @@ public class OutboxAutoConfiguration {
     @ConditionalOnMissingBean
     public OutboxWriter outboxWriter(Outbox outbox) {
         return outbox.writer();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public OutboxLifecycle outboxLifecycle(Outbox outbox) {
+        return new OutboxLifecycle(outbox);
     }
 
     private static EventPurger createAgeBasedPurger(String dbName, String tableName) {

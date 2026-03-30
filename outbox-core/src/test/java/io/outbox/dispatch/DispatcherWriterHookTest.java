@@ -1,9 +1,9 @@
 package io.outbox.dispatch;
 
-import org.junit.jupiter.api.Test;
 import io.outbox.EventEnvelope;
 import io.outbox.registry.DefaultListenerRegistry;
 import io.outbox.spi.MetricsExporter;
+import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.time.Instant;

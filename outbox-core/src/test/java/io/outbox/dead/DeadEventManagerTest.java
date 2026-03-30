@@ -1,10 +1,10 @@
 package io.outbox.dead;
 
-import org.junit.jupiter.api.Test;
 import io.outbox.EventEnvelope;
 import io.outbox.model.OutboxEvent;
 import io.outbox.spi.ConnectionProvider;
 import io.outbox.spi.OutboxStore;
+import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Proxy;
 import java.sql.Connection;

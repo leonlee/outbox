@@ -1,20 +1,26 @@
 package io.outbox.spring.boot;
 
-import org.springframework.beans.factory.BeanCreationException;
-import org.springframework.beans.factory.ListableBeanFactory;
-import org.springframework.beans.factory.SmartInitializingSingleton;
 import io.outbox.AggregateType;
+import io.outbox.BoundEventListener;
 import io.outbox.EventListener;
 import io.outbox.EventType;
 import io.outbox.registry.DefaultListenerRegistry;
+import org.springframework.beans.factory.BeanCreationException;
+import org.springframework.beans.factory.ListableBeanFactory;
+import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.core.annotation.AnnotationUtils;
 
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Scans for beans annotated with {@link OutboxListener} and registers them
  * in the {@link DefaultListenerRegistry}.
  *
  * <p>Runs after all singleton beans are initialized via {@link SmartInitializingSingleton}.
+ * Beans that are both annotated with {@link OutboxListener} and implement
+ * {@link BoundEventListener} are registered only once (via the annotation path).
  *
  * @see OutboxListener
  */
@@ -22,6 +28,7 @@ public class OutboxListenerRegistrar implements SmartInitializingSingleton {
 
     private final ListableBeanFactory beanFactory;
     private final DefaultListenerRegistry registry;
+    private final Set<Object> registeredBeans = new HashSet<>();
 
     public OutboxListenerRegistrar(ListableBeanFactory beanFactory, DefaultListenerRegistry registry) {
         this.beanFactory = beanFactory;
@@ -30,6 +37,21 @@ public class OutboxListenerRegistrar implements SmartInitializingSingleton {
 
     @Override
     public void afterSingletonsInstantiated() {
+        processAnnotatedListeners();
+        processBoundListeners();
+    }
+
+    private void processBoundListeners() {
+        var listenerMap = beanFactory.getBeansOfType(BoundEventListener.class);
+        for (var listener : listenerMap.values()) {
+            if (registeredBeans.contains(listener)) {
+                continue;
+            }
+            registry.register(listener);
+        }
+    }
+
+    private void processAnnotatedListeners() {
         Map<String, Object> beans = beanFactory.getBeansWithAnnotation(OutboxListener.class);
         for (Map.Entry<String, Object> entry : beans.entrySet()) {
             String beanName = entry.getKey();
@@ -44,8 +66,7 @@ public class OutboxListenerRegistrar implements SmartInitializingSingleton {
             OutboxListener annotation = bean.getClass().getAnnotation(OutboxListener.class);
             if (annotation == null) {
                 // Proxy may hide annotation; try the target class
-                annotation = org.springframework.core.annotation.AnnotationUtils.findAnnotation(
-                        bean.getClass(), OutboxListener.class);
+                annotation = AnnotationUtils.findAnnotation(bean.getClass(), OutboxListener.class);
             }
             if (annotation == null) {
                 throw new BeanCreationException(beanName,
@@ -56,6 +77,7 @@ public class OutboxListenerRegistrar implements SmartInitializingSingleton {
             String aggregateTypeName = resolveAggregateType(beanName, annotation);
 
             registry.register(aggregateTypeName, eventTypeName, listener);
+            registeredBeans.add(bean);
         }
     }
 

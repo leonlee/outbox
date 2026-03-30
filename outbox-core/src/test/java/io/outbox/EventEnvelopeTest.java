@@ -2,17 +2,14 @@ package io.outbox;
 
 import org.junit.jupiter.api.Test;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -70,26 +67,6 @@ class EventEnvelopeTest {
     }
 
     @Test
-    void payloadBytesConvertedToJson() {
-        byte[] payload = "{\"fromBytes\":true}".getBytes(StandardCharsets.UTF_8);
-
-        EventEnvelope envelope = EventEnvelope.builder("ByteEvent")
-                .payloadBytes(payload)
-                .build();
-
-        assertEquals("{\"fromBytes\":true}", envelope.payloadJson());
-        assertArrayEquals(payload, envelope.payloadBytes());
-    }
-
-    @Test
-    void payloadJsonConvertedToBytes() {
-        EventEnvelope envelope = EventEnvelope.ofJson("JsonEvent", "{\"fromJson\":true}");
-
-        byte[] expected = "{\"fromJson\":true}".getBytes(StandardCharsets.UTF_8);
-        assertArrayEquals(expected, envelope.payloadBytes());
-    }
-
-    @Test
     void headersAreImmutable() {
         Map<String, String> headers = new java.util.HashMap<>();
         headers.put("key", "value");
@@ -117,44 +94,9 @@ class EventEnvelopeTest {
     }
 
     @Test
-    void payloadBytesAreDefensivelyCopied() {
-        byte[] original = "{\"mutable\":true}".getBytes(StandardCharsets.UTF_8);
-
-        EventEnvelope envelope = EventEnvelope.builder("Test")
-                .payloadBytes(original)
-                .build();
-
-        // Modify original
-        original[0] = 'X';
-
-        // Envelope should not be affected
-        assertEquals("{\"mutable\":true}", envelope.payloadJson());
-    }
-
-    @Test
-    void payloadBytesReturnDefensiveCopy() {
-        EventEnvelope envelope = EventEnvelope.ofJson("Test", "{\"data\":1}");
-
-        byte[] bytes1 = envelope.payloadBytes();
-        byte[] bytes2 = envelope.payloadBytes();
-
-        assertNotSame(bytes1, bytes2);
-        assertArrayEquals(bytes1, bytes2);
-    }
-
-    @Test
     void requiresPayload() {
         assertThrows(IllegalArgumentException.class, () ->
                 EventEnvelope.builder("NoPayload").build());
-    }
-
-    @Test
-    void rejectsBothPayloadJsonAndBytes() {
-        assertThrows(IllegalArgumentException.class, () ->
-                EventEnvelope.builder("BothPayloads")
-                        .payloadJson("{}")
-                        .payloadBytes("{}".getBytes())
-                        .build());
     }
 
     @Test
@@ -164,39 +106,24 @@ class EventEnvelopeTest {
     }
 
     @Test
-    void rejectsOversizedPayload() {
-        byte[] largePayload = new byte[EventEnvelope.MAX_PAYLOAD_BYTES + 1];
-        java.util.Arrays.fill(largePayload, (byte) 'x');
-
-        assertThrows(IllegalArgumentException.class, () ->
-                EventEnvelope.builder("Large")
-                        .payloadBytes(largePayload)
-                        .build());
-    }
-
-    @Test
     void rejectsOversizedJsonPayload() {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < EventEnvelope.MAX_PAYLOAD_BYTES + 100; i++) {
-            sb.append('x');
-        }
+        String large = "x".repeat(EventEnvelope.MAX_PAYLOAD_BYTES + 100);
 
         assertThrows(IllegalArgumentException.class, () ->
                 EventEnvelope.builder("Large")
-                        .payloadJson(sb.toString())
+                        .payloadJson(large)
                         .build());
     }
 
     @Test
     void acceptsMaxSizePayload() {
-        byte[] maxPayload = new byte[EventEnvelope.MAX_PAYLOAD_BYTES];
-        java.util.Arrays.fill(maxPayload, (byte) 'x');
+        String maxPayload = "x".repeat(EventEnvelope.MAX_PAYLOAD_BYTES);
 
         EventEnvelope envelope = EventEnvelope.builder("MaxSize")
-                .payloadBytes(maxPayload)
+                .payloadJson(maxPayload)
                 .build();
 
-        assertEquals(EventEnvelope.MAX_PAYLOAD_BYTES, envelope.payloadBytes().length);
+        assertEquals(EventEnvelope.MAX_PAYLOAD_BYTES, envelope.payloadJson().length());
     }
 
     @Test

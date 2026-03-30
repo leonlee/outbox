@@ -1,5 +1,16 @@
 package io.outbox.spring;
 
+import io.outbox.DefaultOutboxWriter;
+import io.outbox.DispatchResult;
+import io.outbox.EventEnvelope;
+import io.outbox.OutboxWriter;
+import io.outbox.dispatch.DispatcherWriterHook;
+import io.outbox.dispatch.ExponentialBackoffRetryPolicy;
+import io.outbox.dispatch.OutboxDispatcher;
+import io.outbox.jdbc.DataSourceConnectionProvider;
+import io.outbox.jdbc.store.H2OutboxStore;
+import io.outbox.model.EventStatus;
+import io.outbox.registry.DefaultListenerRegistry;
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -9,16 +20,6 @@ import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.DefaultTransactionDefinition;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
-import io.outbox.EventEnvelope;
-import io.outbox.DefaultOutboxWriter;
-import io.outbox.OutboxWriter;
-import io.outbox.dispatch.DispatcherWriterHook;
-import io.outbox.dispatch.ExponentialBackoffRetryPolicy;
-import io.outbox.dispatch.OutboxDispatcher;
-import io.outbox.jdbc.DataSourceConnectionProvider;
-import io.outbox.jdbc.store.H2OutboxStore;
-import io.outbox.model.EventStatus;
-import io.outbox.registry.DefaultListenerRegistry;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -68,7 +69,10 @@ class SpringAdapterIntegrationTest {
     void commitTriggersFastPathAndMarksDone() throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         DefaultListenerRegistry listeners = new DefaultListenerRegistry()
-                .register("UserCreated", event -> latch.countDown());
+                .register("UserCreated", event -> {
+                    latch.countDown();
+                    return DispatchResult.done();
+                });
 
         OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
         OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
@@ -93,7 +97,10 @@ class SpringAdapterIntegrationTest {
     void rollbackDoesNotPersistAndDoesNotEnqueue() throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         DefaultListenerRegistry listeners = new DefaultListenerRegistry()
-                .register("UserCreated", event -> latch.countDown());
+                .register("UserCreated", event -> {
+                    latch.countDown();
+                    return DispatchResult.done();
+                });
 
         OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);
         OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));

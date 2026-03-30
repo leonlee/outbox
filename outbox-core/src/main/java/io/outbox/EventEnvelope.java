@@ -1,11 +1,11 @@
 package io.outbox;
 
 import com.github.f4b6a3.ulid.UlidCreator;
+import io.outbox.spi.JsonCodec;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -14,8 +14,8 @@ import java.util.Objects;
 /**
  * Immutable event envelope containing metadata and payload for an outbox event.
  *
- * <p>Each envelope is assigned a ULID-based {@code eventId} by default. The payload
- * (JSON string or raw bytes) is limited to {@value #MAX_PAYLOAD_BYTES} bytes.
+ * <p>Each envelope is assigned a ULID-based {@code eventId} by default. The JSON payload
+ * is limited to {@value #MAX_PAYLOAD_BYTES} bytes (UTF-8).
  * Use the {@linkplain Builder builder} or the {@code ofJson} factory methods to create instances.
  *
  * @see OutboxWriter
@@ -33,7 +33,6 @@ public final class EventEnvelope {
     private final Instant availableAt;
     private final Map<String, String> headers;
     private final String payloadJson;
-    private final byte[] payloadBytes;
 
     private EventEnvelope(Builder builder) {
         this.eventId = builder.eventId == null ? newEventId() : builder.eventId;
@@ -73,27 +72,25 @@ public final class EventEnvelope {
         }
         this.headers = headerCopy;
 
-        if (builder.payloadJson == null && builder.payloadBytes == null) {
-            throw new IllegalArgumentException("payloadJson or payloadBytes must be set");
+        if (builder.payloadJson == null) {
+            throw new IllegalArgumentException("payloadJson is required");
         }
-        if (builder.payloadJson != null && builder.payloadBytes != null) {
-            throw new IllegalArgumentException("Set either payloadJson or payloadBytes, not both");
+        this.payloadJson = builder.payloadJson;
+        if (this.payloadJson.getBytes(StandardCharsets.UTF_8).length > MAX_PAYLOAD_BYTES) {
+            throw new IllegalArgumentException("Payload exceeds maximum size of " + MAX_PAYLOAD_BYTES + " bytes");
         }
+    }
 
-        if (builder.payloadJson != null) {
-            this.payloadJson = builder.payloadJson;
-            byte[] bytes = builder.payloadJson.getBytes(StandardCharsets.UTF_8);
-            if (bytes.length > MAX_PAYLOAD_BYTES) {
-                throw new IllegalArgumentException("Payload exceeds maximum size of " + MAX_PAYLOAD_BYTES + " bytes");
-            }
-            this.payloadBytes = Arrays.copyOf(bytes, bytes.length);
-        } else {
-            if (builder.payloadBytes.length > MAX_PAYLOAD_BYTES) {
-                throw new IllegalArgumentException("Payload exceeds maximum size of " + MAX_PAYLOAD_BYTES + " bytes");
-            }
-            this.payloadBytes = Arrays.copyOf(builder.payloadBytes, builder.payloadBytes.length);
-            this.payloadJson = new String(this.payloadBytes, StandardCharsets.UTF_8);
-        }
+    /**
+     * Creates a builder with a type-safe event type.
+     *
+     * @param aggregateType the aggregate type for listener routing (enum or other AggregateType implementation)
+     * @param eventType     the event type (enum or other EventType implementation)
+     * @return a new builder
+     */
+    public static Builder builder(AggregateType aggregateType, EventType eventType) {
+        Objects.requireNonNull(eventType, "eventType");
+        return new Builder(aggregateType.name(), eventType.name());
     }
 
     /**
@@ -105,6 +102,17 @@ public final class EventEnvelope {
     public static Builder builder(EventType eventType) {
         Objects.requireNonNull(eventType, "eventType");
         return new Builder(eventType.name());
+    }
+
+    /**
+     * Creates a builder with a string event type.
+     *
+     * @param aggregateType the aggregate type name for listener routing
+     * @param eventType     the event type name
+     * @return a new builder
+     */
+    public static Builder builder(String aggregateType, String eventType) {
+        return new Builder(aggregateType, eventType);
     }
 
     /**
@@ -189,8 +197,16 @@ public final class EventEnvelope {
         return payloadJson;
     }
 
-    public byte[] payloadBytes() {
-        return Arrays.copyOf(payloadBytes, payloadBytes.length);
+    /**
+     * Deserializes the JSON payload into an object of the given type
+     * using the default {@link JsonCodec}.
+     *
+     * @param type the target class
+     * @param <T>  the target type
+     * @return the deserialized payload
+     */
+    public <T> T payload(Class<T> type) {
+        return JsonCodec.getDefault().fromJson(payloadJson, type);
     }
 
     @Override
@@ -219,9 +235,13 @@ public final class EventEnvelope {
         private Duration deliverAfter;
         private Map<String, String> headers;
         private String payloadJson;
-        private byte[] payloadBytes;
 
         private Builder(String eventType) {
+            this.eventType = eventType;
+        }
+
+        private Builder(String aggregateType, String eventType) {
+            this.aggregateType = aggregateType;
             this.eventType = eventType;
         }
 
@@ -342,10 +362,9 @@ public final class EventEnvelope {
         }
 
         /**
-         * Sets the event payload as a JSON string. Mutually exclusive with {@link #payloadBytes}.
+         * Sets the event payload as a JSON string. <b>Required.</b>
          *
-         * <p><b>One of {@code payloadJson} or {@code payloadBytes} is required.</b>
-         * Maximum size: {@value EventEnvelope#MAX_PAYLOAD_BYTES} bytes (UTF-8).
+         * <p>Maximum size: {@value EventEnvelope#MAX_PAYLOAD_BYTES} bytes (UTF-8).
          *
          * @param payloadJson the JSON payload
          * @return this builder
@@ -356,26 +375,12 @@ public final class EventEnvelope {
         }
 
         /**
-         * Sets the event payload as raw bytes. Mutually exclusive with {@link #payloadJson}.
-         *
-         * <p><b>One of {@code payloadJson} or {@code payloadBytes} is required.</b>
-         * Maximum size: {@value EventEnvelope#MAX_PAYLOAD_BYTES} bytes.
-         *
-         * @param payloadBytes the raw byte payload
-         * @return this builder
-         */
-        public Builder payloadBytes(byte[] payloadBytes) {
-            this.payloadBytes = payloadBytes;
-            return this;
-        }
-
-        /**
          * Builds an immutable {@link EventEnvelope}.
          *
          * @return a new event envelope
-         * @throws IllegalArgumentException if neither payload is set, both payloads are set,
+         * @throws IllegalArgumentException if payloadJson is not set,
          *                                  payload exceeds {@value EventEnvelope#MAX_PAYLOAD_BYTES} bytes,
-         *                                  {@code eventType} is empty, or headers contain null keys
+         *                                  {@code eventType} is empty, or headers contain null keys/values
          */
         public EventEnvelope build() {
             return new EventEnvelope(this);

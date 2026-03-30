@@ -1,11 +1,11 @@
 package io.outbox.jdbc;
 
-import org.h2.jdbcx.JdbcDataSource;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 import io.outbox.jdbc.purge.H2EventPurger;
 import io.outbox.model.EventStatus;
 import io.outbox.purge.OutboxPurgeScheduler;
+import org.h2.jdbcx.JdbcDataSource;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;

@@ -19,8 +19,8 @@ import java.util.logging.Logger;
  *
  * @see OutboxWriter
  * @see WriterHook
- * @see io.outbox.spi.TxContext
- * @see io.outbox.spi.OutboxStore
+ * @see TxContext
+ * @see OutboxStore
  */
 public final class DefaultOutboxWriter implements OutboxWriter {
     private static final Logger logger = Logger.getLogger(DefaultOutboxWriter.class.getName());

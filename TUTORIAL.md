@@ -128,6 +128,7 @@ var txContext = new ThreadLocalTxContext();
 var registry = new DefaultListenerRegistry()
         .register("UserCreated", event -> {
             // publish to MQ; include event.eventId() for dedupe
+            return DispatchResult.done();
         });
 
 try(
@@ -189,6 +190,7 @@ OutboxDispatcher dispatcher = OutboxDispatcher.builder()
         .listenerRegistry(new DefaultListenerRegistry()
                 .register("UserCreated", event -> {
                     // publish to MQ; include event.eventId() for dedupe
+                    return DispatchResult.done();
                 }))
         .interceptor(EventInterceptor.before(event ->
                 System.out.println("Dispatching: " + event.eventType())))
@@ -285,8 +287,10 @@ public final class OutboxExample {
                 .connectionProvider(connectionProvider)
                 .outboxStore(outboxStore)
                 .listenerRegistry(new DefaultListenerRegistry()
-                        .register("UserCreated", event ->
-                                System.out.println("Published to MQ: " + event.eventId())))
+                        .register("UserCreated", event -> {
+                                System.out.println("Published to MQ: " + event.eventId());
+                                return DispatchResult.done();
+                        }))
                 .workerCount(2)
                 .hotQueueCapacity(100)
                 .coldQueueCapacity(100)
@@ -368,7 +372,7 @@ The `outbox-spring-boot-starter` auto-configures the entire outbox framework fro
 <dependency>
     <groupId>io.github.leonlee</groupId>
     <artifactId>outbox-spring-boot-starter</artifactId>
-    <version>0.9.1</version>
+    <version>0.9.2</version>
 </dependency>
 ```
 
@@ -394,8 +398,9 @@ Annotate Spring beans with `@OutboxListener`. Each listener must implement `Even
 @OutboxListener(eventType = "UserCreated")
 public class UserCreatedListener implements EventListener {
     @Override
-    public void onEvent(EventEnvelope event) {
+    public DispatchResult onEvent(EventEnvelope event) {
         System.out.println("User created: " + event.payloadJson());
+        return DispatchResult.done();
     }
 }
 
@@ -403,8 +408,9 @@ public class UserCreatedListener implements EventListener {
 @OutboxListener(eventType = "OrderPlaced", aggregateType = "Order")
 public class OrderPlacedListener implements EventListener {
     @Override
-    public void onEvent(EventEnvelope event) {
+    public DispatchResult onEvent(EventEnvelope event) {
         System.out.println("Order placed: " + event.payloadJson());
+        return DispatchResult.done();
     }
 }
 ```
@@ -497,7 +503,7 @@ beans needed:
 <dependency>
     <groupId>io.github.leonlee</groupId>
     <artifactId>outbox-micrometer</artifactId>
-    <version>0.9.1</version>
+    <version>0.9.2</version>
 </dependency>
 <dependency>
 <groupId>org.springframework.boot</groupId>
@@ -515,8 +521,10 @@ All beans are `@ConditionalOnMissingBean`. Define your own to override:
 
 @Bean
 public AbstractJdbcOutboxStore outboxStore(DataSource dataSource) {
-    // Custom store with custom table name and JSON codec
-    return new MySqlOutboxStore("my_outbox", new JacksonJsonCodec());
+    // Custom store with custom table name
+    // Set the codec globally before using stores:
+    // JsonCodec.setDefault(new JacksonJsonCodec(objectMapper));
+    return new MySqlOutboxStore("my_outbox");
 }
 ```
 
@@ -608,12 +616,16 @@ public class OutboxConfiguration {
     @Bean
     public DefaultListenerRegistry listenerRegistry() {
         return new DefaultListenerRegistry()
-                .register("User", "UserCreated", event ->
+                .register("User", "UserCreated", event -> {
                         log.info("User created: id={}, payload={}",
-                                event.eventId(), event.payloadJson()))
-                .register("Order", "OrderPlaced", event ->
+                                event.eventId(), event.payloadJson());
+                        return DispatchResult.done();
+                })
+                .register("Order", "OrderPlaced", event -> {
                         log.info("Order placed: id={}, payload={}",
-                                event.eventId(), event.payloadJson()));
+                                event.eventId(), event.payloadJson());
+                        return DispatchResult.done();
+                });
     }
 
     @Bean(destroyMethod = "close")
@@ -811,10 +823,12 @@ Each datasource needs all of these, completely independent of other stacks:
 
 ```java
 // --- Shared stateless listener (safe to reuse) ---
-EventListener sharedListener = event ->
+EventListener sharedListener = event -> {
                 System.out.printf("[%s/%s] eventId=%s payload=%s%n",
                         event.aggregateType(), event.eventType(),
                         event.eventId(), event.payloadJson());
+                return DispatchResult.done();
+};
 
 // --- Orders stack ---
 DataSource ordersDs = createDataSource("orders");
@@ -1026,7 +1040,8 @@ public OutboxPurgeScheduler purgeScheduler(
 ### How It Works
 
 1. Every `intervalSeconds`, the scheduler calculates `cutoff = now - retention`
-2. It deletes terminal events (status DONE or DEAD) where `done_at < cutoff` (or `created_at < cutoff` when `done_at` is null)
+2. It deletes terminal events (status DONE or DEAD) where `done_at < cutoff` (or `created_at < cutoff` when `done_at` is
+   null)
 3. Deletion happens in batches of `batchSize`, each on its own auto-committed connection
 4. Batching continues until a batch deletes fewer than `batchSize` rows (backlog drained)
 5. Active events (NEW, RETRY) are never touched
@@ -1097,7 +1112,7 @@ import io.opentelemetry.context.propagation.TextMapGetter;
 
 import io.outbox.dispatch.EventInterceptor;
 import io.outbox.model.OutboxEvent;
-import io.outbox.util.JsonCodec;
+import io.outbox.spi.JsonCodec;
 
 Tracer tracer = GlobalOpenTelemetry.getTracer("outbox-dispatcher");
 
@@ -1108,7 +1123,7 @@ EventInterceptor tracingInterceptor = new EventInterceptor() {
     @Override
     public void beforeDispatch(OutboxEvent event) {
         // Parse headers from JSON
-        Map<String, String> headers = JsonCodec.getDefault().parseObject(event.headersJson());
+        Map<String, String> headers = JsonCodec.getDefault().parseStringMap(event.headersJson());
 
         // Extract upstream trace context
         Context extracted = GlobalOpenTelemetry.getPropagators().getTextMapPropagator()
@@ -1265,7 +1280,7 @@ Micrometer `MeterRegistry` for export to Prometheus, Grafana, Datadog, etc.
 <dependency>
     <groupId>io.github.leonlee</groupId>
     <artifactId>outbox-micrometer</artifactId>
-    <version>0.9.1</version>
+    <version>0.9.2</version>
 </dependency>
 ```
 
@@ -1362,22 +1377,24 @@ This produces metrics like `orders.outbox.dispatch.success` and `inventory.outbo
 
 ## 14. Custom JsonCodec
 
-The framework uses `JsonCodec` to encode/decode event header maps (`Map<String, String>`) to/from JSON. The built-in
-`DefaultJsonCodec` is a lightweight, zero-dependency implementation. If you already have Jackson or Gson on your
-classpath, you can replace it for better performance or compatibility.
+The framework uses `JsonCodec` (an SPI interface in `io.outbox.spi`) to encode/decode event payloads and headers
+to/from JSON. A codec is discovered automatically via `ServiceLoader` (e.g., `outbox-gson` ships `GsonJsonCodec`)
+or can be set programmatically with `JsonCodec.setDefault(...)`. If you already have Jackson or Gson on your
+classpath, you can provide a custom codec for better performance or compatibility.
 
-### When to Replace DefaultJsonCodec
+### When to Provide a Custom Codec
 
 - You want to use your existing Jackson/Gson `ObjectMapper` for consistency
-- You need better performance for very large header maps
+- You need better performance for very large payloads or header maps
 - You want to leverage Jackson's streaming parser
+- The Spring Boot Starter auto-configures `JacksonJsonCodec` when Jackson is on the classpath
 
 ### Implement the Interface
 
 ```java
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.outbox.util.JsonCodec;
+import io.outbox.spi.JsonCodec;
 
 import java.util.Collections;
 import java.util.Map;
@@ -1388,17 +1405,27 @@ public class JacksonJsonCodec implements JsonCodec {
     };
 
     @Override
-    public String toJson(Map<String, String> headers) {
-        if (headers == null || headers.isEmpty()) return null;
+    public String toJson(Object obj) {
+        if (obj == null) return null;
         try {
-            return mapper.writeValueAsString(headers);
+            return mapper.writeValueAsString(obj);
         } catch (Exception e) {
-            throw new IllegalArgumentException("Failed to encode headers", e);
+            throw new IllegalArgumentException("Failed to encode JSON", e);
         }
     }
 
     @Override
-    public Map<String, String> parseObject(String json) {
+    public <T> T fromJson(String json, Class<T> type) {
+        if (json == null || json.isBlank()) return null;
+        try {
+            return mapper.readValue(json, type);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Failed to parse JSON", e);
+        }
+    }
+
+    @Override
+    public Map<String, String> parseStringMap(String json) {
         if (json == null || json.isBlank() || "null".equals(json.trim())) {
             return Collections.emptyMap();
         }
@@ -1411,29 +1438,21 @@ public class JacksonJsonCodec implements JsonCodec {
 }
 ```
 
-### Inject into Components
+### Set the Global Codec
 
-The custom codec can be injected at three points:
+The codec is global — set it once at application startup before any outbox components are used:
 
 ```java
-JsonCodec codec = new JacksonJsonCodec();
+// Set programmatically (e.g., in main() or @PostConstruct)
+JsonCodec.setDefault(new JacksonJsonCodec());
 
-// 1. OutboxStore (used for insertNew and poll/claim row mapping)
-var outboxStore = new H2OutboxStore("outbox_event", codec);
-
-// 2. OutboxPoller (used when converting OutboxEvent → EventEnvelope)
-OutboxPoller poller = OutboxPoller.builder()
-        .connectionProvider(connectionProvider)
-        .outboxStore(outboxStore)
-        .handler(handler)
-        .jsonCodec(codec)
-        .build();
-
-// 3. Auto-detection with custom codec
-var autoStore = JdbcOutboxStores.detect(dataSource, codec);
+// All outbox components (stores, poller, writer) use JsonCodec.getDefault() automatically
+var outboxStore = JdbcOutboxStores.detect(dataSource);
 ```
 
-If you don't inject a codec, `JsonCodec.getDefault()` (the built-in `DefaultJsonCodec` singleton) is used everywhere.
+Alternatively, register your codec via `ServiceLoader` by placing a file at
+`META-INF/services/io.outbox.spi.JsonCodec` containing your implementation class name (see `outbox-gson` for an
+example). The Spring Boot Starter auto-configures `JacksonJsonCodec` when Jackson is on the classpath.
 
 ---
 
@@ -1573,34 +1592,29 @@ with handler-specified delay).
 
 ### 16.1 Deferred Re-delivery with DispatchResult
 
-Return `DispatchResult.retryAfter(delay)` from `handleEvent()` when the event isn't ready to be processed yet. This
+Return `DispatchResult.retryAfter(delay)` from `onEvent()` when the event isn't ready to be processed yet. This
 does **not** count against `maxAttempts` — the event is rescheduled without penalty.
 
 ```java
-// Simple case: onEvent() lambda — framework returns Done automatically
+// Simple case: return Done on success
 registry.register("OrderPlaced", event -> {
   kafkaTemplate.send("orders", event.eventId(), event.payloadJson());
+  return DispatchResult.done();
 });
 
-// Advanced case: override handleEvent() for controlled retry
-registry.register("PaymentStatus", new EventListener() {
-  @Override
-  public void onEvent(EventEnvelope event) {}
+// Controlled retry: return RetryAfter when not ready
+registry.register("PaymentStatus", event -> {
+  String status = callPaymentGateway(event.aggregateId());
 
-  @Override
-  public DispatchResult handleEvent(EventEnvelope event) throws Exception {
-    String status = callPaymentGateway(event.aggregateId());
-
-    return switch (status) {
-      case "completed" -> {
-        publishDownstream(event);
-        yield DispatchResult.done();
-      }
-      case "pending" -> DispatchResult.retryAfter(Duration.ofSeconds(30));
-      case "failed"  -> throw new RuntimeException("Payment failed");
-      default         -> throw new RuntimeException("Unknown status: " + status);
-    };
-  }
+  return switch (status) {
+    case "completed" -> {
+      publishDownstream(event);
+      yield DispatchResult.done();
+    }
+    case "pending" -> DispatchResult.retryAfter(Duration.ofSeconds(30));
+    case "failed"  -> throw new RuntimeException("Payment failed");
+    default         -> throw new RuntimeException("Unknown status: " + status);
+  };
 });
 ```
 
@@ -1610,35 +1624,29 @@ Throw `RetryAfterException` when a transient failure occurs and the handler know
 from an HTTP `Retry-After` header). Unlike `DispatchResult.RetryAfter`, this **does** count against `maxAttempts`.
 
 ```java
-registry.register("WebhookDelivery", new EventListener() {
-  @Override
-  public void onEvent(EventEnvelope event) {}
+registry.register("WebhookDelivery", event -> {
+  var response = httpClient.post(webhookUrl, event.payloadJson());
 
-  @Override
-  public DispatchResult handleEvent(EventEnvelope event) throws Exception {
-    var response = httpClient.post(webhookUrl, event.payloadJson());
-
-    return switch (response.statusCode()) {
-      case 200, 201, 204 -> DispatchResult.done();
-      case 429 -> {
-        // Rate limited — use server's Retry-After header
-        long retryAfterSecs = Long.parseLong(
-            response.headers().firstValue("Retry-After").orElse("60"));
-        throw new RetryAfterException(
-            Duration.ofSeconds(retryAfterSecs),
-            "Rate limited by webhook endpoint");
-      }
-      default -> throw new RuntimeException(
-          "Webhook delivery failed: HTTP " + response.statusCode());
-    };
-  }
+  return switch (response.statusCode()) {
+    case 200, 201, 204 -> DispatchResult.done();
+    case 429 -> {
+      // Rate limited — use server's Retry-After header
+      long retryAfterSecs = Long.parseLong(
+          response.headers().firstValue("Retry-After").orElse("60"));
+      throw new RetryAfterException(
+          Duration.ofSeconds(retryAfterSecs),
+          "Rate limited by webhook endpoint");
+    }
+    default -> throw new RuntimeException(
+        "Webhook delivery failed: HTTP " + response.statusCode());
+  };
 });
 ```
 
 ### 16.3 Choosing Between the Two
 
-| Mechanism                     | Attempt count | When to use                                       |
-|-------------------------------|---------------|---------------------------------------------------|
+| Mechanism                     | Attempt count   | When to use                                       |
+|-------------------------------|-----------------|---------------------------------------------------|
 | `DispatchResult.retryAfter()` | Not incremented | Polling external state, waiting for preconditions |
 | `RetryAfterException`         | Incremented     | Transient failures with known recovery delay      |
 | Regular exception             | Incremented     | Unexpected failures (uses framework RetryPolicy)  |
@@ -1889,10 +1897,10 @@ class OutboxIntegrationTest {
 
 ### 18.6 Available Test Fixtures
 
-| Class | Description |
-|-------|-------------|
-| `OutboxTestSupport` | Convenience builder that wires all fixtures together |
-| `InMemoryOutboxStore` | `ConcurrentHashMap`-backed `OutboxStore` — supports all operations |
-| `StubTxContext` | Controllable `TxContext` with `runAfterCommit()`/`runAfterRollback()` |
-| `RecordingWriterHook` | `WriterHook` that records all lifecycle phase invocations |
+| Class                    | Description                                                                |
+|--------------------------|----------------------------------------------------------------------------|
+| `OutboxTestSupport`      | Convenience builder that wires all fixtures together                       |
+| `InMemoryOutboxStore`    | `ConcurrentHashMap`-backed `OutboxStore` — supports all operations         |
+| `StubTxContext`          | Controllable `TxContext` with `runAfterCommit()`/`runAfterRollback()`      |
+| `RecordingWriterHook`    | `WriterHook` that records all lifecycle phase invocations                  |
 | `NoOpConnectionProvider` | `ConnectionProvider` returning null (sufficient for `InMemoryOutboxStore`) |

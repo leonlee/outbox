@@ -1,6 +1,7 @@
 package io.outbox;
 
 import org.junit.jupiter.api.Test;
+import io.outbox.EventException;
 
 import java.time.Duration;
 
@@ -16,7 +17,7 @@ class RetryAfterExceptionTest {
         Duration delay = Duration.ofSeconds(60);
         var ex = new RetryAfterException(delay);
         assertEquals(delay, ex.retryAfter());
-        assertInstanceOf(RuntimeException.class, ex);
+        assertInstanceOf(RecoverableException.class, ex);
     }
 
     @Test
@@ -83,7 +84,10 @@ class RetryAfterExceptionTest {
     }
 
     @Test
-    void isRuntimeException() {
-        assertInstanceOf(RuntimeException.class, new RetryAfterException(Duration.ofSeconds(1)));
+    void isRecoverableException() {
+        var ex = new RetryAfterException(Duration.ofSeconds(1));
+        assertInstanceOf(RecoverableException.class, ex);
+        assertInstanceOf(EventException.class, ex);
+        assertInstanceOf(RuntimeException.class, ex);
     }
 }

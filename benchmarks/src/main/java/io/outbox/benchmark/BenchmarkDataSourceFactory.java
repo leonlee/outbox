@@ -2,11 +2,11 @@ package io.outbox.benchmark;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
-import org.h2.jdbcx.JdbcDataSource;
 import io.outbox.jdbc.store.AbstractJdbcOutboxStore;
 import io.outbox.jdbc.store.H2OutboxStore;
 import io.outbox.jdbc.store.MySqlOutboxStore;
 import io.outbox.jdbc.store.PostgresOutboxStore;
+import org.h2.jdbcx.JdbcDataSource;
 
 import javax.sql.DataSource;
 import java.io.PrintWriter;

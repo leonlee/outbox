@@ -1,5 +1,14 @@
 package io.outbox.benchmark;
 
+import io.outbox.DefaultOutboxWriter;
+import io.outbox.EventEnvelope;
+import io.outbox.OutboxWriter;
+import io.outbox.benchmark.BenchmarkDataSourceFactory.DatabaseSetup;
+import io.outbox.jdbc.DataSourceConnectionProvider;
+import io.outbox.jdbc.store.AbstractJdbcOutboxStore;
+import io.outbox.jdbc.tx.JdbcTransactionManager;
+import io.outbox.jdbc.tx.ThreadLocalTxContext;
+import io.outbox.model.OutboxEvent;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -13,15 +22,6 @@ import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Warmup;
-import io.outbox.EventEnvelope;
-import io.outbox.DefaultOutboxWriter;
-import io.outbox.OutboxWriter;
-import io.outbox.benchmark.BenchmarkDataSourceFactory.DatabaseSetup;
-import io.outbox.jdbc.DataSourceConnectionProvider;
-import io.outbox.jdbc.store.AbstractJdbcOutboxStore;
-import io.outbox.jdbc.tx.JdbcTransactionManager;
-import io.outbox.jdbc.tx.ThreadLocalTxContext;
-import io.outbox.model.OutboxEvent;
 
 import javax.sql.DataSource;
 import java.sql.Connection;

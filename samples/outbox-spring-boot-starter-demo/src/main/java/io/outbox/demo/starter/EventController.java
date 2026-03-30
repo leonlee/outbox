@@ -1,5 +1,8 @@
 package io.outbox.demo.starter;
 
+import io.outbox.EventEnvelope;
+import io.outbox.OutboxWriter;
+import io.outbox.spi.JsonCodec;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -7,9 +10,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import io.outbox.EventEnvelope;
-import io.outbox.OutboxWriter;
-import io.outbox.util.JsonCodec;
 
 import java.util.List;
 import java.util.Map;

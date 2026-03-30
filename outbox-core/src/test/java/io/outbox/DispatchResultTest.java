@@ -6,6 +6,7 @@ import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -47,5 +48,26 @@ class DispatchResultTest {
     @Test
     void retryAfterRejectsNegativeDuration() {
         assertThrows(IllegalArgumentException.class, () -> DispatchResult.retryAfter(Duration.ofSeconds(-1)));
+    }
+
+    @Test
+    void deadSingletonReturnsSameInstance() {
+        assertSame(DispatchResult.DEAD, DispatchResult.dead());
+    }
+
+    @Test
+    void deadIsDeadInstance() {
+        assertInstanceOf(DispatchResult.Dead.class, DispatchResult.dead());
+    }
+
+    @Test
+    void deadWithReasonStoresReason() {
+        DispatchResult.Dead result = DispatchResult.dead("invalid payload");
+        assertEquals("invalid payload", result.reason());
+    }
+
+    @Test
+    void deadWithoutReasonHasNullReason() {
+        assertNull(DispatchResult.dead().reason());
     }
 }

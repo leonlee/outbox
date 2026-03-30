@@ -11,53 +11,55 @@ Minimal, Spring-free outbox framework with JDBC persistence, optional hot-path e
 ## Installation
 
 Artifacts are published to [Maven Central](https://central.sonatype.com/namespace/io.github.leonlee). Current release: *
-*0.9.1**.
+*0.9.2**.
 
 ```xml
 <!-- Core APIs, dispatcher, poller, registries (required) -->
 <dependency>
     <groupId>io.github.leonlee</groupId>
     <artifactId>outbox-core</artifactId>
-    <version>0.9.1</version>
+    <version>0.9.2</version>
 </dependency>
 
         <!-- JDBC outbox store and transaction helpers (required for persistence) -->
 <dependency>
 <groupId>io.github.leonlee</groupId>
 <artifactId>outbox-jdbc</artifactId>
-<version>0.9.1</version>
+<version>0.9.2</version>
 </dependency>
 
         <!-- Spring Boot Starter — auto-configures everything (recommended for Spring Boot) -->
 <dependency>
 <groupId>io.github.leonlee</groupId>
 <artifactId>outbox-spring-boot-starter</artifactId>
-<version>0.9.1</version>
+<version>0.9.2</version>
 </dependency>
 
         <!-- Spring transaction integration (optional, only if using Spring without Boot) -->
 <dependency>
 <groupId>io.github.leonlee</groupId>
 <artifactId>outbox-spring-adapter</artifactId>
-<version>0.9.1</version>
+<version>0.9.2</version>
 </dependency>
 
         <!-- Micrometer metrics bridge for Prometheus/Grafana (optional) -->
 <dependency>
 <groupId>io.github.leonlee</groupId>
 <artifactId>outbox-micrometer</artifactId>
-<version>0.9.1</version>
+<version>0.9.2</version>
 </dependency>
 ```
 
 ## Modules
 
 - `outbox-core`: core APIs, hooks, dispatcher, poller, and registries.
+- `outbox-gson`: Gson-based `JsonCodec` SPI implementation (auto-discovered via `ServiceLoader`).
 - `outbox-jdbc`: JDBC outbox store and transaction helpers.
-- `outbox-spring-boot-starter`: Spring Boot auto-configuration with `@OutboxListener` annotation.
+- `outbox-spring-boot-starter`: Spring Boot auto-configuration with `@OutboxListener` annotation and `JacksonJsonCodec`.
 - `outbox-spring-adapter`: optional `TxContext` implementation for Spring (without Boot).
 - `outbox-micrometer`: Micrometer metrics bridge for Prometheus/Grafana.
-- `outbox-testing`: test fixtures (`InMemoryOutboxStore`, `StubTxContext`, `OutboxTestSupport`) for unit testing without JDBC.
+- `outbox-testing`: test fixtures (`InMemoryOutboxStore`, `StubTxContext`, `OutboxTestSupport`) for unit testing without
+  JDBC.
 - `samples/outbox-demo`: minimal, non-Spring demo (H2).
 - `samples/outbox-spring-demo`: Spring demo app (manual wiring).
 - `samples/outbox-spring-boot-starter-demo`: Spring Boot Starter demo (zero-config auto-configuration).
@@ -97,7 +99,7 @@ Artifacts are published to [Maven Central](https://central.sonatype.com/namespac
     +--------+---------+
              |
              v
-    +------------------+ handleEvent() +--------------+
+    +------------------+   onEvent()   +--------------+
     | ListenerRegistry | ------------> |  Listener A  |
     +--------+---------+               +--------------+
              |                         +--------------+
@@ -116,7 +118,7 @@ Hot path is optional: supply an `WriterHook` (for example, `DispatcherWriterHook
 - **After-commit hook**: `DispatcherWriterHook` enqueues the event into the hot queue after commit. Delayed events
   (with `availableAt` or `deliverAfter`) are skipped — the poller delivers them at the scheduled time. If the queue is
   full, the event stays in the DB.
-- **Dispatch**: `OutboxDispatcher` drains hot/cold queues, routes to a single listener via `handleEvent()`, and updates
+- **Dispatch**: `OutboxDispatcher` drains hot/cold queues, routes to a single listener via `onEvent()`, and updates
   status based on `DispatchResult` (`DONE`, `DEFERRED`, `RETRY`, or `DEAD`).
 - **Fallback**: `OutboxPoller` periodically scans/claims pending rows and enqueues them into the cold queue.
 - **Delayed delivery**: Use `EventEnvelope.builder(...).deliverAfter(Duration.ofMinutes(30))` or
@@ -165,7 +167,9 @@ If clients need to archive events for audit, they should do so in their `EventLi
 - Delivery is **at-least-once**. Downstream must dedupe by `eventId`.
 - Listener exceptions trigger `RETRY` with backoff; after `maxAttempts`, events go `DEAD`.
 - Handlers can return `DispatchResult.retryAfter(delay)` for deferred re-delivery without counting against
-  `maxAttempts`, or throw `RetryAfterException` for handler-controlled retry timing that does count.
+  `maxAttempts`, return `DispatchResult.dead()` to immediately dead-letter an event, or throw
+  `RetryAfterException` for handler-controlled retry timing that does count.
+- `UnrecoverableException` (and subclass `PayloadParseException`) marks events DEAD immediately without retry.
 - If status updates fail, the event remains in DB and may be retried later.
 
 ## Composite Builder
@@ -253,7 +257,7 @@ For Spring Boot applications, just add the starter dependency — no manual `@Co
 <dependency>
     <groupId>io.github.leonlee</groupId>
     <artifactId>outbox-spring-boot-starter</artifactId>
-    <version>0.9.1</version>
+    <version>0.9.2</version>
 </dependency>
 ```
 
@@ -264,8 +268,9 @@ Annotate your listeners with `@OutboxListener`:
 @Component
 @OutboxListener(eventType = "OrderPlaced", aggregateType = "Order")
 public class OrderListener implements EventListener {
-    public void onEvent(EventEnvelope event) {
+    public DispatchResult onEvent(EventEnvelope event) {
         // publish to MQ, update cache, etc.
+        return DispatchResult.done();
     }
 }
 ```

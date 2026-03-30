@@ -1,8 +1,5 @@
 package io.outbox.jdbc;
 
-import org.h2.jdbcx.JdbcDataSource;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 import io.outbox.dispatch.DispatcherPollerHandler;
 import io.outbox.dispatch.ExponentialBackoffRetryPolicy;
 import io.outbox.dispatch.OutboxDispatcher;
@@ -10,6 +7,9 @@ import io.outbox.jdbc.store.H2OutboxStore;
 import io.outbox.model.EventStatus;
 import io.outbox.poller.OutboxPoller;
 import io.outbox.registry.DefaultListenerRegistry;
+import org.h2.jdbcx.JdbcDataSource;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -95,7 +95,7 @@ class OutboxEdgeCaseTest {
                         .connectionProvider(connectionProvider)
                         .outboxStore(outboxStore)
                         .listenerRegistry(new DefaultListenerRegistry())
-                        .maxAttempts(0)
+                        .maxAttempts(-1)
                         .build());
 
         assertThrows(IllegalArgumentException.class, () ->

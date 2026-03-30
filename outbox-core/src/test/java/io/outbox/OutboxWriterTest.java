@@ -1,8 +1,8 @@
 package io.outbox;
 
-import org.junit.jupiter.api.Test;
 import io.outbox.spi.OutboxStore;
 import io.outbox.spi.TxContext;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.time.Duration;

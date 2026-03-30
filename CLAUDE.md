@@ -21,18 +21,21 @@ Java 17 is the baseline. CI tests against Java 17 and 21.
 
 Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, and poller fallback. Delivers events *
 *at-least-once**; downstream systems must dedupe by `eventId`. The `Outbox` composite builder (`singleNode`/`multiNode`/
-`ordered`) is the recommended entry point; individual builders (`OutboxDispatcher.builder()`, `OutboxPoller.builder()`)
-are available for advanced wiring.
+`ordered`/`writerOnly`) is the recommended entry point; individual builders (`OutboxDispatcher.builder()`,
+`OutboxPoller.builder()`) are available for advanced wiring.
 
 ### Modules
 
-- **outbox-core**: Core interfaces, dispatcher, poller, registries. Zero external dependencies.
+- **outbox-core**: Core interfaces, dispatcher, poller, registries. Only external dependency is `ulid-creator`.
 - **outbox-jdbc**: JDBC outbox store hierarchy (`AbstractJdbcOutboxStore` with H2/MySQL/PostgreSQL subclasses),
   `JdbcTemplate` utility, manual transaction helpers (`JdbcTransactionManager`, `ThreadLocalTxContext`).
 - **outbox-spring-adapter**: Optional `SpringTxContext` for Spring transaction integration.
 - **outbox-micrometer**: Micrometer metrics bridge (`MicrometerMetricsExporter`) for Prometheus/Grafana.
+- **outbox-gson**: Gson-based `JsonCodec` implementation. Auto-discovered via `ServiceLoader`.
 - **outbox-spring-boot-starter**: Spring Boot auto-configuration starter. Auto-wires `Outbox`, `OutboxWriter`, store,
-  poller, dispatcher from `application.properties`. `@OutboxListener` annotation for declarative listener registration.
+  poller, dispatcher from `application.properties`. `@OutboxListener` annotation and `BoundEventListener` bean
+  discovery for declarative listener registration. `JacksonJsonCodec` auto-configured with Spring's `ObjectMapper`.
+  `OutboxLifecycle` (`SmartLifecycle`) starts the poller after all listeners are registered, eliminating the startup race.
 - **outbox-testing**: Test fixtures for unit testing without JDBC: `InMemoryOutboxStore`, `StubTxContext`,
   `RecordingWriterHook`, `NoOpConnectionProvider`, `OutboxTestSupport`.
 - **benchmarks**: JMH benchmarks for write throughput, dispatch latency, and poller throughput (not published).
@@ -56,13 +59,20 @@ outbox-core/src/main/java/
         ├── AggregateType.java (interface)
         ├── StringEventType.java (record)
         ├── StringAggregateType.java (record)
-        ├── EventListener.java (interface)
-        ├── DispatchResult.java (sealed interface: Done, RetryAfter)
-        ├── RetryAfterException.java
+        ├── EventListener.java (@FunctionalInterface: DispatchResult onEvent(EventEnvelope))
+        ├── BoundEventListener.java (abstract: pre-bound aggregateType + eventType)
+        ├── DispatchResult.java (sealed interface: Done, RetryAfter, Dead)
+        ├── EventException.java (base exception)
+        ├── RecoverableException.java (transient failures, eligible for retry)
+        ├── UnrecoverableException.java (deterministic failures → DEAD immediately)
+        ├── PayloadParseException.java (extends UnrecoverableException)
+        ├── RetryAfterException.java (extends RecoverableException)
         ├── WriterHook.java (interface)
         │
         │  # SPI - Extension Point Interfaces
         ├── spi/
+        │   ├── JsonCodec.java (SPI interface: toJson/fromJson/parseStringMap)
+        │   ├── JsonCodecHolder.java (ServiceLoader discovery + programmatic override)
         │   ├── TxContext.java
         │   ├── ConnectionProvider.java
         │   ├── OutboxStore.java
@@ -102,9 +112,12 @@ outbox-core/src/main/java/
         │   └── DefaultListenerRegistry.java
         │
         └── util/
-            ├── DaemonThreadFactory.java
-            ├── JsonCodec.java (interface)
-            └── DefaultJsonCodec.java
+            └── DaemonThreadFactory.java
+
+outbox-gson/src/main/java/
+└── io/
+    └── outbox/gson/
+        └── GsonJsonCodec.java
 
 outbox-jdbc/src/main/java/
 └── io/
@@ -145,7 +158,8 @@ outbox-jdbc/src/main/java/
 
 - **TxContext**: Abstracts transaction lifecycle (`isTransactionActive()`, `currentConnection()`, `afterCommit()`,
   `afterRollback()`). Implementations: `ThreadLocalTxContext` (`io.outbox.jdbc.tx`, JDBC), `SpringTxContext` (Spring).
-- **OutboxStore**: Persistence contract (`insertNew`, `insertBatch`, `markDone`, `markRetry`, `markDead`, `markDeferred`,
+- **OutboxStore**: Persistence contract (`insertNew`, `insertBatch`, `markDone`, `markRetry`, `markDead`,
+  `markDeferred`,
   `pollPending`, `claimPending`, `queryDead`, `replayDead`, `countDead`). `insertBatch` defaults to looping `insertNew`;
   `AbstractJdbcOutboxStore` overrides with `addBatch/executeBatch`. Implemented by `AbstractJdbcOutboxStore` hierarchy
   in `io.outbox.jdbc.store`.
@@ -153,27 +167,28 @@ outbox-jdbc/src/main/java/
   H2-compatible default `claimPending`. Subclasses: `H2OutboxStore`, `MySqlOutboxStore` (UPDATE...ORDER BY...LIMIT),
   `PostgresOutboxStore` (FOR UPDATE SKIP LOCKED + RETURNING).
 - **JdbcOutboxStores** (`io.outbox.jdbc.store`): Static utility with ServiceLoader registry (
-  `META-INF/services/io.outbox.jdbc.store.AbstractJdbcOutboxStore`) and `detect(DataSource)` auto-detection. Overloaded
-  `detect(DataSource, JsonCodec)` creates new instances with a custom codec.
+  `META-INF/services/io.outbox.jdbc.store.AbstractJdbcOutboxStore`) and `detect(DataSource)` auto-detection.
 - **Outbox**: Composite entry point that wires `OutboxWriter` and optionally `OutboxDispatcher`, `OutboxPoller`,
   `OutboxPurgeScheduler` into a single `AutoCloseable`. Four scenario builders via sealed `AbstractBuilder<B>` (CRTP):
   `singleNode()` (hot path + poller), `multiNode()` (hot path + claim-based locking; `claimLocking()` required),
   `ordered()` (poller-only, forces `workerCount=1`, `maxAttempts=1`, no `WriterHook`), `writerOnly()` (CDC mode,
-  writer + optional age-based purge, no dispatcher/poller). `close()` shuts down purgeScheduler → poller → dispatcher (
-  null components skipped). Access the writer via `outbox.writer()`.
+  writer + optional age-based purge, no dispatcher/poller). `deferStart(true)` builds all components without starting
+  the poller — call `outbox.start()` later (used by Spring Boot's `OutboxLifecycle` to avoid startup race).
+  `close()` shuts down purgeScheduler → poller → dispatcher (null components skipped). Access the writer via
+  `outbox.writer()`.
 - **OutboxDispatcher**: Dual-queue single-event processor with hot queue (afterCommit callbacks) and cold queue (poller
-  fallback). Each event is dispatched individually: acquire in-flight → run interceptors → call `listener.handleEvent()`
-  → handle `DispatchResult` (Done/RetryAfter) → markDone/markDeferred/markRetry/markDead. Created via
+  fallback). Each event is dispatched individually: acquire in-flight → run interceptors → call `listener.onEvent()`
+  → handle `DispatchResult` (Done/RetryAfter/Dead) → markDone/markDeferred/markRetry/markDead. Created via
   `OutboxDispatcher.builder()`. Uses `InFlightTracker` for deduplication,
   `RetryPolicy` for exponential backoff, `EventInterceptor` for cross-cutting hooks, fair 2:1 hot/cold queue draining,
   and graceful shutdown with configurable drain timeout.
 - **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails. Created via `OutboxPoller.builder()`. Uses an
   `OutboxPollerHandler` to forward events. Two modes: single-node (default, `pollPending`) and multi-node (
-  `claimLocking()` enables `claimPending` with row-level locks). Accepts optional `JsonCodec` via `.jsonCodec()` builder
-  method.
-- **JsonCodec**: Interface for `Map<String, String>` ↔ JSON encoding/decoding. `DefaultJsonCodec` is the built-in
-  zero-dependency implementation (singleton via `JsonCodec.getDefault()`). Injectable into `AbstractJdbcOutboxStore`,
-  `OutboxPoller`, and `JdbcOutboxStores.detect()` for users who prefer Jackson/Gson.
+  `claimLocking()` enables `claimPending` with row-level locks).
+- **JsonCodec** (`io.outbox.spi`): SPI interface for JSON serialization (`toJson(Object)`, `fromJson(String, Class)`,
+  `parseStringMap(String)`). Resolved via `setDefault()` or `ServiceLoader` from
+  `META-INF/services/io.outbox.spi.JsonCodec`. `outbox-gson` provides `GsonJsonCodec` (auto-discovered);
+  `outbox-spring-boot-starter` provides `JacksonJsonCodec` (auto-configured with Spring's `ObjectMapper`).
 - **TableNames**: Shared utility in `io.outbox.jdbc` for table name validation (regex `[a-zA-Z_][a-zA-Z0-9_]*`).
 - **OutboxWriter**: Interface for writing events. Four methods: `write(EventEnvelope)`, `write(String, String)`,
   `write(EventType, String)`, `writeAll(List)`. Default implementation is `DefaultOutboxWriter`.
@@ -184,12 +199,15 @@ outbox-jdbc/src/main/java/
 - **WriterHook**: Lifecycle hook for `OutboxWriter` batch writes. Phases: `beforeWrite` (transform, may abort) →
   insert → `afterWrite` (observational) → tx commit/rollback → `afterCommit`/`afterRollback` (swallowed).
   `WriterHook.NOOP` does nothing (poller-only mode).
-- **DispatcherWriterHook** (`io.outbox.dispatch`): `WriterHook` implementation that bridges to the dispatcher's hot queue.
+- **DispatcherWriterHook** (`io.outbox.dispatch`): `WriterHook` implementation that bridges to the dispatcher's hot
+  queue.
   `afterCommit` enqueues each event individually as `QueuedEvent(event, HOT, 0)`. Skips delayed events
   (`isDelayed()`) — they stay in DB for the poller to deliver at `availableAt`. Accepts optional `MetricsExporter`.
-- **DispatcherPollerHandler** (`io.outbox.dispatch`): `OutboxPollerHandler` implementation that bridges to the dispatcher's
+- **DispatcherPollerHandler** (`io.outbox.dispatch`): `OutboxPollerHandler` implementation that bridges to the
+  dispatcher's
   cold queue.
-- **QueuedEvent** (`io.outbox.dispatch`): Simple record `(EventEnvelope envelope, Source source, int attempts)` wrapping a
+- **QueuedEvent** (`io.outbox.dispatch`): Simple record `(EventEnvelope envelope, Source source, int attempts)` wrapping
+  a
   single event with its origin (HOT/COLD) and attempt count.
 - **JdbcTemplate**: Lightweight JDBC helper (`update`, `query`, `updateReturning`) used by `AbstractJdbcOutboxStore`
   subclasses.
@@ -205,12 +223,19 @@ outbox-jdbc/src/main/java/
   `AutoCloseable`, daemon threads (same lifecycle as `OutboxPoller`). Loops batches until `count < batchSize`.
 - **DeadEventManager** (`io.outbox.dead`): Connection-managed facade for querying, counting, and replaying DEAD events.
   Constructor takes `ConnectionProvider` + `OutboxStore`.
-- **MicrometerMetricsExporter** (`io.outbox.micrometer`): Micrometer-based `MetricsExporter` implementation with counters
+- **MicrometerMetricsExporter** (`io.outbox.micrometer`): Micrometer-based `MetricsExporter` implementation with
+  counters
   and gauges. Tracks `incrementDispatchDeferred` for handler-deferred events and `incrementHotSkippedDelayed` for
   delayed events bypassing the hot path. Supports custom `namePrefix` for multi-instance use.
-- **DispatchResult**: Sealed interface returned by `EventListener.handleEvent()`. `Done` (singleton) marks event
-  complete. `RetryAfter(Duration)` defers re-delivery without counting against `maxAttempts`.
-- **RetryAfterException**: RuntimeException with handler-specified retry delay. Unlike `DispatchResult.RetryAfter`,
+- **DispatchResult**: Sealed interface returned by `EventListener.onEvent()`. `Done` (singleton) marks event
+  complete. `RetryAfter(Duration)` defers re-delivery without counting against `maxAttempts`. `Dead(String)` marks
+  event as immediately DEAD with optional reason.
+- **EventException**: Base exception hierarchy. `RecoverableException` (transient, eligible for retry) and
+  `UnrecoverableException` (deterministic, straight to DEAD). `PayloadParseException` extends `UnrecoverableException`.
+- **BoundEventListener**: Abstract class implementing `EventListener` with pre-bound `aggregateType` and `eventType`.
+  Registered via `registry.register(boundListener)`. In Spring Boot, auto-discovered as a bean.
+- **RetryAfterException**: `RecoverableException` with handler-specified retry delay. Unlike
+  `DispatchResult.RetryAfter`,
   counts against `maxAttempts`. Dispatcher uses exception's `retryAfter()` instead of `RetryPolicy`.
 
 ### Event Flow
@@ -221,12 +246,13 @@ outbox-jdbc/src/main/java/
    OutboxDispatcher hot queue; delayed events with `availableAt` are skipped — the poller delivers them later)
 3. If hot queue full, event is dropped (logged) and poller picks it up later
 4. OutboxDispatcher workers process events one at a time: acquire in-flight → run interceptors → find listener via
-   `(aggregateType, eventType)` → call `listener.handleEvent()` → handle DispatchResult:
-   - Done (or null): markDone
-   - RetryAfter: markDeferred (no attempt increment)
-   - Exception: markRetry (or markDead if maxAttempts exhausted)
-   - RetryAfterException: markRetry with handler delay (counts against maxAttempts)
-   - UnroutableEventException: markDead immediately (no retry)
+   `(aggregateType, eventType)` → call `listener.onEvent()` → handle DispatchResult:
+    - Done: markDone
+    - RetryAfter: markDeferred (no attempt increment)
+    - Dead: markDead immediately with optional reason
+    - UnrecoverableException: markDead immediately (no retry, no attempt increment)
+    - RetryAfterException: markRetry with handler delay (counts against maxAttempts)
+    - Other exception: markRetry (or markDead if maxAttempts exhausted)
 
 ## Coding Style
 
@@ -239,8 +265,8 @@ outbox-jdbc/src/main/java/
 
 - JUnit Jupiter with `*Test` suffix (integration tests use `*IntegrationTest`)
 - H2 in-memory database for tests
-- Tests in `outbox-core/src/test`, `outbox-jdbc/src/test`, `outbox-spring-adapter/src/test`, and
-  `outbox-micrometer/src/test`
+- Tests in `outbox-core/src/test`, `outbox-gson/src/test`, `outbox-jdbc/src/test`, `outbox-spring-adapter/src/test`,
+  `outbox-micrometer/src/test`, `outbox-spring-boot-starter/src/test`, and `outbox-testing/src/test`
 
 ## Release Process
 
@@ -268,8 +294,8 @@ git commit -am "chore: bump version to Y-SNAPSHOT"
 git push && git push origin vX
 ```
 
-Only library modules are published: `outbox-core`, `outbox-jdbc`, `outbox-spring-adapter`, `outbox-micrometer`,
-`outbox-spring-boot-starter` (not samples or benchmarks).
+Only library modules are published: `outbox-core`, `outbox-gson`, `outbox-jdbc`, `outbox-spring-adapter`,
+`outbox-micrometer`, `outbox-spring-boot-starter`, `outbox-testing` (not samples or benchmarks).
 
 ### Maven Central Prerequisites (one-time setup)
 

@@ -1,13 +1,12 @@
 package io.outbox.jdbc;
 
-import org.h2.jdbcx.JdbcDataSource;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 import io.outbox.EventEnvelope;
 import io.outbox.jdbc.store.H2OutboxStore;
 import io.outbox.model.EventStatus;
 import io.outbox.model.OutboxEvent;
-import io.outbox.util.JsonCodec;
+import org.h2.jdbcx.JdbcDataSource;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -15,7 +14,6 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -507,39 +505,6 @@ class JdbcOutboxStoreTest {
 
             assertEquals(1, first);
             assertEquals(0, second);
-        }
-    }
-
-    @Test
-    void insertNewUsesCustomJsonCodec() throws SQLException {
-        JsonCodec customCodec = new JsonCodec() {
-            @Override
-            public String toJson(Map<String, String> headers) {
-                return "CUSTOM_JSON";
-            }
-
-            @Override
-            public Map<String, String> parseObject(String json) {
-                return Collections.emptyMap();
-            }
-        };
-        H2OutboxStore customStore = new H2OutboxStore("outbox_event", customCodec);
-
-        EventEnvelope event = EventEnvelope.builder("TestEvent")
-                .headers(Map.of("key", "value"))
-                .payloadJson("{}")
-                .build();
-
-        try (Connection conn = dataSource.getConnection()) {
-            customStore.insertNew(conn, event);
-
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT headers FROM outbox_event WHERE event_id = ?")) {
-                ps.setString(1, event.eventId());
-                ResultSet rs = ps.executeQuery();
-                assertTrue(rs.next());
-                assertEquals("CUSTOM_JSON", rs.getString("headers"));
-            }
         }
     }
 

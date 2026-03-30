@@ -75,7 +75,7 @@ For tutorials and code examples, see [TUTORIAL.md](TUTORIAL.md).
                                       v
                          OutboxDispatcher.process()
                            -> ListenerRegistry.listenerFor()
-                           -> EventListener.handleEvent()
+                           -> EventListener.onEvent()
                            -> markDone/Deferred/Retry/Dead()
 ```
 
@@ -96,16 +96,20 @@ Core interfaces, hooks, dispatcher, poller, and registries. **Zero external depe
 
 Packages:
 
-- `io.outbox` - Main API: Outbox (composite builder), OutboxWriter (interface), DefaultOutboxWriter, EventEnvelope, EventType, AggregateType, EventListener,
-  DispatchResult, RetryAfterException, WriterHook
-- `io.outbox.spi` - Extension point interfaces: TxContext, ConnectionProvider, OutboxStore, EventPurger, MetricsExporter
+- `io.outbox` - Main API: Outbox (composite builder), OutboxWriter (interface), DefaultOutboxWriter, EventEnvelope,
+  EventType, AggregateType, EventListener,
+  BoundEventListener, DispatchResult (sealed interface: Done, RetryAfter, Dead), RetryAfterException, EventException,
+  RecoverableException, UnrecoverableException,
+  PayloadParseException, WriterHook
+- `io.outbox.spi` - Extension point interfaces: TxContext, ConnectionProvider, OutboxStore, EventPurger,
+  MetricsExporter, JsonCodec (SPI interface), JsonCodecHolder (ServiceLoader discovery)
 - `io.outbox.model` - Domain objects: OutboxEvent, EventStatus
 - `io.outbox.dispatch` - OutboxDispatcher, retry policy, inflight tracking
 - `io.outbox.poller` - OutboxPoller, OutboxPollerHandler
 - `io.outbox.registry` - Listener registry
 - `io.outbox.purge` - OutboxPurgeScheduler (scheduled purge of terminal events)
 - `io.outbox.dead` - DeadEventManager (connection-managed facade for dead event queries)
-- `io.outbox.util` - JsonCodec (interface), DefaultJsonCodec (built-in zero-dependency implementation)
+- `io.outbox.util` - DaemonThreadFactory
 
 ### 2.2 outbox-jdbc
 
@@ -126,7 +130,8 @@ Classes by package:
 - `H2OutboxStore` - H2 (inherits default subquery-based claim)
 - `MySqlOutboxStore` - MySQL/TiDB (UPDATE...ORDER BY...LIMIT claim)
 - `PostgresOutboxStore` - PostgreSQL (FOR UPDATE SKIP LOCKED + RETURNING claim)
-- `JdbcOutboxStores` - ServiceLoader registry with `detect(DataSource)` auto-detection
+- `JdbcOutboxStores` - Static utility with ServiceLoader registry (
+  `META-INF/services/io.outbox.jdbc.store.AbstractJdbcOutboxStore`) and `detect(DataSource)` auto-detection
 
 **`io.outbox.jdbc.purge`**
 
@@ -177,8 +182,10 @@ Classes:
   claim-locking, purge, and metrics settings
 - `OutboxListener` - Type-level annotation for declaring event listeners with string-based or type-safe class-based
   event/aggregate type specification
-- `OutboxListenerRegistrar` - `SmartInitializingSingleton` that scans `@OutboxListener` beans and registers them in the
-  `DefaultListenerRegistry`
+- `OutboxListenerRegistrar` - `SmartInitializingSingleton` that scans `@OutboxListener` beans and `BoundEventListener`
+  beans, registering them in the `DefaultListenerRegistry`
+- `JacksonJsonCodec` - Jackson-based `JsonCodec` using application's `ObjectMapper`; auto-configured and set as default
+  via `JsonCodec.setDefault()`
 
 Conditions:
 
@@ -193,15 +200,23 @@ Operating modes (via `outbox.mode` property):
 - `ORDERED` — poller-only, single worker, no retry
 - `WRITER_ONLY` — CDC mode, no dispatcher/poller; optional age-based purge
 
-### 2.6 samples/outbox-demo
+### 2.6 outbox-gson
+
+Lightweight Gson-based `JsonCodec` implementation. Add to classpath for automatic SPI discovery.
+
+Classes:
+
+- `GsonJsonCodec` - Implements `JsonCodec` using Gson; registered via `META-INF/services/io.outbox.spi.JsonCodec`
+
+### 2.7 samples/outbox-demo
 
 Standalone H2 demonstration (no Spring).
 
-### 2.7 samples/outbox-spring-demo
+### 2.8 samples/outbox-spring-demo
 
 Spring Boot REST API demonstration.
 
-### 2.8 samples/outbox-multi-ds-demo
+### 2.9 samples/outbox-multi-ds-demo
 
 Multi-datasource demo (two H2 databases).
 
@@ -251,22 +266,26 @@ Used by OutboxDispatcher and OutboxPoller for short-lived connections outside th
 
 ```java
 public interface JsonCodec {
-    static JsonCodec getDefault() { ...}
+    static JsonCodec getDefault() { ... }
+    static void setDefault(JsonCodec codec) { ... }
 
-    String toJson(Map<String, String> headers);
+    String toJson(Object obj);
 
-    Map<String, String> parseObject(String json);
+    <T> T fromJson(String json, Class<T> type);
+
+    default Map<String, String> parseStringMap(String json) { ... }
 }
 ```
 
-- `getDefault()` returns the singleton `DefaultJsonCodec` — a lightweight, zero-dependency encoder/decoder that only
-  supports flat `Map<String, String>` objects.
-- `toJson()` returns `null` for null or empty maps; rejects null keys with `IllegalArgumentException`.
-- `parseObject()` returns an empty map for `null`, empty, or `"null"` input.
-- Users who already have Jackson or Gson on the classpath can implement this interface and inject it into:
-    - `AbstractJdbcOutboxStore` constructor: `new H2OutboxStore(tableName, codec)`
-    - `OutboxPoller.Builder.jsonCodec(codec)`
-    - `JdbcOutboxStores.detect(dataSource, codec)`
+- `getDefault()` returns the default instance — resolved via programmatic override (`setDefault()`) or `ServiceLoader`
+  discovery from `META-INF/services/io.outbox.spi.JsonCodec`. Throws `IllegalStateException` if no implementation is
+  found.
+- `setDefault(codec)` programmatically overrides SPI discovery (typically called by Spring Boot auto-configuration).
+- `toJson(obj)` serializes an object to JSON.
+- `fromJson(json, type)` deserializes a JSON string into the given type.
+- `parseStringMap(json)` returns an empty map for `null`, blank, or `"null"` input; delegates to `fromJson` otherwise.
+- Add `outbox-gson` to the classpath for automatic Gson-based codec, or call `JsonCodec.setDefault()` with a custom
+  implementation (e.g. `JacksonJsonCodec` in Spring Boot).
 
 ---
 
@@ -321,18 +340,17 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 | tenantId      | String             | No       | null                                         |
 | headers       | Map<String,String> | No       | empty map                                    |
 | payloadJson   | String             | Yes*     | -                                            |
-| payloadBytes  | byte[]             | Yes*     | -                                            |
 | availableAt   | Instant            | No       | null (immediate — uses occurredAt)           |
 | deliverAfter  | Duration           | No       | null (builder-only, resolves to availableAt) |
 
-*Either payloadJson or payloadBytes must be set, not both.
+*payloadJson is required.
 **Either availableAt or deliverAfter may be set, not both. deliverAfter must be positive.
 
 ### 5.2 Constraints
 
 - Maximum payload size: **1MB** (1,048,576 bytes)
-- Payload MUST be serialized once and reused for DB insert and dispatch
-- EventEnvelope is immutable (defensive copies for bytes and headers)
+- EventEnvelope is immutable (defensive copies for headers)
+- `payload(Class<T> type)` deserializes payloadJson via `JsonCodec.getDefault().fromJson()`
 - Header map MUST NOT contain null keys.
 - `availableAt` and `deliverAfter` are mutually exclusive; setting both throws `IllegalArgumentException`
 - `deliverAfter` must be positive (> 0); zero or negative throws `IllegalArgumentException`
@@ -701,15 +719,16 @@ For each queued event:
 2. **Interceptors**: Run `beforeDispatch` in registration order
 3. **Route**: Find single listener via `listenerRegistry.listenerFor(aggregateType, eventType)`
 4. **Unroutable**: If no listener, throw `UnroutableEventException` -> mark DEAD immediately (no retry)
-5. **Execute**: Call `listener.handleEvent(event)` → returns `DispatchResult`
+5. **Execute**: Call `listener.onEvent(event)` → returns `DispatchResult`
 6. **After**: Run `afterDispatch` in reverse order (null error on success, exception on failure)
 7. **Result handling**:
-   - `Done` (or null): markDone; remove from inflight
-   - `RetryAfter(delay)`: markDeferred with `now + delay` (no attempt increment); remove from inflight
+    - `Done`: markDone; remove from inflight
+    - `RetryAfter(delay)`: markDeferred with `now + delay` (no attempt increment); remove from inflight
+    - `Dead`: markDead immediately with optional reason (no retry)
 8. **Failure handling**:
-   - `RetryAfterException`: markRetry with handler delay (counts against maxAttempts)
-   - Other exception: markRetry with `RetryPolicy` backoff, or markDead after maxAttempts
-   - `UnroutableEventException`: markDead immediately (no retry)
+    - `RetryAfterException`: markRetry with handler delay (counts against maxAttempts)
+    - Other exception: markRetry with `RetryPolicy` backoff, or markDead after maxAttempts
+    - `UnrecoverableException`: markDead immediately (no retry, no attempt increment)
 
 ### 9.4 Synchronous Execution Model
 
@@ -721,7 +740,7 @@ Worker Thread:
     event = pollFairly()      // 2:1 hot:cold weighted round-robin
     interceptors.beforeDispatch(event)
     listener = registry.listenerFor(aggregateType, eventType)
-    result = listener.handleEvent(event)   // blocking, returns DispatchResult
+    result = listener.onEvent(event)   // blocking, returns DispatchResult
     interceptors.afterDispatch(event, null)
     if result is RetryAfter -> markDeferred(event, now + delay)
     else                    -> markDone(event)
@@ -890,18 +909,7 @@ For high-QPS workloads, CDC can replace the in-process poller and hot-path hook:
  */
 @FunctionalInterface
 public interface EventListener {
-    void onEvent(EventEnvelope event) throws Exception;
-
-    /**
-     * Processes an event and returns a DispatchResult to control post-dispatch behavior.
-     * Default delegates to onEvent() and returns Done.
-     * Override to return RetryAfter(delay) for deferred re-delivery without counting
-     * against maxAttempts.
-     */
-    default DispatchResult handleEvent(EventEnvelope event) throws Exception {
-        onEvent(event);
-        return DispatchResult.done();
-    }
+    DispatchResult onEvent(EventEnvelope envelope) throws Exception;
 }
 ```
 
@@ -935,7 +943,23 @@ register(Aggregates.USER, UserEvents.USER_CREATED, event ->{...});
 - Duplicate registration for the same `(aggregateType, eventType)` throws `IllegalStateException`
 - Convenience `register(eventType, listener)` uses `AggregateType.GLOBAL`
 
-### 11.4 Routing Rules
+### 11.4 BoundEventListener
+
+Abstract class that pre-binds aggregate type and event type at construction:
+
+```java
+public abstract class BoundEventListener implements EventListener {
+    public BoundEventListener(String aggregateType, String eventType);
+    public BoundEventListener(AggregateType aggregateType, EventType eventType);
+    public String getAggregateType();
+    public String getEventType();
+}
+```
+
+Register directly via `registry.register(boundListener)`. In Spring Boot, declare as a `@Component` bean — the
+`OutboxListenerRegistrar` auto-discovers `BoundEventListener` beans.
+
+### 11.5 Routing Rules
 
 1. Lookup listener via `aggregateType + ":" + eventType` key
 2. If found, execute the single listener
@@ -982,23 +1006,28 @@ In addition to the framework's `RetryPolicy`, handlers can control retry timing 
 **DispatchResult (sealed interface):**
 
 ```java
-public sealed interface DispatchResult permits Done, RetryAfter {
+public sealed interface DispatchResult permits Done, RetryAfter, Dead {
     static Done done();
     static RetryAfter retryAfter(Duration delay);
+    static Dead dead();
+    static Dead dead(String reason);
 
     record Done() implements DispatchResult {}
     record RetryAfter(Duration delay) implements DispatchResult {}
+    record Dead(String reason) implements DispatchResult {}
 }
 ```
 
-- `Done` (or null): event processed successfully → `markDone`
+- `Done`: event processed successfully → `markDone`
 - `RetryAfter(delay)`: event not yet complete → `markDeferred` (resets to PENDING with `available_at = now + delay`).
-  Does **not** increment `attempts`. Useful for polling external systems or respecting rate-limit `Retry-After` headers.
+  Does **not** increment `attempts`.
+- `Dead` (or `Dead(reason)`): event should not be retried → `markDead` immediately. Optional reason stored in error
+  column.
 
 **RetryAfterException:**
 
 ```java
-public class RetryAfterException extends RuntimeException {
+public class RetryAfterException extends RecoverableException {
     public RetryAfterException(Duration retryAfter);
     public RetryAfterException(Duration retryAfter, String message);
     public RetryAfterException(Duration retryAfter, Throwable cause);
@@ -1013,11 +1042,13 @@ public class RetryAfterException extends RuntimeException {
 
 **Comparison:**
 
-| Mechanism                   | Counts against maxAttempts | Delay source         | Use case                                 |
-|-----------------------------|----------------------------|----------------------|------------------------------------------|
-| `DispatchResult.RetryAfter` | No                         | Handler-specified    | Polling, waiting for preconditions       |
-| `RetryAfterException`       | Yes                        | Handler-specified    | Transient failure with known retry delay |
-| Other exception             | Yes                        | `RetryPolicy`        | Unexpected failure                       |
+| Mechanism                   | Counts against maxAttempts | Delay source      | Use case                                  |
+|-----------------------------|----------------------------|-------------------|-------------------------------------------|
+| `DispatchResult.RetryAfter` | No                         | Handler-specified | Polling, waiting for preconditions        |
+| `DispatchResult.Dead`       | N/A (immediately DEAD)     | N/A               | Unrecoverable payload, business rejection |
+| `RetryAfterException`       | Yes                        | Handler-specified | Transient failure with known retry delay  |
+| `UnrecoverableException`    | N/A (immediately DEAD)     | N/A               | Deterministic failure (bad payload, etc.) |
+| Other exception             | Yes                        | `RetryPolicy`     | Unexpected failure                        |
 
 ---
 
@@ -1178,16 +1209,16 @@ MicrometerMetricsExporter(MeterRegistry registry, String namePrefix) // custom p
 
 **Counters (monotonically increasing):**
 
-| Metric Name                    | Description                            |
-|--------------------------------|----------------------------------------|
-| `{prefix}.enqueue.hot`         | Events enqueued via hot path           |
-| `{prefix}.enqueue.hot.dropped` | Events dropped (hot queue full)        |
-| `{prefix}.enqueue.cold`        | Events enqueued via cold (poller) path |
-| `{prefix}.dispatch.success`    | Events dispatched successfully         |
-| `{prefix}.dispatch.failure`    | Events failed (will retry)             |
-| `{prefix}.dispatch.dead`       | Events moved to DEAD                   |
-| `{prefix}.dispatch.deferred`   | Events deferred by handler (RetryAfter)|
-| `{prefix}.enqueue.hot.skipped.delayed` | Delayed events skipped on hot path |
+| Metric Name                            | Description                             |
+|----------------------------------------|-----------------------------------------|
+| `{prefix}.enqueue.hot`                 | Events enqueued via hot path            |
+| `{prefix}.enqueue.hot.dropped`         | Events dropped (hot queue full)         |
+| `{prefix}.enqueue.cold`                | Events enqueued via cold (poller) path  |
+| `{prefix}.dispatch.success`            | Events dispatched successfully          |
+| `{prefix}.dispatch.failure`            | Events failed (will retry)              |
+| `{prefix}.dispatch.dead`               | Events moved to DEAD                    |
+| `{prefix}.dispatch.deferred`           | Events deferred by handler (RetryAfter) |
+| `{prefix}.enqueue.hot.skipped.delayed` | Delayed events skipped on hot path      |
 
 **Gauges (current value):**
 
@@ -1249,7 +1280,8 @@ public interface EventPurger {
 }
 ```
 
-- Deletes terminal events (DONE + DEAD) where `done_at < before` (falls back to `created_at < before` when `done_at` is null)
+- Deletes terminal events (DONE + DEAD) where `done_at < before` (falls back to `created_at < before` when `done_at` is
+  null)
 - Takes explicit `Connection` (caller controls transaction), matching the `OutboxStore` pattern
 - Returns count of rows deleted
 - `limit` caps the batch size per call to limit lock duration
@@ -1464,7 +1496,7 @@ Outbox (final, AutoCloseable)
 │
 └── AbstractBuilder<B> (sealed, permits 4 concrete builders)
     Required: connectionProvider, txContext, outboxStore, listenerRegistry
-    Optional: metrics, jsonCodec, interceptor(s), intervalMs, batchSize,
+    Optional: metrics, interceptor(s), intervalMs, batchSize,
               skipRecent, drainTimeoutMs
 ```
 

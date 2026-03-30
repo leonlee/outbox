@@ -3,10 +3,10 @@ package io.outbox.poller;
 import io.outbox.EventEnvelope;
 import io.outbox.model.OutboxEvent;
 import io.outbox.spi.ConnectionProvider;
+import io.outbox.spi.JsonCodec;
 import io.outbox.spi.MetricsExporter;
 import io.outbox.spi.OutboxStore;
 import io.outbox.util.DaemonThreadFactory;
-import io.outbox.util.JsonCodec;
 
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -40,7 +40,7 @@ import java.util.logging.Logger;
  * <p>This class is thread-safe. The {@link #start()} and {@link #close()} methods are
  * synchronized to prevent concurrent lifecycle transitions.
  *
- * @see OutboxPoller.Builder
+ * @see Builder
  * @see OutboxPollerHandler
  */
 public final class OutboxPoller implements AutoCloseable {
@@ -55,7 +55,6 @@ public final class OutboxPoller implements AutoCloseable {
     private final MetricsExporter metrics;
     private final String ownerId;
     private final Duration lockTimeout;
-    private final JsonCodec jsonCodec;
 
     private ScheduledExecutorService scheduler;
     private volatile ScheduledFuture<?> pollTask;
@@ -86,7 +85,6 @@ public final class OutboxPoller implements AutoCloseable {
         this.metrics = builder.metrics != null ? builder.metrics : MetricsExporter.NOOP;
         this.ownerId = builder.ownerId;
         this.lockTimeout = builder.lockTimeout;
-        this.jsonCodec = builder.jsonCodec != null ? builder.jsonCodec : JsonCodec.getDefault();
     }
 
     public static Builder builder() {
@@ -199,7 +197,7 @@ public final class OutboxPoller implements AutoCloseable {
     }
 
     private EventEnvelope convertToEnvelope(OutboxEvent row) {
-        Map<String, String> headers = jsonCodec.parseObject(row.headersJson());
+        Map<String, String> headers = JsonCodec.getDefault().parseStringMap(row.headersJson());
         var builder = EventEnvelope.builder(row.eventType())
                 .eventId(row.eventId())
                 .occurredAt(row.createdAt())
@@ -256,7 +254,6 @@ public final class OutboxPoller implements AutoCloseable {
         private MetricsExporter metrics;
         private String ownerId;
         private Duration lockTimeout;
-        private JsonCodec jsonCodec;
 
         private Builder() {
         }
@@ -385,19 +382,6 @@ public final class OutboxPoller implements AutoCloseable {
             if (lockTimeout.isNegative() || lockTimeout.isZero()) {
                 throw new IllegalArgumentException("lockTimeout must be positive");
             }
-            return this;
-        }
-
-        /**
-         * Sets a custom JSON codec for decoding event headers from the database.
-         *
-         * <p>Optional. Defaults to {@link JsonCodec#getDefault()}.
-         *
-         * @param jsonCodec the JSON codec
-         * @return this builder
-         */
-        public Builder jsonCodec(JsonCodec jsonCodec) {
-            this.jsonCodec = jsonCodec;
             return this;
         }
 

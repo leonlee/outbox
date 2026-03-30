@@ -2,7 +2,6 @@ package io.outbox.jdbc.store;
 
 import io.outbox.jdbc.JdbcTemplate;
 import io.outbox.model.OutboxEvent;
-import io.outbox.util.JsonCodec;
 
 import java.sql.Connection;
 import java.sql.Timestamp;
@@ -26,15 +25,6 @@ public final class PostgresOutboxStore extends AbstractJdbcOutboxStore {
 
     public PostgresOutboxStore(String tableName) {
         super(tableName);
-    }
-
-    public PostgresOutboxStore(String tableName, JsonCodec jsonCodec) {
-        super(tableName, jsonCodec);
-    }
-
-    @Override
-    public AbstractJdbcOutboxStore withJsonCodec(JsonCodec jsonCodec) {
-        return new PostgresOutboxStore(tableName(), jsonCodec);
     }
 
     @Override

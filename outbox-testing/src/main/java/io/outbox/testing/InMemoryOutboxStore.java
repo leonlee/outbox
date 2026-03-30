@@ -3,8 +3,8 @@ package io.outbox.testing;
 import io.outbox.EventEnvelope;
 import io.outbox.model.EventStatus;
 import io.outbox.model.OutboxEvent;
+import io.outbox.spi.JsonCodec;
 import io.outbox.spi.OutboxStore;
-import io.outbox.util.JsonCodec;
 
 import java.sql.Connection;
 import java.time.Duration;

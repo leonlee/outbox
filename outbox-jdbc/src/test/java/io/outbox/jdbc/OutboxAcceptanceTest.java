@@ -1,11 +1,8 @@
 package io.outbox.jdbc;
 
-import org.h2.jdbcx.JdbcDataSource;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import io.outbox.EventEnvelope;
 import io.outbox.DefaultOutboxWriter;
+import io.outbox.DispatchResult;
+import io.outbox.EventEnvelope;
 import io.outbox.OutboxWriter;
 import io.outbox.dispatch.DispatcherPollerHandler;
 import io.outbox.dispatch.DispatcherWriterHook;
@@ -18,6 +15,10 @@ import io.outbox.jdbc.tx.ThreadLocalTxContext;
 import io.outbox.model.EventStatus;
 import io.outbox.poller.OutboxPoller;
 import io.outbox.registry.DefaultListenerRegistry;
+import org.h2.jdbcx.JdbcDataSource;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -80,7 +81,10 @@ class OutboxAcceptanceTest {
     void commitFastPathPublishesAndMarksDone() throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         DefaultListenerRegistry publishers = new DefaultListenerRegistry()
-                .register("UserCreated", event -> latch.countDown());
+                .register("UserCreated", event -> {
+                    latch.countDown();
+                    return DispatchResult.done();
+                });
 
         OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers);
         OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
@@ -114,7 +118,10 @@ class OutboxAcceptanceTest {
 
         CountDownLatch latch = new CountDownLatch(1);
         DefaultListenerRegistry publishers = new DefaultListenerRegistry()
-                .register("Overflow", event -> latch.countDown());
+                .register("Overflow", event -> {
+                    latch.countDown();
+                    return DispatchResult.done();
+                });
 
         OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers);
         try (OutboxPoller poller = OutboxPoller.builder()
@@ -184,6 +191,7 @@ class OutboxAcceptanceTest {
                 .register("BatchEvent", event -> {
                     dispatched.add(event.eventId());
                     latch.countDown();
+                    return DispatchResult.done();
                 });
 
         OutboxDispatcher dispatcher = dispatcher(1, 100, 100, publishers);
@@ -218,6 +226,7 @@ class OutboxAcceptanceTest {
                 .register("DelayedE2E", e -> {
                     captured.set(e);
                     latch.countDown();
+                    return DispatchResult.done();
                 });
 
         OutboxDispatcher dispatcher = dispatcher(1, 100, 100, listeners);

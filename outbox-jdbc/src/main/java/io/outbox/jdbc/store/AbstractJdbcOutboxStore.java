@@ -5,8 +5,8 @@ import io.outbox.jdbc.JdbcTemplate;
 import io.outbox.jdbc.TableNames;
 import io.outbox.model.EventStatus;
 import io.outbox.model.OutboxEvent;
+import io.outbox.spi.JsonCodec;
 import io.outbox.spi.OutboxStore;
-import io.outbox.util.JsonCodec;
 
 import java.sql.Connection;
 import java.sql.Timestamp;
@@ -51,31 +51,14 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     };
 
     private final String tableName;
-    private final JsonCodec jsonCodec;
 
     protected AbstractJdbcOutboxStore() {
         this(DEFAULT_TABLE);
     }
 
     protected AbstractJdbcOutboxStore(String tableName) {
-        this(tableName, JsonCodec.getDefault());
-    }
-
-    protected AbstractJdbcOutboxStore(String tableName, JsonCodec jsonCodec) {
         this.tableName = TableNames.validate(tableName);
-        this.jsonCodec = Objects.requireNonNull(jsonCodec, "jsonCodec");
     }
-
-    /**
-     * Creates a new instance of the same store type with the given {@link JsonCodec}.
-     *
-     * <p>Used by {@link JdbcOutboxStores#detect(String, JsonCodec)} to create codec-customised
-     * instances without hard-coding subclass types.
-     *
-     * @param jsonCodec the JSON codec to use
-     * @return a new outbox store instance configured with the given codec
-     */
-    public abstract AbstractJdbcOutboxStore withJsonCodec(JsonCodec jsonCodec);
 
     /**
      * Unique identifier for this outbox store (e.g., "mysql", "postgresql", "h2").
@@ -92,7 +75,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     }
 
     protected JsonCodec jsonCodec() {
-        return jsonCodec;
+        return JsonCodec.getDefault();
     }
 
     /**
@@ -120,7 +103,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
         JdbcTemplate.update(conn, sql,
                 event.eventId(), event.eventType(), event.aggregateType(),
                 event.aggregateId(), event.tenantId(), event.payloadJson(),
-                jsonCodec.toJson(event.headers()),
+                event.headers().isEmpty() ? null : jsonCodec().toJson(event.headers()),
                 EventStatus.NEW.code(), 0, availableAt, now);
     }
 
@@ -167,7 +150,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
             params[idx++] = event.aggregateId();
             params[idx++] = event.tenantId();
             params[idx++] = event.payloadJson();
-            params[idx++] = jsonCodec.toJson(event.headers());
+            params[idx++] = event.headers().isEmpty() ? null : jsonCodec().toJson(event.headers());
             params[idx++] = EventStatus.NEW.code();
             params[idx++] = 0;
             params[idx++] = availableAt;

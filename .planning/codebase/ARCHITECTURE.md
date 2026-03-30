@@ -24,7 +24,8 @@
 - Contains: Four sealed builder types (SingleNodeBuilder, MultiNodeBuilder, OrderedBuilder, WriterOnlyBuilder) via
   CRTP (Curiously Recurring Template Pattern)
 - Depends on: Dispatcher, Poller, Writer, Registry, Store, TxContext
-- Used by: Application code to bootstrap the framework. In Spring Boot, the `outbox-spring-boot-starter` provides zero-config auto-configuration.
+- Used by: Application code to bootstrap the framework. In Spring Boot, the `outbox-spring-boot-starter` provides
+  zero-config auto-configuration.
 
 **Hot Path (Synchronous Dispatch):**
 
@@ -52,7 +53,8 @@
 - Contains: EventEnvelope builder with ULID generation, validation (max 1MB payload, non-empty eventType), EventStatus
   enum (NEW, RETRY, DONE, DEAD)
 - Depends on: ULID library (f4b6a3)
-- Used by: Writer, Dispatcher, Poller, Listener registry. For unit testing, `outbox-testing` provides `InMemoryOutboxStore` and `OutboxTestSupport`.
+- Used by: Writer, Dispatcher, Poller, Listener registry. For unit testing, `outbox-testing` provides
+  `InMemoryOutboxStore` and `OutboxTestSupport`.
 
 **Registry & Routing:**
 

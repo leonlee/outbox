@@ -2,13 +2,13 @@ package io.outbox.spring.boot;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.outbox.micrometer.MicrometerMetricsExporter;
+import io.outbox.spi.MetricsExporter;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import io.outbox.micrometer.MicrometerMetricsExporter;
-import io.outbox.spi.MetricsExporter;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;

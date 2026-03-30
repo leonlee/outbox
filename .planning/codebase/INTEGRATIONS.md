@@ -35,14 +35,16 @@ their own implementations.
 - Abstraction: `io.outbox.spi.ConnectionProvider` interface
 - Implementation: `io.outbox.jdbc.DataSourceConnectionProvider` - wraps `javax.sql.DataSource`
 - Pool: Optional `com.zaxxer.HikariCP` 5.1.0 (used in benchmarks, not required)
-- Spring Integration: `io.outbox.spring.SpringTxContext` bridges Spring's `DataSourceUtils` for Spring-managed connections
+- Spring Integration: `io.outbox.spring.SpringTxContext` bridges Spring's `DataSourceUtils` for Spring-managed
+  connections
 
 **Schema:**
 
 - Auto-created on startup (samples use Spring's `spring.sql.init.mode=always`)
 - Schema SQL: `samples/outbox-spring-demo/src/main/resources/schema.sql`
 - Single table: `outbox_event` with columns: `event_id`, `event_type`, `aggregate_type`, `aggregate_id`, `tenant_id`,
-  `payload`, `headers`, `status`, `attempts`, `available_at`, `created_at`, `done_at`, `last_error`, `locked_by`, `locked_at`
+  `payload`, `headers`, `status`, `attempts`, `available_at`, `created_at`, `done_at`, `last_error`, `locked_by`,
+  `locked_at`
 - Status enum: PENDING (0), DONE (1), RETRY (2), DEAD (3), DEFERRED (4)
 
 ## File Storage
@@ -99,7 +101,8 @@ No caching layer or distributed cache integration. In-flight event deduplication
 - Depends on: `org.springframework:spring-jdbc`, `org.springframework:spring-tx` (provided scope)
 - Usage: Registered in Spring config (see `OutboxConfiguration` in samples)
 - Bridges: Obtains connections via `DataSourceUtils.getConnection()` and registers callbacks via
-  `TransactionSynchronizationManager.registerSynchronization()`. In Spring Boot, the `outbox-spring-boot-starter` auto-detects listeners annotated with `@OutboxListener`.
+  `TransactionSynchronizationManager.registerSynchronization()`. In Spring Boot, the `outbox-spring-boot-starter`
+  auto-detects listeners annotated with `@OutboxListener`.
 
 ## Monitoring & Observability
 

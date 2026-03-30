@@ -1,8 +1,7 @@
 package io.outbox.demo.multids;
 
-import org.h2.jdbcx.JdbcDataSource;
-import io.outbox.EventEnvelope;
 import io.outbox.DefaultOutboxWriter;
+import io.outbox.EventEnvelope;
 import io.outbox.OutboxWriter;
 import io.outbox.dispatch.DispatcherPollerHandler;
 import io.outbox.dispatch.DispatcherWriterHook;
@@ -13,6 +12,7 @@ import io.outbox.jdbc.tx.JdbcTransactionManager;
 import io.outbox.jdbc.tx.ThreadLocalTxContext;
 import io.outbox.poller.OutboxPoller;
 import io.outbox.registry.DefaultListenerRegistry;
+import org.h2.jdbcx.JdbcDataSource;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -49,6 +49,7 @@ public final class MultiDatasourceDemo {
             System.out.printf("[Listener] %s/%s  id=%s  payload=%s%n",
                     event.aggregateType(), event.eventType(), event.eventId(), event.payloadJson());
             latch.countDown();
+            return io.outbox.DispatchResult.done();
         };
 
         // ── Orders stack ─────────────────────────────────────────────

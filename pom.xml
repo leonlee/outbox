@@ -5,7 +5,7 @@
 
     <groupId>io.github.leonlee</groupId>
     <artifactId>outbox-parent</artifactId>
-    <version>0.9.2-SNAPSHOT</version>
+    <version>0.9.2</version>
     <packaging>pom</packaging>
 
     <name>Outbox Framework</name>
@@ -34,6 +34,7 @@
 
     <modules>
         <module>outbox-core</module>
+        <module>outbox-gson</module>
         <module>outbox-jdbc</module>
         <module>outbox-spring-adapter</module>
         <module>outbox-micrometer</module>

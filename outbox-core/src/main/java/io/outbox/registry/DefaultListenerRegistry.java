@@ -1,6 +1,7 @@
 package io.outbox.registry;
 
 import io.outbox.AggregateType;
+import io.outbox.BoundEventListener;
 import io.outbox.EventListener;
 import io.outbox.EventType;
 
@@ -90,8 +91,19 @@ public final class DefaultListenerRegistry implements ListenerRegistry {
         return register(AggregateType.GLOBAL.name(), eventType.name(), listener);
     }
 
+    /**
+     * Registers a listener using its bound aggregate and event types.
+     *
+     * @param listener the bound listener
+     * @return this registry for chaining
+     */
+    public DefaultListenerRegistry register(BoundEventListener listener) {
+        return register(listener.getAggregateType(), listener.getEventType(), listener);
+    }
+
     @Override
     public EventListener listenerFor(String aggregateType, String eventType) {
         return listeners.get(new ListenerKey(aggregateType, eventType));
     }
+
 }

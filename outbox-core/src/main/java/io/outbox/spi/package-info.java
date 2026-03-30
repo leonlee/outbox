@@ -2,8 +2,10 @@
  * Service Provider Interfaces (SPI) for extending the outbox framework.
  *
  * <p>These interfaces define the extension points that integrators implement
- * to plug in transaction management, connection provisioning, persistence, purging, and metrics.
+ * to plug in transaction management, connection provisioning, persistence, purging,
+ * metrics, and JSON serialization.
  *
+ * @see io.outbox.spi.JsonCodec
  * @see io.outbox.spi.TxContext
  * @see io.outbox.spi.ConnectionProvider
  * @see io.outbox.spi.OutboxStore

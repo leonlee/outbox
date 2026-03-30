@@ -57,7 +57,7 @@ public interface OutboxWriter {
      *
      * @param events the event envelopes to persist
      * @return list of event IDs in the same order as the (possibly transformed) input;
-     *         empty if the write was suppressed by {@link WriterHook#beforeWrite}
+     * empty if the write was suppressed by {@link WriterHook#beforeWrite}
      * @throws IllegalStateException if no transaction is active
      */
     List<String> writeAll(List<EventEnvelope> events);

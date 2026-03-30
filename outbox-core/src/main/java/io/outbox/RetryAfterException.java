@@ -19,7 +19,7 @@ import java.util.Objects;
  *
  * @see DispatchResult.RetryAfter
  */
-public class RetryAfterException extends RuntimeException {
+public class RetryAfterException extends RecoverableException {
 
     private final Duration retryAfter;
 

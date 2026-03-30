@@ -2,11 +2,9 @@ package io.outbox.jdbc;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import io.outbox.EventEnvelope;
 import io.outbox.DefaultOutboxWriter;
+import io.outbox.DispatchResult;
+import io.outbox.EventEnvelope;
 import io.outbox.OutboxWriter;
 import io.outbox.dispatch.DispatcherPollerHandler;
 import io.outbox.dispatch.DispatcherWriterHook;
@@ -17,6 +15,9 @@ import io.outbox.jdbc.tx.ThreadLocalTxContext;
 import io.outbox.model.EventStatus;
 import io.outbox.poller.OutboxPoller;
 import io.outbox.registry.DefaultListenerRegistry;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -72,7 +73,10 @@ class HikariCPIntegrationTest {
     void writeAndDispatchThroughPool() throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         DefaultListenerRegistry registry = new DefaultListenerRegistry()
-                .register("PoolEvent", event -> latch.countDown());
+                .register("PoolEvent", event -> {
+                    latch.countDown();
+                    return DispatchResult.done();
+                });
 
         OutboxDispatcher dispatcher = dispatcher(1, 100, 100, registry);
         OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
@@ -94,7 +98,10 @@ class HikariCPIntegrationTest {
     void noConnectionLeaksAfterMultipleWriteCycles() throws Exception {
         CountDownLatch latch = new CountDownLatch(20);
         DefaultListenerRegistry registry = new DefaultListenerRegistry()
-                .register("CycleEvent", event -> latch.countDown());
+                .register("CycleEvent", event -> {
+                    latch.countDown();
+                    return DispatchResult.done();
+                });
 
         OutboxDispatcher dispatcher = dispatcher(2, 100, 100, registry);
         OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore, new DispatcherWriterHook(dispatcher));
@@ -125,7 +132,10 @@ class HikariCPIntegrationTest {
 
         CountDownLatch latch = new CountDownLatch(totalEvents);
         DefaultListenerRegistry registry = new DefaultListenerRegistry()
-                .register("ConcurrentEvent", event -> latch.countDown());
+                .register("ConcurrentEvent", event -> {
+                    latch.countDown();
+                    return DispatchResult.done();
+                });
 
         OutboxDispatcher dispatcher = dispatcher(2, 200, 200, registry);
         DispatcherWriterHook hook = new DispatcherWriterHook(dispatcher);
@@ -179,7 +189,10 @@ class HikariCPIntegrationTest {
 
         CountDownLatch latch = new CountDownLatch(5);
         DefaultListenerRegistry registry = new DefaultListenerRegistry()
-                .register("PollEvent", event -> latch.countDown());
+                .register("PollEvent", event -> {
+                    latch.countDown();
+                    return DispatchResult.done();
+                });
         OutboxDispatcher dispatcher = dispatcher(1, 100, 100, registry);
 
         try (OutboxPoller poller = OutboxPoller.builder()

@@ -7,7 +7,8 @@
 **Files:**
 
 - Classes: `UpperCamelCase` (e.g., `OutboxWriter.java`, `EventEnvelope.java`)
-- Packages: lowercase dot-separated, feature-scoped (e.g., `io.outbox.dispatch`, `io.outbox.registry`, `io.outbox.jdbc.store`)
+- Packages: lowercase dot-separated, feature-scoped (e.g., `io.outbox.dispatch`, `io.outbox.registry`,
+  `io.outbox.jdbc.store`)
 - Test files: Class name + `Test` suffix (e.g., `OutboxWriterTest.java`)
 - Integration tests: Class name + `IntegrationTest` suffix (e.g., `SpringAdapterIntegrationTest.java`)
 

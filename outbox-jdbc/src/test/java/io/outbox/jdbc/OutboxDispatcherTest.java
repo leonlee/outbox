@@ -1,9 +1,6 @@
 package io.outbox.jdbc;
 
-import org.h2.jdbcx.JdbcDataSource;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import io.outbox.DispatchResult;
 import io.outbox.EventEnvelope;
 import io.outbox.dispatch.DefaultInFlightTracker;
 import io.outbox.dispatch.InFlightTracker;
@@ -12,6 +9,10 @@ import io.outbox.dispatch.QueuedEvent;
 import io.outbox.jdbc.store.H2OutboxStore;
 import io.outbox.model.EventStatus;
 import io.outbox.registry.DefaultListenerRegistry;
+import org.h2.jdbcx.JdbcDataSource;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import javax.sql.DataSource;
 import java.lang.reflect.Method;
@@ -64,6 +65,7 @@ class OutboxDispatcherTest {
                 .register("Test", event -> {
                     order.add(event.eventId());
                     processed.countDown();
+                    return DispatchResult.done();
                 });
 
         OutboxDispatcher dispatcher = OutboxDispatcher.builder()
@@ -167,6 +169,7 @@ class OutboxDispatcherTest {
                         firstStarted.countDown();
                         releaseFirst.await();
                     }
+                    return DispatchResult.done();
                 });
 
         OutboxDispatcher dispatcher = OutboxDispatcher.builder()

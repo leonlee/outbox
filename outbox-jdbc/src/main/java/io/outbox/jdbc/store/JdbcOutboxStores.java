@@ -1,7 +1,5 @@
 package io.outbox.jdbc.store;
 
-import io.outbox.util.JsonCodec;
-
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -121,42 +119,6 @@ public final class JdbcOutboxStores {
 
         throw new IllegalArgumentException("No outbox store found for JDBC URL: " + jdbcUrl +
                 ". Supported prefixes: " + allPrefixes());
-    }
-
-    /**
-     * Auto-detects outbox store from a DataSource with a custom {@link JsonCodec}.
-     *
-     * @param dataSource the data source
-     * @param jsonCodec  the JSON codec to use
-     * @return detected outbox store configured with the given codec
-     * @throws IllegalStateException if detection fails or no matching outbox store
-     */
-    public static AbstractJdbcOutboxStore detect(DataSource dataSource, JsonCodec jsonCodec) {
-        Objects.requireNonNull(jsonCodec, "jsonCodec");
-        try (Connection conn = dataSource.getConnection()) {
-            String url = conn.getMetaData().getURL();
-            return detect(url, jsonCodec);
-        } catch (SQLException e) {
-            throw new IllegalStateException("Failed to detect outbox store from DataSource", e);
-        }
-    }
-
-    /**
-     * Auto-detects outbox store from a JDBC URL with a custom {@link JsonCodec}.
-     *
-     * @param jdbcUrl   the JDBC URL
-     * @param jsonCodec the JSON codec to use
-     * @return detected outbox store configured with the given codec
-     * @throws IllegalArgumentException if no matching outbox store found
-     */
-    public static AbstractJdbcOutboxStore detect(String jdbcUrl, JsonCodec jsonCodec) {
-        Objects.requireNonNull(jsonCodec, "jsonCodec");
-        AbstractJdbcOutboxStore template = detect(jdbcUrl);
-        return newInstance(template, jsonCodec);
-    }
-
-    private static AbstractJdbcOutboxStore newInstance(AbstractJdbcOutboxStore template, JsonCodec jsonCodec) {
-        return template.withJsonCodec(jsonCodec);
     }
 
     private static List<String> allPrefixes() {

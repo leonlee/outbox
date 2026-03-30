@@ -22,7 +22,7 @@ Build a framework that:
 10. EventInterceptor provides cross-cutting before/after dispatch hooks for audit, logging, and metrics.
 11. Dead event tooling (`DeadEventManager`) enables querying, counting, and replaying DEAD events.
 12. Automatic purging of terminal events via `OutboxPurgeScheduler` (status-based or age-based for CDC mode).
-13. Pluggable `JsonCodec` interface for metadata encoding (built-in `DefaultJsonCodec` or user-provided Jackson/Gson).
+13. Pluggable `JsonCodec` SPI for JSON encoding (discovered via `ServiceLoader` or set programmatically; `outbox-gson` and `JacksonJsonCodec` provided).
 14. Micrometer metrics integration via optional `outbox-micrometer` module.
 15. Spring Boot auto-configuration via `outbox-spring-boot-starter` with `@OutboxListener` annotation support.
 

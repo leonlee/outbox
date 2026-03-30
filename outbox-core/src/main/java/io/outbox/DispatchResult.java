@@ -4,7 +4,7 @@ import java.time.Duration;
 import java.util.Objects;
 
 /**
- * Result returned by {@link EventListener#handleEvent(EventEnvelope)} to control
+ * Result returned by {@link EventListener#onEvent(EventEnvelope)} to control
  * post-dispatch behavior.
  *
  * <ul>
@@ -12,16 +12,23 @@ import java.util.Objects;
  *   <li>{@link RetryAfter} — event not yet complete; reschedules without counting
  *       against {@code maxAttempts}. Useful for polling external systems, respecting
  *       rate-limit {@code Retry-After} headers, or waiting for preconditions.</li>
+ *   <li>{@link Dead} — event cannot be processed; immediately marks the event as DEAD
+ *       without retry. Useful when business logic determines the event is unprocessable.</li>
  * </ul>
  *
- * @see EventListener#handleEvent(EventEnvelope)
+ * @see EventListener#onEvent(EventEnvelope)
  */
-public sealed interface DispatchResult permits DispatchResult.Done, DispatchResult.RetryAfter {
+public sealed interface DispatchResult permits DispatchResult.Done, DispatchResult.RetryAfter, DispatchResult.Dead {
 
     /**
      * Singleton indicating successful processing.
      */
     Done DONE = new Done();
+
+    /**
+     * Singleton indicating the event should be immediately marked DEAD (no reason).
+     */
+    Dead DEAD = new Dead(null);
 
     /**
      * Returns the singleton {@link Done} result.
@@ -48,6 +55,25 @@ public sealed interface DispatchResult permits DispatchResult.Done, DispatchResu
     }
 
     /**
+     * Returns the singleton {@link Dead} result with no reason.
+     *
+     * @return the DEAD result
+     */
+    static Dead dead() {
+        return DEAD;
+    }
+
+    /**
+     * Creates a {@link Dead} result with the given reason.
+     *
+     * @param reason optional explanation written to the outbox error column
+     * @return a dead result
+     */
+    static Dead dead(String reason) {
+        return new Dead(reason);
+    }
+
+    /**
      * Event processed successfully.
      */
     record Done() implements DispatchResult {
@@ -65,5 +91,13 @@ public sealed interface DispatchResult permits DispatchResult.Done, DispatchResu
                 throw new IllegalArgumentException("delay must not be negative");
             }
         }
+    }
+
+    /**
+     * Event cannot be processed; immediately mark as DEAD without retry.
+     *
+     * @param reason optional explanation written to the outbox error column (may be null)
+     */
+    record Dead(String reason) implements DispatchResult {
     }
 }

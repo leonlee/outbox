@@ -1,5 +1,15 @@
 package io.outbox.benchmark;
 
+import io.outbox.DefaultOutboxWriter;
+import io.outbox.DispatchResult;
+import io.outbox.OutboxWriter;
+import io.outbox.benchmark.BenchmarkDataSourceFactory.DatabaseSetup;
+import io.outbox.dispatch.DispatcherWriterHook;
+import io.outbox.dispatch.OutboxDispatcher;
+import io.outbox.jdbc.DataSourceConnectionProvider;
+import io.outbox.jdbc.tx.JdbcTransactionManager;
+import io.outbox.jdbc.tx.ThreadLocalTxContext;
+import io.outbox.registry.DefaultListenerRegistry;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -14,15 +24,6 @@ import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
-import io.outbox.DefaultOutboxWriter;
-import io.outbox.OutboxWriter;
-import io.outbox.benchmark.BenchmarkDataSourceFactory.DatabaseSetup;
-import io.outbox.dispatch.DispatcherWriterHook;
-import io.outbox.dispatch.OutboxDispatcher;
-import io.outbox.jdbc.DataSourceConnectionProvider;
-import io.outbox.jdbc.tx.JdbcTransactionManager;
-import io.outbox.jdbc.tx.ThreadLocalTxContext;
-import io.outbox.registry.DefaultListenerRegistry;
 
 import javax.sql.DataSource;
 import java.util.concurrent.CountDownLatch;
@@ -77,6 +78,7 @@ public class OutboxDispatchBenchmark {
                         .register("BenchEvent", event -> {
                             CountDownLatch latch = latchRef.get();
                             if (latch != null) latch.countDown();
+                            return DispatchResult.done();
                         }))
                 .workerCount(2)
                 .hotQueueCapacity(1000)

@@ -1,12 +1,7 @@
 package io.outbox.demo.spring;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.context.event.EventListener;
 import io.outbox.DefaultOutboxWriter;
+import io.outbox.DispatchResult;
 import io.outbox.OutboxWriter;
 import io.outbox.dispatch.DefaultInFlightTracker;
 import io.outbox.dispatch.DispatcherPollerHandler;
@@ -21,6 +16,12 @@ import io.outbox.registry.DefaultListenerRegistry;
 import io.outbox.registry.ListenerRegistry;
 import io.outbox.spi.TxContext;
 import io.outbox.spring.SpringTxContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.event.EventListener;
 
 import javax.sql.DataSource;
 import java.time.Duration;
@@ -51,10 +52,12 @@ public class OutboxConfiguration {
                 .register("User", "UserCreated", event -> {
                     log.info("[Listener] User/UserCreated: id={}, payload={}",
                             event.eventId(), event.payloadJson());
+                    return DispatchResult.done();
                 })
                 .register("Order", "OrderPlaced", event -> {
                     log.info("[Listener] Order/OrderPlaced: id={}, payload={}",
                             event.eventId(), event.payloadJson());
+                    return DispatchResult.done();
                 });
     }
 

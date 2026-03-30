@@ -1,7 +1,5 @@
 package io.outbox.jdbc.store;
 
-import io.outbox.util.JsonCodec;
-
 import java.util.List;
 
 /**
@@ -17,15 +15,6 @@ public final class H2OutboxStore extends AbstractJdbcOutboxStore {
 
     public H2OutboxStore(String tableName) {
         super(tableName);
-    }
-
-    public H2OutboxStore(String tableName, JsonCodec jsonCodec) {
-        super(tableName, jsonCodec);
-    }
-
-    @Override
-    public AbstractJdbcOutboxStore withJsonCodec(JsonCodec jsonCodec) {
-        return new H2OutboxStore(tableName(), jsonCodec);
     }
 
     @Override

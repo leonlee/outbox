@@ -1,11 +1,6 @@
 package io.outbox.spring.boot;
 
-import org.junit.jupiter.api.Test;
-import org.springframework.boot.autoconfigure.AutoConfigurations;
-import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
-import org.springframework.boot.test.context.runner.ApplicationContextRunner;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+import io.outbox.DispatchResult;
 import io.outbox.EventEnvelope;
 import io.outbox.EventListener;
 import io.outbox.Outbox;
@@ -17,6 +12,12 @@ import io.outbox.registry.DefaultListenerRegistry;
 import io.outbox.spi.ConnectionProvider;
 import io.outbox.spi.TxContext;
 import io.outbox.spring.SpringTxContext;
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -148,7 +149,8 @@ class OutboxAutoConfigurationTest {
     @OutboxListener(eventType = "AutoTestEvent")
     static class TestEventListener implements EventListener {
         @Override
-        public void onEvent(EventEnvelope event) {
+        public DispatchResult onEvent(EventEnvelope envelope) {
+            return DispatchResult.done();
         }
     }
 

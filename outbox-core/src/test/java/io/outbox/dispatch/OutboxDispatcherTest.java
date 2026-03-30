@@ -1,11 +1,12 @@
 package io.outbox.dispatch;
 
-import org.junit.jupiter.api.Test;
-import io.outbox.EventEnvelope;
 import io.outbox.DispatchResult;
+import io.outbox.EventEnvelope;
 import io.outbox.RetryAfterException;
+import io.outbox.UnrecoverableException;
 import io.outbox.registry.DefaultListenerRegistry;
 import io.outbox.spi.ConnectionProvider;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.time.Duration;
@@ -55,8 +56,20 @@ class OutboxDispatcherTest {
     }
 
     @Test
-    void builderRejectsMaxAttemptsLessThanOne() {
+    void builderRejectsNegativeMaxAttempts() {
         assertThrows(IllegalArgumentException.class, () ->
+                OutboxDispatcher.builder()
+                        .connectionProvider(stubCp())
+                        .outboxStore(new StubOutboxStore())
+                        .listenerRegistry(new DefaultListenerRegistry())
+                        .maxAttempts(-1)
+                        .build());
+    }
+
+    @Test
+    void builderAcceptsZeroMaxAttempts() {
+        // maxAttempts=0 means immediate DEAD on first failure
+        assertDoesNotThrow(() ->
                 OutboxDispatcher.builder()
                         .connectionProvider(stubCp())
                         .outboxStore(new StubOutboxStore())
@@ -162,6 +175,7 @@ class OutboxDispatcherTest {
                 .register("TestEvent", event -> {
                     received.set(event.payloadJson());
                     latch.countDown();
+                    return DispatchResult.done();
                 });
 
         var store = new StubOutboxStore();
@@ -179,25 +193,25 @@ class OutboxDispatcherTest {
     }
 
     @Test
-    void unroutableEventIsMarkedDead() throws Exception {
-        CountDownLatch latch = new CountDownLatch(1);
+    void unroutableEventIsMarkedDeadImmediately() throws Exception {
+        CountDownLatch deadLatch = new CountDownLatch(1);
         var store = new StubOutboxStore() {
             @Override
             public int markDead(Connection conn, String eventId, String error) {
                 super.markDead(conn, eventId, error);
-                latch.countDown();
+                deadLatch.countDown();
                 return 1;
             }
         };
 
-        // Empty registry — no listeners
+        // Empty registry — no listeners → UnroutableEventException (UnrecoverableException) → DEAD
         var registry = new DefaultListenerRegistry();
 
         try (var d = newDispatcher(1, 10, 10, registry, store)) {
             EventEnvelope event = EventEnvelope.ofJson("UnknownEvent", "{}");
             d.enqueueHot(new QueuedEvent(event, QueuedEvent.Source.HOT, 0));
 
-            assertTrue(latch.await(3, TimeUnit.SECONDS));
+            assertTrue(deadLatch.await(3, TimeUnit.SECONDS));
             assertEquals(1, store.markDeadCount.get());
             assertEquals(0, store.markRetryCount.get());
         }
@@ -226,6 +240,7 @@ class OutboxDispatcherTest {
                 .listenerRegistry(registry)
                 .workerCount(1)
                 .maxAttempts(3)
+
                 .hotQueueCapacity(10)
                 .coldQueueCapacity(10)
                 .drainTimeoutMs(1000)
@@ -289,8 +304,7 @@ class OutboxDispatcherTest {
         AtomicInteger secondAfterAt = new AtomicInteger();
 
         var registry = new DefaultListenerRegistry()
-                .register("Test", event -> {
-                });
+                .register("Test", event -> DispatchResult.done());
 
         try (var d = OutboxDispatcher.builder()
                 .connectionProvider(stubCp())
@@ -337,6 +351,44 @@ class OutboxDispatcherTest {
         }
     }
 
+    @Test
+    void unrecoverableExceptionIsMarkedDeadImmediately() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        var store = new StubOutboxStore() {
+            @Override
+            public int markDead(Connection conn, String eventId, String error) {
+                super.markDead(conn, eventId, error);
+                latch.countDown();
+                return 1;
+            }
+        };
+
+        var registry = new DefaultListenerRegistry()
+                .register("UnrecoverableEvent", event -> {
+                    throw new UnrecoverableException("bad payload");
+                });
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp())
+                .outboxStore(store)
+                .listenerRegistry(registry)
+                .workerCount(1)
+                .maxAttempts(5)
+                .hotQueueCapacity(10)
+                .coldQueueCapacity(10)
+                .drainTimeoutMs(1000)
+                .build()) {
+
+            // Even with attempts=0 and maxAttempts=5, should go straight to DEAD
+            EventEnvelope event = EventEnvelope.ofJson("UnrecoverableEvent", "{}");
+            d.enqueueHot(new QueuedEvent(event, QueuedEvent.Source.HOT, 0));
+
+            assertTrue(latch.await(3, TimeUnit.SECONDS));
+            assertEquals(1, store.markDeadCount.get());
+            assertEquals(0, store.markRetryCount.get());
+        }
+    }
+
     // ── Multi-worker and shutdown ──────────────────────────────────
 
     @Test
@@ -349,6 +401,7 @@ class OutboxDispatcherTest {
                 .register("MW", event -> {
                     processed.add(event.eventId());
                     latch.countDown();
+                    return DispatchResult.done();
                 });
 
         try (var d = OutboxDispatcher.builder()
@@ -385,6 +438,7 @@ class OutboxDispatcherTest {
                 .register("MWQ", event -> {
                     processed.add(event.eventId());
                     latch.countDown();
+                    return DispatchResult.done();
                 });
 
         try (var d = OutboxDispatcher.builder()
@@ -423,6 +477,7 @@ class OutboxDispatcherTest {
                 .register("Drain", event -> {
                     processed.add(event.eventId());
                     latch.countDown();
+                    return DispatchResult.done();
                 });
 
         var d = OutboxDispatcher.builder()
@@ -480,16 +535,7 @@ class OutboxDispatcherTest {
         };
 
         var registry = new DefaultListenerRegistry();
-        registry.register("DoneResult", new io.outbox.EventListener() {
-            @Override
-            public void onEvent(EventEnvelope event) {
-            }
-
-            @Override
-            public DispatchResult handleEvent(EventEnvelope event) {
-                return DispatchResult.done();
-            }
-        });
+        registry.register("DoneResult", event -> DispatchResult.done());
 
         try (var d = newDispatcher(1, 10, 10, registry, store)) {
             d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("DoneResult", "{}"), QueuedEvent.Source.HOT, 0));
@@ -513,16 +559,7 @@ class OutboxDispatcherTest {
         };
 
         var registry = new DefaultListenerRegistry();
-        registry.register("DeferResult", new io.outbox.EventListener() {
-            @Override
-            public void onEvent(EventEnvelope event) {
-            }
-
-            @Override
-            public DispatchResult handleEvent(EventEnvelope event) {
-                return DispatchResult.retryAfter(Duration.ofSeconds(30));
-            }
-        });
+        registry.register("DeferResult", event -> DispatchResult.retryAfter(Duration.ofSeconds(30)));
 
         java.time.Instant before = java.time.Instant.now();
         try (var d = newDispatcher(1, 10, 10, registry, store)) {
@@ -543,34 +580,26 @@ class OutboxDispatcherTest {
     }
 
     @Test
-    void handlerReturningNullTreatedAsDone() throws Exception {
+    void handlerReturningNullCausesRetry() throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         var store = new StubOutboxStore() {
             @Override
-            public int markDone(Connection conn, String eventId) {
-                super.markDone(conn, eventId);
+            public int markRetry(Connection conn, String eventId, java.time.Instant nextAt, String error) {
+                super.markRetry(conn, eventId, nextAt, error);
                 latch.countDown();
                 return 1;
             }
         };
 
         var registry = new DefaultListenerRegistry();
-        registry.register("NullResult", new io.outbox.EventListener() {
-            @Override
-            public void onEvent(EventEnvelope event) {
-            }
-
-            @Override
-            public DispatchResult handleEvent(EventEnvelope event) {
-                return null;
-            }
-        });
+        registry.register("NullResult", event -> null);
 
         try (var d = newDispatcher(1, 10, 10, registry, store)) {
             d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("NullResult", "{}"), QueuedEvent.Source.HOT, 0));
 
             assertTrue(latch.await(3, TimeUnit.SECONDS));
-            assertEquals(1, store.markDoneCount.get());
+            assertEquals(1, store.markRetryCount.get());
+            assertEquals(0, store.markDoneCount.get());
         }
     }
 
@@ -707,7 +736,10 @@ class OutboxDispatcherTest {
 
         AtomicInteger listenerCallCount = new AtomicInteger();
         var registry = new DefaultListenerRegistry()
-                .register("RTETest", event -> listenerCallCount.incrementAndGet());
+                .register("RTETest", event -> {
+                    listenerCallCount.incrementAndGet();
+                    return DispatchResult.done();
+                });
 
         try (var d = newDispatcher(1, 10, 10, registry, store)) {
             d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("RTETest", "{}"), QueuedEvent.Source.HOT, 0));
@@ -724,6 +756,56 @@ class OutboxDispatcherTest {
     }
 
     @Test
+    void handlerReturningDeadMarksDeadImmediately() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        var store = new StubOutboxStore() {
+            @Override
+            public int markDead(Connection conn, String eventId, String error) {
+                super.markDead(conn, eventId, error);
+                latch.countDown();
+                return 1;
+            }
+        };
+
+        var registry = new DefaultListenerRegistry();
+        registry.register("DeadResult", event -> DispatchResult.dead("business rejection"));
+
+        try (var d = newDispatcher(1, 10, 10, registry, store)) {
+            d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("DeadResult", "{}"), QueuedEvent.Source.HOT, 0));
+
+            assertTrue(latch.await(3, TimeUnit.SECONDS));
+            assertEquals(1, store.markDeadCount.get());
+            assertEquals(0, store.markDoneCount.get());
+            assertEquals(0, store.markRetryCount.get());
+            assertEquals(0, store.markDeferredCount.get());
+        }
+    }
+
+    @Test
+    void handlerReturningDeadWithoutReasonMarksDeadImmediately() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        var store = new StubOutboxStore() {
+            @Override
+            public int markDead(Connection conn, String eventId, String error) {
+                super.markDead(conn, eventId, error);
+                latch.countDown();
+                return 1;
+            }
+        };
+
+        var registry = new DefaultListenerRegistry();
+        registry.register("DeadNoReason", event -> DispatchResult.dead());
+
+        try (var d = newDispatcher(1, 10, 10, registry, store)) {
+            d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("DeadNoReason", "{}"), QueuedEvent.Source.HOT, 0));
+
+            assertTrue(latch.await(3, TimeUnit.SECONDS));
+            assertEquals(1, store.markDeadCount.get());
+            assertEquals(0, store.markDoneCount.get());
+        }
+    }
+
+    @Test
     void lambdaListenerBackwardCompat() throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<String> received = new AtomicReference<>();
@@ -732,6 +814,7 @@ class OutboxDispatcherTest {
                 .register("LambdaCompat", event -> {
                     received.set(event.payloadJson());
                     latch.countDown();
+                    return DispatchResult.done();
                 });
 
         var store = new StubOutboxStore();

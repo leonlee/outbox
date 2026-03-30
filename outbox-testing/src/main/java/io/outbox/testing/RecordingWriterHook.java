@@ -6,7 +6,6 @@ import io.outbox.WriterHook;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * {@link WriterHook} that records all lifecycle invocations for test assertions.
@@ -54,42 +53,58 @@ public class RecordingWriterHook implements WriterHook {
         afterRollbackInvocations.add(List.copyOf(events));
     }
 
-    /** Returns the number of {@code beforeWrite} invocations. */
+    /**
+     * Returns the number of {@code beforeWrite} invocations.
+     */
     public int beforeWriteCount() {
         return beforeWriteInvocations.size();
     }
 
-    /** Returns all event lists passed to {@code beforeWrite}. */
+    /**
+     * Returns all event lists passed to {@code beforeWrite}.
+     */
     public List<List<EventEnvelope>> beforeWriteInvocations() {
         return Collections.unmodifiableList(beforeWriteInvocations);
     }
 
-    /** Returns the number of {@code afterWrite} invocations. */
+    /**
+     * Returns the number of {@code afterWrite} invocations.
+     */
     public int afterWriteCount() {
         return afterWriteInvocations.size();
     }
 
-    /** Returns all event lists passed to {@code afterWrite}. */
+    /**
+     * Returns all event lists passed to {@code afterWrite}.
+     */
     public List<List<EventEnvelope>> afterWriteInvocations() {
         return Collections.unmodifiableList(afterWriteInvocations);
     }
 
-    /** Returns the number of {@code afterCommit} invocations. */
+    /**
+     * Returns the number of {@code afterCommit} invocations.
+     */
     public int afterCommitCount() {
         return afterCommitInvocations.size();
     }
 
-    /** Returns all event lists passed to {@code afterCommit}. */
+    /**
+     * Returns all event lists passed to {@code afterCommit}.
+     */
     public List<List<EventEnvelope>> afterCommitInvocations() {
         return Collections.unmodifiableList(afterCommitInvocations);
     }
 
-    /** Returns the number of {@code afterRollback} invocations. */
+    /**
+     * Returns the number of {@code afterRollback} invocations.
+     */
     public int afterRollbackCount() {
         return afterRollbackInvocations.size();
     }
 
-    /** Returns all event lists passed to {@code afterRollback}. */
+    /**
+     * Returns all event lists passed to {@code afterRollback}.
+     */
     public List<List<EventEnvelope>> afterRollbackInvocations() {
         return Collections.unmodifiableList(afterRollbackInvocations);
     }

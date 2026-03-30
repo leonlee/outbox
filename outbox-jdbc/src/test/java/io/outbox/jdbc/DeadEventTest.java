@@ -1,12 +1,12 @@
 package io.outbox.jdbc;
 
-import org.h2.jdbcx.JdbcDataSource;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 import io.outbox.EventEnvelope;
 import io.outbox.jdbc.store.H2OutboxStore;
 import io.outbox.model.EventStatus;
 import io.outbox.model.OutboxEvent;
+import org.h2.jdbcx.JdbcDataSource;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;

@@ -101,13 +101,11 @@ class EventTypeTest {
         var registry = new io.outbox.registry.DefaultListenerRegistry();
 
         // Register with enum
-        registry.register(UserEvents.USER_CREATED, event -> {
-        });
+        registry.register(UserEvents.USER_CREATED, event -> DispatchResult.done());
 
         // Same underlying name via string should be a duplicate
         assertThrows(IllegalStateException.class, () ->
-                registry.register("USER_CREATED", event -> {
-                }));
+                registry.register("USER_CREATED", event -> DispatchResult.done()));
 
         // Lookup works via both
         assertNotNull(registry.listenerFor(AggregateType.GLOBAL.name(), "USER_CREATED"));

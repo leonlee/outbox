@@ -1,10 +1,10 @@
 package io.outbox.jdbc;
 
-import org.junit.jupiter.api.Test;
 import io.outbox.EventEnvelope;
 import io.outbox.jdbc.store.AbstractJdbcOutboxStore;
 import io.outbox.jdbc.store.JdbcOutboxStores;
 import io.outbox.model.OutboxEvent;
+import org.junit.jupiter.api.Test;
 
 import javax.sql.DataSource;
 import java.sql.Connection;

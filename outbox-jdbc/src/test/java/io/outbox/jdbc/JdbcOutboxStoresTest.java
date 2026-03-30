@@ -1,17 +1,13 @@
 package io.outbox.jdbc;
 
-import org.h2.jdbcx.JdbcDataSource;
-import org.junit.jupiter.api.Test;
 import io.outbox.jdbc.store.AbstractJdbcOutboxStore;
 import io.outbox.jdbc.store.JdbcOutboxStores;
-import io.outbox.util.JsonCodec;
+import org.h2.jdbcx.JdbcDataSource;
+import org.junit.jupiter.api.Test;
 
-import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -102,47 +98,6 @@ class JdbcOutboxStoresTest {
 
         AbstractJdbcOutboxStore store = JdbcOutboxStores.detect(ds);
         assertEquals("h2", store.name());
-    }
-
-    @Test
-    void detectFromJdbcUrlWithCustomCodec() {
-        JsonCodec customCodec = new JsonCodec() {
-            @Override
-            public String toJson(Map<String, String> headers) {
-                return null;
-            }
-
-            @Override
-            public Map<String, String> parseObject(String json) {
-                return Collections.emptyMap();
-            }
-        };
-
-        AbstractJdbcOutboxStore store = JdbcOutboxStores.detect("jdbc:h2:mem:test", customCodec);
-        assertEquals("h2", store.name());
-        // Should be a new instance, not the ServiceLoader singleton
-        assertNotSame(JdbcOutboxStores.detect("jdbc:h2:mem:test"), store);
-    }
-
-    @Test
-    void detectFromDataSourceWithCustomCodec() {
-        JsonCodec customCodec = new JsonCodec() {
-            @Override
-            public String toJson(Map<String, String> headers) {
-                return null;
-            }
-
-            @Override
-            public Map<String, String> parseObject(String json) {
-                return Collections.emptyMap();
-            }
-        };
-        JdbcDataSource ds = new JdbcDataSource();
-        ds.setURL("jdbc:h2:mem:codec_test;DB_CLOSE_DELAY=-1");
-
-        AbstractJdbcOutboxStore store = JdbcOutboxStores.detect(ds, customCodec);
-        assertEquals("h2", store.name());
-        assertNotSame(JdbcOutboxStores.detect(ds), store);
     }
 
     @Test

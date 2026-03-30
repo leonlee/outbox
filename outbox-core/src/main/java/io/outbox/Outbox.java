@@ -13,7 +13,6 @@ import io.outbox.spi.EventPurger;
 import io.outbox.spi.MetricsExporter;
 import io.outbox.spi.OutboxStore;
 import io.outbox.spi.TxContext;
-import io.outbox.util.JsonCodec;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -21,7 +20,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.logging.Logger;
 
 /**
  * Composite entry point that wires an {@link OutboxDispatcher}, {@link OutboxPoller},
@@ -54,13 +52,12 @@ import java.util.logging.Logger;
  * @see OutboxPoller
  */
 public final class Outbox implements AutoCloseable {
-    private static final Logger logger = Logger.getLogger(Outbox.class.getName());
-
     private final OutboxWriter writer;
     private final OutboxPoller poller;
     private final OutboxDispatcher dispatcher;
     private final OutboxPurgeScheduler purgeScheduler;
     private final MetricsExporter metrics;
+    private volatile boolean started;
 
     private Outbox(OutboxWriter writer, OutboxPoller poller,
                    OutboxDispatcher dispatcher, OutboxPurgeScheduler purgeScheduler,
@@ -70,6 +67,21 @@ public final class Outbox implements AutoCloseable {
         this.dispatcher = dispatcher;
         this.purgeScheduler = purgeScheduler;
         this.metrics = metrics;
+    }
+
+    /**
+     * Starts the poller. Called automatically by {@code build()} unless
+     * {@code deferStart(true)} was set on the builder.
+     *
+     * <p>In Spring Boot, this is called by {@code OutboxLifecycle} (a
+     * {@code SmartLifecycle} bean) after all listeners are registered,
+     * guaranteeing no startup race.
+     */
+    public void start() {
+        if (poller != null && !started) {
+            poller.start();
+            started = true;
+        }
     }
 
     /**
@@ -99,16 +111,22 @@ public final class Outbox implements AutoCloseable {
             try {
                 poller.close();
             } catch (RuntimeException e) {
-                if (first == null) first = e;
-                else first.addSuppressed(e);
+                if (first == null) {
+                    first = e;
+                } else {
+                    first.addSuppressed(e);
+                }
             }
         }
         if (dispatcher != null) {
             try {
                 dispatcher.close();
             } catch (RuntimeException e) {
-                if (first == null) first = e;
-                else first.addSuppressed(e);
+                if (first == null) {
+                    first = e;
+                } else {
+                    first.addSuppressed(e);
+                }
             }
         }
         if (metrics instanceof AutoCloseable closeable) {
@@ -116,8 +134,11 @@ public final class Outbox implements AutoCloseable {
                 closeable.close();
             } catch (Exception e) {
                 RuntimeException re = (e instanceof RuntimeException r) ? r : new RuntimeException(e);
-                if (first == null) first = re;
-                else first.addSuppressed(re);
+                if (first == null) {
+                    first = re;
+                } else {
+                    first.addSuppressed(re);
+                }
             }
         }
         if (first != null) {
@@ -172,7 +193,7 @@ public final class Outbox implements AutoCloseable {
      *
      * @param <B> the concrete builder type (CRTP)
      */
-    public static abstract sealed class AbstractBuilder<B extends AbstractBuilder<B>>
+    public abstract static sealed class AbstractBuilder<B extends AbstractBuilder<B>>
             permits SingleNodeBuilder, MultiNodeBuilder, OrderedBuilder, WriterOnlyBuilder {
 
         ConnectionProvider connectionProvider;
@@ -180,12 +201,12 @@ public final class Outbox implements AutoCloseable {
         OutboxStore outboxStore;
         ListenerRegistry listenerRegistry;
         MetricsExporter metrics;
-        JsonCodec jsonCodec;
         final List<EventInterceptor> interceptors = new ArrayList<>();
         long intervalMs = 5000;
         int batchSize = 50;
         Duration skipRecent;
         long drainTimeoutMs = 5000;
+        boolean deferStart = false;
         private final AtomicBoolean built = new AtomicBoolean(false);
 
         AbstractBuilder() {
@@ -273,19 +294,6 @@ public final class Outbox implements AutoCloseable {
         }
 
         /**
-         * Sets a custom JSON codec for decoding event headers.
-         *
-         * <p>Optional. Defaults to {@link JsonCodec#getDefault()}.
-         *
-         * @param jsonCodec the JSON codec
-         * @return this builder
-         */
-        public B jsonCodec(JsonCodec jsonCodec) {
-            this.jsonCodec = jsonCodec;
-            return self();
-        }
-
-        /**
          * Appends a single event interceptor for before/after dispatch hooks.
          *
          * @param interceptor the interceptor to add
@@ -366,6 +374,23 @@ public final class Outbox implements AutoCloseable {
             return self();
         }
 
+        /**
+         * Defers poller startup until {@link Outbox#start()} is called explicitly.
+         *
+         * <p>When {@code true}, {@code build()} creates all components but does not
+         * start the poller. Use this in Spring Boot with {@code SmartLifecycle} to
+         * ensure listeners are registered before polling begins.
+         *
+         * <p>Optional. Defaults to {@code false} (auto-start on build).
+         *
+         * @param deferStart whether to defer poller startup
+         * @return this builder
+         */
+        public B deferStart(boolean deferStart) {
+            this.deferStart = deferStart;
+            return self();
+        }
+
         void validateRequired() {
             Objects.requireNonNull(connectionProvider, "connectionProvider");
             Objects.requireNonNull(txContext, "txContext");
@@ -417,9 +442,6 @@ public final class Outbox implements AutoCloseable {
                 if (metrics != null) {
                     pb.metrics(metrics);
                 }
-                if (jsonCodec != null) {
-                    pb.jsonCodec(jsonCodec);
-                }
                 if (ownerId != null) {
                     pb.claimLocking(ownerId, lockTimeout);
                 }
@@ -428,12 +450,14 @@ public final class Outbox implements AutoCloseable {
                 dispatcher.close();
                 throw e;
             }
-            try {
-                poller.start();
-            } catch (RuntimeException e) {
-                poller.close();
-                dispatcher.close();
-                throw e;
+            if (!deferStart) {
+                try {
+                    poller.start();
+                } catch (RuntimeException e) {
+                    poller.close();
+                    dispatcher.close();
+                    throw e;
+                }
             }
 
             OutboxWriter writer;
@@ -697,7 +721,7 @@ public final class Outbox implements AutoCloseable {
      *
      * <p>Inherited builder methods for dispatcher/poller configuration
      * ({@code listenerRegistry}, {@code interceptor}, {@code interceptors},
-     * {@code jsonCodec}, {@code intervalMs}, {@code batchSize},
+     * {@code intervalMs}, {@code batchSize},
      * {@code skipRecent}, {@code drainTimeoutMs}) are not supported in this
      * mode and throw {@link UnsupportedOperationException}.
      */
@@ -710,49 +734,57 @@ public final class Outbox implements AutoCloseable {
         WriterOnlyBuilder() {
         }
 
-        /** @throws UnsupportedOperationException always — not used in writer-only mode */
+        /**
+         * @throws UnsupportedOperationException always — not used in writer-only mode
+         */
         @Override
         public WriterOnlyBuilder listenerRegistry(ListenerRegistry listenerRegistry) {
             throw new UnsupportedOperationException("listenerRegistry is not used in writer-only mode");
         }
 
-        /** @throws UnsupportedOperationException always — not used in writer-only mode */
-        @Override
-        public WriterOnlyBuilder jsonCodec(JsonCodec jsonCodec) {
-            throw new UnsupportedOperationException("jsonCodec is not used in writer-only mode");
-        }
-
-        /** @throws UnsupportedOperationException always — not used in writer-only mode */
+        /**
+         * @throws UnsupportedOperationException always — not used in writer-only mode
+         */
         @Override
         public WriterOnlyBuilder interceptor(EventInterceptor interceptor) {
             throw new UnsupportedOperationException("interceptor is not used in writer-only mode");
         }
 
-        /** @throws UnsupportedOperationException always — not used in writer-only mode */
+        /**
+         * @throws UnsupportedOperationException always — not used in writer-only mode
+         */
         @Override
         public WriterOnlyBuilder interceptors(List<EventInterceptor> interceptors) {
             throw new UnsupportedOperationException("interceptors is not used in writer-only mode");
         }
 
-        /** @throws UnsupportedOperationException always — not used in writer-only mode */
+        /**
+         * @throws UnsupportedOperationException always — not used in writer-only mode
+         */
         @Override
         public WriterOnlyBuilder intervalMs(long intervalMs) {
             throw new UnsupportedOperationException("intervalMs is not used in writer-only mode");
         }
 
-        /** @throws UnsupportedOperationException always — not used in writer-only mode */
+        /**
+         * @throws UnsupportedOperationException always — not used in writer-only mode
+         */
         @Override
         public WriterOnlyBuilder batchSize(int batchSize) {
             throw new UnsupportedOperationException("batchSize is not used in writer-only mode");
         }
 
-        /** @throws UnsupportedOperationException always — not used in writer-only mode */
+        /**
+         * @throws UnsupportedOperationException always — not used in writer-only mode
+         */
         @Override
         public WriterOnlyBuilder skipRecent(Duration skipRecent) {
             throw new UnsupportedOperationException("skipRecent is not used in writer-only mode");
         }
 
-        /** @throws UnsupportedOperationException always — not used in writer-only mode */
+        /**
+         * @throws UnsupportedOperationException always — not used in writer-only mode
+         */
         @Override
         public WriterOnlyBuilder drainTimeoutMs(long drainTimeoutMs) {
             throw new UnsupportedOperationException("drainTimeoutMs is not used in writer-only mode");

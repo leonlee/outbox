@@ -32,17 +32,23 @@ package io.outbox;
  *
  * <h2>Example Implementations</h2>
  * <pre>{@code
- * // Publish to Kafka
+ * // Publish to Kafka — returns DONE on success
  * registry.register("OrderCreated", event -> {
  *   kafkaTemplate.send("orders", event.eventId(), event.payloadJson());
+ *   return DispatchResult.done();
  * });
  *
- * // Update read model with aggregate-scoped registration
- * registry.register("User", "UserUpdated", event -> {
- *   userCache.invalidate(event.aggregateId());
+ * // Deferred retry when rate-limited
+ * registry.register("Webhook", event -> {
+ *   if (rateLimiter.isLimited()) {
+ *     return DispatchResult.retryAfter(Duration.ofMinutes(1));
+ *   }
+ *   webhookClient.send(event.payloadJson());
+ *   return DispatchResult.done();
  * });
  * }</pre>
  *
+ * @see DispatchResult
  * @see io.outbox.registry.ListenerRegistry
  * @see io.outbox.registry.DefaultListenerRegistry
  */
@@ -50,29 +56,19 @@ package io.outbox;
 public interface EventListener {
 
     /**
-     * Processes an outbox event.
-     *
-     * @param event the event envelope containing type, payload, and metadata
-     * @throws Exception if processing fails; triggers retry or dead-letter handling
-     */
-    void onEvent(EventEnvelope event) throws Exception;
-
-    /**
-     * Processes an outbox event and returns a {@link DispatchResult} to control
+     * Processes an outbox envelope and returns a {@link DispatchResult} to control
      * post-dispatch behavior.
      *
-     * <p>The default implementation delegates to {@link #onEvent(EventEnvelope)}
-     * and returns {@link DispatchResult#DONE}. Override this method to return
+     * <p>Return {@link DispatchResult#done()} on success,
      * {@link DispatchResult#retryAfter(java.time.Duration)} for deferred re-delivery
-     * without counting against {@code maxAttempts}.
+     * without counting against {@code maxAttempts}, or {@link DispatchResult#dead(String)}
+     * to immediately mark the event as DEAD without retry.
      *
-     * @param event the event envelope containing type, payload, and metadata
-     * @return the handler result indicating completion or deferred retry
+     * @param envelope the event envelope containing type, payload, and metadata
+     * @return the dispatch result indicating completion, deferred retry, or immediate dead-letter;
+     * must not be {@code null} (a null return is treated as a programming error and triggers retry)
      * @throws Exception if processing fails; triggers retry or dead-letter handling
      * @see DispatchResult
      */
-    default DispatchResult handleEvent(EventEnvelope event) throws Exception {
-        onEvent(event);
-        return DispatchResult.done();
-    }
+    DispatchResult onEvent(EventEnvelope envelope) throws Exception;
 }

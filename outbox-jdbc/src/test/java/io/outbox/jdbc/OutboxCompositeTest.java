@@ -1,9 +1,6 @@
 package io.outbox.jdbc;
 
-import org.h2.jdbcx.JdbcDataSource;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import io.outbox.DispatchResult;
 import io.outbox.EventEnvelope;
 import io.outbox.Outbox;
 import io.outbox.OutboxWriter;
@@ -13,6 +10,10 @@ import io.outbox.jdbc.tx.JdbcTransactionManager;
 import io.outbox.jdbc.tx.ThreadLocalTxContext;
 import io.outbox.model.EventStatus;
 import io.outbox.registry.DefaultListenerRegistry;
+import org.h2.jdbcx.JdbcDataSource;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -63,7 +64,10 @@ class OutboxCompositeTest {
     void singleNode_hotPathDispatch() throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         DefaultListenerRegistry registry = new DefaultListenerRegistry()
-                .register("UserCreated", event -> latch.countDown());
+                .register("UserCreated", event -> {
+                    latch.countDown();
+                    return DispatchResult.done();
+                });
 
         try (Outbox outbox = Outbox.singleNode()
                 .connectionProvider(connectionProvider)
@@ -89,7 +93,10 @@ class OutboxCompositeTest {
     void ordered_pollerOnlyDispatch() throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         DefaultListenerRegistry registry = new DefaultListenerRegistry()
-                .register("OrderPlaced", event -> latch.countDown());
+                .register("OrderPlaced", event -> {
+                    latch.countDown();
+                    return DispatchResult.done();
+                });
 
         try (Outbox outbox = Outbox.ordered()
                 .connectionProvider(connectionProvider)
@@ -144,7 +151,10 @@ class OutboxCompositeTest {
     void multiNode_claimLockingDispatch() throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         DefaultListenerRegistry registry = new DefaultListenerRegistry()
-                .register("Claimed", event -> latch.countDown());
+                .register("Claimed", event -> {
+                    latch.countDown();
+                    return DispatchResult.done();
+                });
 
         try (Outbox outbox = Outbox.multiNode()
                 .connectionProvider(connectionProvider)
@@ -210,6 +220,7 @@ class OutboxCompositeTest {
                 .register("Ordered", event -> {
                     receivedOrder.add(event.eventId());
                     latch.countDown();
+                    return DispatchResult.done();
                 });
 
         try (Outbox outbox = Outbox.ordered()
@@ -251,6 +262,7 @@ class OutboxCompositeTest {
                 .register("MultiClaim", event -> {
                     processed.add(event.eventId());
                     latch.countDown();
+                    return DispatchResult.done();
                 });
 
         try (Outbox node1 = Outbox.multiNode()

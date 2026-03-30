@@ -26,6 +26,9 @@ import java.lang.annotation.Target;
                 DockerClientFactory.instance().client();
                 return ConditionEvaluationResult.enabled("Docker is available");
             } catch (Throwable t) {
+                System.err.println("=== DOCKER CHECK FAILED ===");
+                t.printStackTrace(System.err);
+                System.err.println("=== END DOCKER CHECK ===");
                 return ConditionEvaluationResult.disabled("Docker is not available: " + t.getMessage());
             }
         }

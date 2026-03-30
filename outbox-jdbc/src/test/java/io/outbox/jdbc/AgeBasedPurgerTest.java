@@ -1,10 +1,10 @@
 package io.outbox.jdbc;
 
+import io.outbox.jdbc.purge.H2AgeBasedPurger;
+import io.outbox.model.EventStatus;
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import io.outbox.jdbc.purge.H2AgeBasedPurger;
-import io.outbox.model.EventStatus;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;

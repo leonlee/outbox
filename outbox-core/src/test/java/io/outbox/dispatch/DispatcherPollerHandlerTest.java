@@ -1,8 +1,8 @@
 package io.outbox.dispatch;
 
-import org.junit.jupiter.api.Test;
 import io.outbox.EventEnvelope;
 import io.outbox.registry.DefaultListenerRegistry;
+import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;

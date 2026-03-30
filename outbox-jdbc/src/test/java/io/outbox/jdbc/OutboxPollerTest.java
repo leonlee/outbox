@@ -1,9 +1,6 @@
 package io.outbox.jdbc;
 
-import org.h2.jdbcx.JdbcDataSource;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import io.outbox.DispatchResult;
 import io.outbox.EventEnvelope;
 import io.outbox.dispatch.DispatcherPollerHandler;
 import io.outbox.dispatch.OutboxDispatcher;
@@ -12,7 +9,10 @@ import io.outbox.model.EventStatus;
 import io.outbox.poller.OutboxPoller;
 import io.outbox.registry.DefaultListenerRegistry;
 import io.outbox.spi.MetricsExporter;
-import io.outbox.util.JsonCodec;
+import org.h2.jdbcx.JdbcDataSource;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -21,7 +21,6 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -69,7 +68,10 @@ class OutboxPollerTest {
 
         CountDownLatch latch = new CountDownLatch(1);
         DefaultListenerRegistry listeners = new DefaultListenerRegistry()
-                .register("Recent", e -> latch.countDown());
+                .register("Recent", e -> {
+                    latch.countDown();
+                    return DispatchResult.done();
+                });
 
         OutboxDispatcher dispatcher = OutboxDispatcher.builder()
                 .connectionProvider(connectionProvider)
@@ -147,7 +149,10 @@ class OutboxPollerTest {
 
         CountDownLatch latch = new CountDownLatch(2);
         DefaultListenerRegistry listeners = new DefaultListenerRegistry()
-                .register("Test", e -> latch.countDown());
+                .register("Test", e -> {
+                    latch.countDown();
+                    return DispatchResult.done();
+                });
 
         OutboxDispatcher dispatcher = OutboxDispatcher.builder()
                 .connectionProvider(connectionProvider)
@@ -234,71 +239,6 @@ class OutboxPollerTest {
     }
 
     @Test
-    void pollerUsesCustomJsonCodecForHeaders() throws Exception {
-        // Insert event with raw header JSON in the DB
-        Instant createdAt = Instant.now().minusSeconds(5);
-        EventEnvelope event = EventEnvelope.builder("HeaderTest")
-                .eventId("evt-codec")
-                .occurredAt(createdAt)
-                .headers(Map.of("trace", "abc"))
-                .payloadJson("{}")
-                .build();
-        insertEvent(event);
-
-        // Custom codec that injects a marker header
-        JsonCodec customCodec = new JsonCodec() {
-            @Override
-            public String toJson(Map<String, String> headers) {
-                return JsonCodec.getDefault().toJson(headers);
-            }
-
-            @Override
-            public Map<String, String> parseObject(String json) {
-                Map<String, String> parsed = new java.util.LinkedHashMap<>(JsonCodec.getDefault().parseObject(json));
-                parsed.put("custom", "injected");
-                return parsed;
-            }
-        };
-
-        AtomicReference<Map<String, String>> capturedHeaders = new AtomicReference<>();
-        CountDownLatch latch = new CountDownLatch(1);
-        DefaultListenerRegistry listeners = new DefaultListenerRegistry()
-                .register("HeaderTest", e -> {
-                    capturedHeaders.set(e.headers());
-                    latch.countDown();
-                });
-
-        OutboxDispatcher dispatcher = OutboxDispatcher.builder()
-                .connectionProvider(connectionProvider)
-                .outboxStore(outboxStore)
-                .listenerRegistry(listeners)
-                .retryPolicy(attempts -> 0L)
-                .workerCount(1)
-                .hotQueueCapacity(10)
-                .coldQueueCapacity(10)
-                .build();
-
-        try (OutboxPoller poller = OutboxPoller.builder()
-                .connectionProvider(connectionProvider)
-                .outboxStore(outboxStore)
-                .handler(new DispatcherPollerHandler(dispatcher))
-                .skipRecent(Duration.ZERO)
-                .batchSize(10)
-                .intervalMs(10)
-                .jsonCodec(customCodec)
-                .build()) {
-            poller.poll();
-            latch.await(2, TimeUnit.SECONDS);
-        }
-
-        assertNotNull(capturedHeaders.get());
-        assertEquals("abc", capturedHeaders.get().get("trace"));
-        assertEquals("injected", capturedHeaders.get().get("custom"));
-
-        dispatcher.close();
-    }
-
-    @Test
     void pollerReconstructsAvailableAtOnEnvelope() throws Exception {
         Instant availableAt = Instant.now().minusSeconds(30).truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
         EventEnvelope delayed = EventEnvelope.builder("DelayedRecon")
@@ -315,6 +255,7 @@ class OutboxPollerTest {
                 .register("DelayedRecon", e -> {
                     captured.set(e);
                     latch.countDown();
+                    return DispatchResult.done();
                 });
 
         OutboxDispatcher dispatcher = OutboxDispatcher.builder()
@@ -365,6 +306,7 @@ class OutboxPollerTest {
                 .register("ImmediateRecon", e -> {
                     captured.set(e);
                     latch.countDown();
+                    return DispatchResult.done();
                 });
 
         OutboxDispatcher dispatcher = OutboxDispatcher.builder()
@@ -416,6 +358,7 @@ class OutboxPollerTest {
                 .register("ClaimRecon", e -> {
                     captured.set(e);
                     latch.countDown();
+                    return DispatchResult.done();
                 });
 
         OutboxDispatcher dispatcher = OutboxDispatcher.builder()

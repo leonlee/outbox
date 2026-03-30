@@ -29,7 +29,7 @@ import java.util.logging.Logger;
  *
  * <p>Create instances via {@link #builder()}.
  *
- * @see OutboxPurgeScheduler.Builder
+ * @see Builder
  * @see EventPurger
  */
 public final class OutboxPurgeScheduler implements AutoCloseable {

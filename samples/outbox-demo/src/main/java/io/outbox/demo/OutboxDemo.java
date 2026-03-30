@@ -1,6 +1,6 @@
 package io.outbox.demo;
 
-import org.h2.jdbcx.JdbcDataSource;
+import io.outbox.DispatchResult;
 import io.outbox.EventEnvelope;
 import io.outbox.Outbox;
 import io.outbox.dispatch.EventInterceptor;
@@ -9,6 +9,7 @@ import io.outbox.jdbc.store.JdbcOutboxStores;
 import io.outbox.jdbc.tx.JdbcTransactionManager;
 import io.outbox.jdbc.tx.ThreadLocalTxContext;
 import io.outbox.registry.DefaultListenerRegistry;
+import org.h2.jdbcx.JdbcDataSource;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -54,16 +55,19 @@ public final class OutboxDemo {
                             System.out.println("[Listener] UserCreated: " + event.payloadJson());
                             publishedCount.incrementAndGet();
                             latch.countDown();
+                            return DispatchResult.done();
                         })
                         .register("User", "UserCreated", event -> {
                             System.out.println("[Listener] User/UserCreated: " + event.payloadJson());
                             publishedCount.incrementAndGet();
                             latch.countDown();
+                            return DispatchResult.done();
                         })
                         .register("Order", "OrderPlaced", event -> {
                             System.out.println("[Listener] Order/OrderPlaced: " + event.payloadJson());
                             publishedCount.incrementAndGet();
                             latch.countDown();
+                            return DispatchResult.done();
                         }))
                 .interceptor(EventInterceptor.before(event ->
                         System.out.println("[Audit] Event dispatched: type=" + event.eventType()

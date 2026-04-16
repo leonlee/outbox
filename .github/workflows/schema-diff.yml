@@ -121,7 +121,7 @@ jobs:
           echo -e "$RESULT" > /tmp/schema-diff.md
 
       - name: Post PR comment
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');

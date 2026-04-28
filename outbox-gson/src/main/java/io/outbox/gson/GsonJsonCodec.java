@@ -16,7 +16,7 @@ import java.util.Map;
  * {@link JsonCodec} implementation backed by Gson.
  *
  * <p>Registered as a {@link java.util.ServiceLoader} provider via
- * {@code META-INF/services/io.elestyle.outbox.spi.JsonCodec}.
+ * {@code META-INF/services/io.outbox.spi.JsonCodec}.
  */
 public final class GsonJsonCodec implements JsonCodec {
 

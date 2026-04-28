@@ -1,158 +1,205 @@
-# Code Review
+# Code Review — outbox v0.9.3-SNAPSHOT
 
-Full code review of the outbox framework. Last updated: 2026-03-02 (v0.9.1-SNAPSHOT).
-
-## Fixed Issues
-
-Issues identified and fixed in commit `02fe82e`:
-
-### [C2] Missing `spring-boot-configuration-processor` — Fixed
-
-**Severity:** Critical | **File:** `outbox-spring-boot-starter/pom.xml`
-
-The starter module had no `spring-boot-configuration-processor` dependency, so no
-`spring-configuration-metadata.json` was generated. Users got zero IDE auto-completion
-for `outbox.*` properties.
-
-**Fix:** Added as `<optional>true</optional>` dependency.
+Full review of all modules (outbox-core, outbox-jdbc, outbox-gson, outbox-micrometer,
+outbox-spring-boot-starter, outbox-spring-adapter, outbox-testing). 40+ source files,
+15+ test files examined.
 
 ---
 
-### [H1] `withConnection` catches only `SQLException` — Fixed
+## CRITICAL (3)
 
-**Severity:** High | **File:** `outbox-core/.../dispatch/OutboxDispatcher.java:296-303`
+### C1. NoOpConnectionProvider returns null → NPE with try-with-resources
 
-`withConnection` only caught `SQLException`. If a store method threw `RuntimeException`
-(e.g. `OutboxStoreException`), it propagated into `dispatchEvent`'s catch block, causing
-`handleFailure` to run on a **successfully-processed** event — potentially re-delivering
-or marking DEAD an event whose listener already succeeded.
+- **File:** `outbox-testing/src/main/java/io/outbox/testing/NoOpConnectionProvider.java:16`
+- **Problem:** `getConnection()` returns `null`. Java's try-with-resources always calls `.close()`
+  on the resource variable. When `conn` is null, this throws `NullPointerException`.
+- **Risk:** Users wrapping a `NoOpConnectionProvider`-acquired connection in
+  `try (Connection conn = provider.getConnection())` crash at cleanup time.
+- **Fix:** Change to `throw new UnsupportedOperationException("NoOpConnectionProvider cannot provide real connections")`.
 
-**Fix:** Broadened catch to `SQLException | RuntimeException`.
+### C2+C3. markDeferred status inconsistency between InMemory and JDBC stores
 
----
-
-### [H2] `WriterOnlyBuilder` silently accepts irrelevant config — Fixed
-
-**Severity:** High | **File:** `outbox-core/.../Outbox.java` (WriterOnlyBuilder)
-
-`WriterOnlyBuilder` inherited `listenerRegistry()`, `interceptor()`, `interceptors()`,
-`jsonCodec()`, `intervalMs()`, `batchSize()`, `skipRecent()`, `drainTimeoutMs()` from
-`AbstractBuilder` — all silently ignored at build time. Users could misconfigure without
-any feedback.
-
-**Fix:** Each irrelevant method overridden to throw `UnsupportedOperationException`.
-`metrics()` intentionally kept (see H3).
+- **Files:** `AbstractJdbcOutboxStore.java:188-193` (sets RETRY), `InMemoryOutboxStore.java:77` (sets NEW)
+- **Problem:** `markDeferred` (for `DispatchResult.RetryAfter`) is not a failure — the handler
+  explicitly deferred delivery without penalty. Setting status=RETRY in the JDBC store polls
+  monitoring queries that count `WHERE status=2` (RETRY) rows as failures, causing false alarms.
+  The InMemory store correctly preserves NEW status.
+- **Fix:** Change `AbstractJdbcOutboxStore.markDeferred` to use `EventStatus.NEW` instead of `RETRY`,
+  aligning both implementations. The `available_at` timestamp already controls re-delivery timing.
 
 ---
 
-### [H3] `WriterOnlyBuilder.build()` discards `MetricsExporter` — Fixed
+## MAJOR (8)
 
-**Severity:** High | **Files:** `outbox-core/.../Outbox.java:797`,
-`outbox-spring-boot-starter/.../OutboxAutoConfiguration.java:185-198`
+### M1. ExponentialBackoffRetryPolicy: baseDelayMs >= maxDelayMs silently disables backoff
 
-`WriterOnlyBuilder.build()` passed `null` for metrics to the `Outbox` constructor, so
-`Outbox.close()` never called `metrics.close()` — leaking Micrometer meters. Auto-config
-also never wired metrics in `WRITER_ONLY` mode.
+- **File:** `ExponentialBackoffRetryPolicy.java:38-43`
+- **Problem:** When `baseDelayMs >= maxDelayMs`, integer division `maxDelayMs / baseDelayMs = 0`,
+  so `shift > 0` is always true → every attempt caps at `maxDelayMs` with no exponential growth.
+  No warning issued.
+- **Fix:** Add `if (baseDelayMs >= maxDelayMs) throw new IllegalArgumentException(...)` in constructor.
 
-**Fix:** Pass `metrics` field instead of `null` in `build()`. Wire `builder.metrics(metrics)`
-in auto-config's `WRITER_ONLY` case.
+### M2. DefaultInFlightTracker: negative clock adjustment wedges TTL entries
 
----
+- **File:** `DefaultInFlightTracker.java:38-57`
+- **Problem:** If NTP adjusts the system clock backward, `now - existing` becomes negative,
+  so `> ttlMs` is never true. The entry is permanently stuck in the in-flight map.
+- **Fix:** Guard with `now < existing || now - existing > ttlMs` (treat backward clock as expired).
 
-### [M1] `OutboxPoller.markDead` catches only `SQLException` — Fixed
+### M3. Outbox.close() throws first failure; later root-cause failures buried
 
-**Severity:** Medium | **File:** `outbox-core/.../poller/OutboxPoller.java:213-220`
+- **File:** `Outbox.java:102-147`
+- **Problem:** The first component closure failure is thrown, with subsequent failures as suppressed
+  exceptions. If `purgeScheduler.close()` fails because the DB connection was already closed (secondary),
+  but `poller.close()` fails due to a stuck thread (root cause), the secondary exception is thrown
+  with the root cause suppressed.
+- **Fix:** Log each caught exception at `SEVERE` before accumulation, so all failures appear in logs
+  regardless of which is ultimately thrown.
 
-Same pattern as H1. Broadened catch to `SQLException | RuntimeException`.
+### M4. OutboxDispatcher.close() misleading shutdown comment
 
----
+- **File:** `OutboxDispatcher.java:342-350`
+- **Problem:** "poller will retry them" — this is correct because events were persisted before
+  enqueuing, but the comment assumes the reader knows this invariant.
+- **Fix:** Expand the comment to explain why discarding in-memory state is safe.
 
-### [M2] `convertToEnvelope` doesn't reconstruct `availableAt` — Fixed
+### M5. MicrometerMetricsExporter TOCTOU between close() and recording methods
 
-**Severity:** Low | **File:** `outbox-core/.../poller/OutboxPoller.java:200-211`
+- **File:** `MicrometerMetricsExporter.java:135-230`
+- **Problem:** Recording methods check `if (closed) return;` (volatile read), then call meter
+  methods. Between the check and call, `close()` could remove the meter from the registry.
+  In practice, `Outbox.close()` shuts down dispatcher/poller first (stopping all recording),
+  then closes metrics — so the race cannot occur under normal usage. But standalone use
+  could trigger it.
+- **Fix:** Document that `close()` must be called after all recording is complete.
 
-Added `available_at` to all SELECT queries (`pollPending`, `selectClaimed`, `queryDead`,
-PostgreSQL `RETURNING`), added `availableAt` field to `OutboxEvent` record, and set it on
-the reconstructed `EventEnvelope` in `convertToEnvelope`.
+### M6. DefaultInFlightTracker eviction threshold too conservative
 
----
+- **File:** `DefaultInFlightTracker.java:59-64`
+- **Problem:** Eviction runs every ~1024 acquires and only removes entries older than `2 * ttlMs`.
+  Under sustained load with short TTLs, stale entries accumulate between sweeps.
+- **Fix:** Reduce sampling rate from 1024 to 256; reduce eviction threshold from `2 * ttlMs` to `ttlMs`.
 
-### [L1] `DefaultJsonCodec` doesn't validate lone surrogates — Fixed
+### M7. DispatchResult.RetryAfter accepts zero delay
 
-**Severity:** Low | **File:** `outbox-core/.../util/DefaultJsonCodec.java:159-170`
+- **File:** `DispatchResult.java:87-93`
+- **Problem:** Zero delay produces `available_at = Instant.now()`, causing a pointless DB UPDATE
+  that achieves nothing (the event is immediately available again).
+- **Fix:** Add `|| delay.isZero()` to the validation check.
 
-Added surrogate pair validation: high surrogates must be followed by `\uDC00-\uDFFF`,
-lone low surrogates are rejected.
+### M8. OutboxDispatcher Javadoc says maxAttempts >= 1, code allows 0
 
----
-
-### [L2] `DeadEventManager` returns defaults on failure — Fixed
-
-**Severity:** Low | **File:** `outbox-core/.../dead/DeadEventManager.java`
-
-Changed from swallowing exceptions (returning `List.of()` / `0` / `false`) to wrapping
-`SQLException` in `RuntimeException` and letting `RuntimeException` propagate. Callers
-can now distinguish database failures from empty results.
-
----
-
-### [P1] `AggregateType.name()` / `EventType.name()` default returns `getClass().getName()` — Fixed
-
-**Severity:** High | **Files:** `outbox-core/.../AggregateType.java`, `outbox-core/.../EventType.java`
-
-Both interfaces had `default name() { return this.getClass().getName(); }`. Non-enum
-implementations (anonymous classes, lambdas) would persist unstable class names like
-`Foo$$Lambda$123/0x00000001` to the database, breaking listener routing on restart or
-across JVM versions.
-
-**Fix:** Made `name()` abstract. Enum implementations inherit `Enum.name()` automatically;
-records and classes must override explicitly. All existing implementations already did.
-
----
-
-### [P2] `claimPending` missing `available_at` filtering tests — Fixed
-
-**Severity:** Medium | **Files:** `outbox-jdbc/.../AbstractOutboxStoreIntegrationTest.java`,
-`outbox-jdbc/.../OutboxPollerTest.java`, `outbox-jdbc/.../OutboxAcceptanceTest.java`
-
-`pollPending` had `available_at` filtering tests but `claimPending` did not. Also missing:
-`convertToEnvelope` `availableAt` reconstruction tests and end-to-end delayed delivery
-integration test.
-
-**Fix:** Added 8 tests: 4 for `claimPending` `available_at` filtering (delayed insert,
-markRetry, markDeferred, elapsed delay), 3 for `convertToEnvelope` reconstruction (poll,
-claim, immediate event), 1 end-to-end delayed delivery (hot skip → poller → DONE with
-`availableAt` preserved).
+- **File:** `OutboxDispatcher.java:443` (Javadoc) vs `OutboxDispatcher.java:85` (validation)
+- **Problem:** Javadoc states ">= 1" but code allows `>= 0`. At 0, first failure → immediate DEAD.
+  Behavior is intentional and useful (fire-and-forget), but undocumented.
+- **Fix:** Update Javadoc to ">= 0. Setting to 0 causes immediate DEAD on first failure."
 
 ---
 
-## Reviewed and Verified (No Issues)
+## MINOR (8)
 
-Areas specifically checked and found to be correct:
+### m1. JdbcTemplate.bindParams missing Long branch
 
-- **SQL injection prevention:** All queries use parameterized statements. `TableNames.validate()`
-  enforces `[a-zA-Z_][a-zA-Z0-9_]*` for table names used in string concatenation.
-- **Connection lifecycle:** `try-with-resources` used consistently across `OutboxPoller`,
-  `OutboxDispatcher.withConnection`, `DeadEventManager`, and `OutboxPurgeScheduler`.
-  `OutboxPoller.fetchPendingRows` properly rolls back on failure within try-with-resources.
-- **Thread safety:** `AtomicBoolean`/`AtomicInteger` for flags, `volatile` for visibility,
-  `ConcurrentHashMap` in `DefaultListenerRegistry`, `synchronized` on `OutboxPoller` lifecycle
-  methods. `OutboxDispatcher.pollCounter` overflow handled correctly via `& 0x7FFFFFFF` bitmask.
-- **Shutdown ordering:** `Outbox.close()` shuts down purgeScheduler → poller → dispatcher → metrics.
-  This is correct: the poller should stop producing before the dispatcher stops consuming, and
-  metrics should be closed last so shutdown activity is still recorded.
-- **Queue draining on shutdown:** `OutboxDispatcher.close()` clears in-memory queues after workers
-  stop. Events are already persisted in the database, so the poller will re-fetch them on
-  restart. The "stranded" log message confirms this is by design.
-- **Fair queue distribution:** The `pollCounter % 3 == 2` pattern provides stable 2:1 hot:cold
-  ratio even across int overflow, thanks to the sign-bit mask.
-- **Retry policy overflow:** `ExponentialBackoffRetryPolicy` caps at `attempts >= 31`, guards
-  against multiplication overflow, and applies `Math.min(maxDelayMs, ...)` as final bound.
-- **WriterHook suppression:** `OutboxWriter.writeAll()` returns empty list when
-  `beforeWrite` returns null/empty. This is the documented contract — hooks that
-  intentionally suppress writes should not generate warnings.
-- **Spring auto-config:** All four mode branches properly validate required fields via the
-  builder's own `validateRequired()`. No configuration can slip through without validation.
-- **MicrometerMetricsExporter.close():** The `volatile boolean closed` guard is sufficient.
-  Worst case is a harmless metric recorded between `closed = true` and meter removal.
-  Micrometer's `MeterRegistry` is itself thread-safe.
+- **File:** `JdbcTemplate.java:69-84`
+- **Problem:** `String`, `Integer`, `Timestamp` have explicit branches; `Long` falls through
+  to generic `setObject`. No current code path passes `Long`, but it's a latent gap.
+- **Fix:** Add `else if (param instanceof Long n) { ps.setLong(i + 1, n); }`.
+
+### m2. Stale Javadoc references to io.elestyle.outbox.spi.JsonCodec
+
+- **Files:** `JsonCodec.java:19`, `GsonJsonCodec.java:19`
+- **Problem:** Package was renamed from `io.elestyle.outbox` to `io.outbox`. These two
+  Javadoc references still use the old name.
+- **Fix:** Replace with `io.outbox.spi.JsonCodec`.
+
+### m3. Stale references to removed DefaultJsonCodec in planning docs
+
+- **Files:** `CODE_REVIEW.md` (this file, previous version), `.planning/codebase/*.md`
+- **Problem:** `DefaultJsonCodec` was removed and replaced with `JsonCodec` SPI + `GsonJsonCodec`.
+  Planning docs still reference the removed class.
+- **Fix:** N/A — historical planning docs; previous review findings obsoleted by this review.
+
+### m4. OutboxPoller.close() 5-second timeout is a magic number
+
+- **File:** `OutboxPoller.java:237`
+- **Problem:** Hardcoded `awaitTermination(5, TimeUnit.SECONDS)` with no named constant.
+- **Fix:** Extract to `TERMINATION_TIMEOUT_SECONDS` constant.
+
+### m5. MySqlOutboxStore.claimPending transactional requirement undocumented
+
+- **File:** `MySqlOutboxStore.java:42-79`
+- **Problem:** Two-phase `SELECT FOR UPDATE` + `UPDATE` only atomic with `autoCommit=false`.
+  Guaranteed by `OutboxPoller.fetchPendingRows` but not documented on the store method.
+- **Fix:** Document transactional requirement in Javadoc.
+
+### m6. DefaultInFlightTracker accepts negative TTL silently
+
+- **File:** `DefaultInFlightTracker.java:33-35`
+- **Problem:** Negative TTL behaves identically to zero (no expiry). Test at
+  `DefaultInFlightTrackerTest.java:93-102` explicitly tests and expects this, but it's undocumented.
+- **Fix:** Document in constructor Javadoc.
+
+### m7. OutboxDispatcher.close() lacks idempotency guard
+
+- **File:** `OutboxDispatcher.java:326-351`
+- **Problem:** Repeated `close()` calls execute `shutdown()`, `shutdownNow()`, and logging again.
+  While executor pools tolerate redundant calls, an explicit guard is clearer.
+- **Fix:** Add `AtomicBoolean closed` guard at the top of `close()`.
+
+### m8. Outbox.start() volatile pattern undocumented
+
+- **File:** `Outbox.java:80-84`
+- **Problem:** `started` is volatile with a read-then-write pattern. Safe in practice because
+  `poller.start()` is `synchronized` and idempotent, but the intent isn't documented.
+- **Fix:** Document thread-safety guarantee in method Javadoc.
+
+---
+
+## NIT (4)
+
+### n1. workerCount=0 creates unused CachedThreadPool
+
+- **File:** `OutboxDispatcher.java:107`
+- **Problem:** `Executors.newCachedThreadPool(DaemonThreadFactory)` is created when
+  `workerCount=0`, though no tasks are ever submitted. Threads only spawn on demand,
+  but the pool object is still allocated.
+- **Fix:** Add comment explaining the cached pool choice (safe no-op for testing).
+
+### n2. Redundant baseDelayMs != 0 check
+
+- **File:** `ExponentialBackoffRetryPolicy.java:41`
+- **Problem:** Constructor rejects `baseDelayMs <= 0`, so `baseDelayMs != 0` is always true.
+- **Fix:** Remove the redundant check.
+
+### n3. Gauge field references only used in close()
+
+- **File:** `MicrometerMetricsExporter.java:57-59`
+- **Problem:** `hotDepthGauge`, `coldDepthGauge`, `lagGauge` fields are stored only for
+  `close()` cleanup; gauge registration uses method references to the `Atomic*` fields directly.
+- **Fix:** Add comment noting retention is for cleanup removal only.
+
+### n4. DaemonThreadFactory counter grows unbounded
+
+- **File:** `DaemonThreadFactory.java:23`
+- **Problem:** The `AtomicInteger` counter never resets. Across many `Outbox` instance
+  lifecycles, thread names grow arbitrarily large. Cosmetic only.
+- **Fix:** Not required for correctness; left as-is.
+
+---
+
+## Pre-existing review findings (from prior CODE_REVIEW.md)
+
+The previous CODE_REVIEW.md findings (C2, H1-H3, M1-M2, L1-L2) were all fixed and
+verified. This review replaces those findings with the current state.
+
+---
+
+## Summary
+
+| Severity | Count |
+|----------|-------|
+| Critical | 3 |
+| Major    | 8 |
+| Minor    | 8 |
+| Nit      | 4 |
+| **Total**| **23** |

@@ -39,6 +39,12 @@ public final class MySqlOutboxStore extends AbstractJdbcOutboxStore {
         return List.of("jdbc:mysql:", "jdbc:tidb:");
     }
 
+    /**
+     * Claims pending events using {@code SELECT ... FOR UPDATE SKIP LOCKED} followed
+     * by an {@code UPDATE} to record the owner. Both phases must execute within the
+     * same transaction ({@code conn.setAutoCommit(false)}). The caller
+     * ({@link io.outbox.poller.OutboxPoller}) guarantees this.
+     */
     @Override
     public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
                                           Instant lockExpiry, Duration skipRecent, int limit) {

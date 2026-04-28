@@ -19,6 +19,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -52,12 +55,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * @see OutboxPoller
  */
 public final class Outbox implements AutoCloseable {
+    private static final Logger logger = Logger.getLogger(Outbox.class.getName());
+
     private final OutboxWriter writer;
     private final OutboxPoller poller;
     private final OutboxDispatcher dispatcher;
     private final OutboxPurgeScheduler purgeScheduler;
     private final MetricsExporter metrics;
     private volatile boolean started;
+    private final AtomicBoolean closed = new AtomicBoolean(false);
 
     private Outbox(OutboxWriter writer, OutboxPoller poller,
                    OutboxDispatcher dispatcher, OutboxPurgeScheduler purgeScheduler,
@@ -76,6 +82,9 @@ public final class Outbox implements AutoCloseable {
      * <p>In Spring Boot, this is called by {@code OutboxLifecycle} (a
      * {@code SmartLifecycle} bean) after all listeners are registered,
      * guaranteeing no startup race.
+     *
+     * <p>Safe to call from multiple threads: the volatile {@code started} guard
+     * and the idempotent {@code poller.start()} ensure only one start occurs.
      */
     public void start() {
         if (poller != null && !started) {
@@ -99,11 +108,15 @@ public final class Outbox implements AutoCloseable {
      */
     @Override
     public void close() {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
         RuntimeException first = null;
         if (purgeScheduler != null) {
             try {
                 purgeScheduler.close();
             } catch (RuntimeException e) {
+                logger.log(Level.SEVERE, "Failed to close purge scheduler", e);
                 first = e;
             }
         }
@@ -111,6 +124,7 @@ public final class Outbox implements AutoCloseable {
             try {
                 poller.close();
             } catch (RuntimeException e) {
+                logger.log(Level.SEVERE, "Failed to close poller", e);
                 if (first == null) {
                     first = e;
                 } else {
@@ -122,6 +136,7 @@ public final class Outbox implements AutoCloseable {
             try {
                 dispatcher.close();
             } catch (RuntimeException e) {
+                logger.log(Level.SEVERE, "Failed to close dispatcher", e);
                 if (first == null) {
                     first = e;
                 } else {
@@ -134,6 +149,7 @@ public final class Outbox implements AutoCloseable {
                 closeable.close();
             } catch (Exception e) {
                 RuntimeException re = (e instanceof RuntimeException r) ? r : new RuntimeException(e);
+                logger.log(Level.SEVERE, "Failed to close metrics exporter", e);
                 if (first == null) {
                     first = re;
                 } else {

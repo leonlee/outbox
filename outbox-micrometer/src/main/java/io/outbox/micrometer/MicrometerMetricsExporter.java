@@ -54,6 +54,8 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
     private final Counter dispatchDead;
     private final Counter dispatchDeferred;
     private final Counter hotSkippedDelayed;
+    // Gauge fields are retained solely for cleanup in close() — the actual
+    // gauge registration uses method references to the Atomic* fields below.
     private final Gauge hotDepthGauge;
     private final Gauge coldDepthGauge;
     private final Gauge lagGauge;
@@ -206,6 +208,10 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
 
     /**
      * Removes all meters registered by this exporter from the registry.
+     *
+     * <p>Must be called <strong>after</strong> all recording has stopped (i.e. after
+     * dispatcher and poller are shut down). The {@code closed} flag on recording methods
+     * provides a best-effort guard, but the caller is responsible for correct ordering.
      *
      * <p>Call this when the exporter is no longer needed (e.g. when the
      * {@link io.outbox.Outbox} is closed) to prevent stale gauges.

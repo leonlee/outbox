@@ -45,6 +45,7 @@ import java.util.logging.Logger;
  */
 public final class OutboxPoller implements AutoCloseable {
     private static final Logger logger = Logger.getLogger(OutboxPoller.class.getName());
+    private static final long TERMINATION_TIMEOUT_SECONDS = 5;
 
     private final ConnectionProvider connectionProvider;
     private final OutboxStore outboxStore;
@@ -144,7 +145,7 @@ public final class OutboxPoller implements AutoCloseable {
     private List<OutboxEvent> fetchPendingRows(Instant now) {
         int effectiveBatch = Math.min(batchSize, handler.availableCapacity());
         if (effectiveBatch <= 0) {
-            return List.of();
+            return null; // capacity disappeared mid-poll — don't reset lag
         }
         try (Connection conn = connectionProvider.getConnection()) {
             if (ownerId != null) {
@@ -234,7 +235,7 @@ public final class OutboxPoller implements AutoCloseable {
         if (scheduler != null) {
             scheduler.shutdownNow();
             try {
-                scheduler.awaitTermination(5, TimeUnit.SECONDS);
+                scheduler.awaitTermination(TERMINATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }

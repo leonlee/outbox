@@ -111,7 +111,14 @@ public class OutboxAutoConfiguration {
                          AbstractJdbcOutboxStore outboxStore,
                          DefaultListenerRegistry listenerRegistry,
                          ObjectProvider<MetricsExporter> metricsProvider,
-                         ObjectProvider<EventInterceptor> interceptorProvider) {
+                         ObjectProvider<EventInterceptor> interceptorProvider,
+                         ObjectProvider<JsonCodec> codecProvider) {
+
+        // Publish the active JsonCodec as global default. For the Jackson path,
+        // jacksonJsonCodec() already called setDefault. For a custom JsonCodec bean
+        // (which skips jacksonJsonCodec via @ConditionalOnMissingBean), this is the
+        // call that registers it.
+        codecProvider.ifAvailable(JsonCodec::setDefault);
 
         MetricsExporter metrics = metricsProvider.getIfAvailable();
         List<EventInterceptor> interceptors = interceptorProvider.orderedStream().toList();

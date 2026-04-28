@@ -53,6 +53,7 @@ public final class OutboxDispatcher implements AutoCloseable {
     private final ExecutorService workers;
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final AtomicBoolean accepting = new AtomicBoolean(true);
+    private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicInteger pollCounter = new AtomicInteger(0);
 
     private final ConnectionProvider connectionProvider;
@@ -102,7 +103,9 @@ public final class OutboxDispatcher implements AutoCloseable {
                 workers.submit(this::workerLoop);
             }
         } else {
-            // workerCount=0: no workers started; events remain queued (testing only)
+            // workerCount=0: no workers started; events remain queued (testing only).
+            // CachedThreadPool is used because no tasks are submitted — threads spawn
+            // on demand and idle threads are immediately reclaimed, so no resources consumed.
             logger.warning("workerCount=0: no dispatch workers started; events will not be processed");
             this.workers = Executors.newCachedThreadPool(new DaemonThreadFactory("outbox-dispatcher-"));
         }
@@ -325,6 +328,9 @@ public final class OutboxDispatcher implements AutoCloseable {
      */
     @Override
     public void close() {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
         accepting.set(false);
         running.set(false);
         workers.shutdown();
@@ -339,12 +345,15 @@ public final class OutboxDispatcher implements AutoCloseable {
             workers.shutdownNow();
             Thread.currentThread().interrupt();
         }
-        // Log stranded events (poller will retry them on next cycle)
+        // Log stranded events — hot-path events were persisted to DB before enqueuing,
+        // cold-path events came from the DB. Clearing in-memory queues is safe: both queues
+        // are re-populated by the poller on the next cycle.
         int strandedHot = hotQueue.size();
         int strandedCold = coldQueue.size();
         if (strandedHot > 0 || strandedCold > 0) {
             logger.log(Level.INFO, "Shutdown complete with {0} hot and {1} cold events still queued; "
-                    + "poller will retry them", new Object[]{strandedHot, strandedCold});
+                    + "they were already persisted and will be re-delivered by the poller",
+                    new Object[]{strandedHot, strandedCold});
         }
         hotQueue.clear();
         coldQueue.clear();
@@ -439,7 +448,8 @@ public final class OutboxDispatcher implements AutoCloseable {
         /**
          * Sets the maximum number of delivery attempts before an event is marked DEAD.
          *
-         * <p>Optional. Defaults to {@code 10}. Must be &ge; 1.
+         * <p>Optional. Defaults to {@code 10}. Must be &ge; 0. Setting to {@code 0}
+         * causes immediate DEAD on first failure; useful when retries should never occur.
          *
          * @param maxAttempts maximum attempts per event
          * @return this builder
@@ -556,7 +566,7 @@ public final class OutboxDispatcher implements AutoCloseable {
          * @return a new {@link OutboxDispatcher} instance
          * @throws NullPointerException     if {@code connectionProvider}, {@code outboxStore},
          *                                  or {@code listenerRegistry} is null
-         * @throws IllegalArgumentException if {@code maxAttempts < 1}, {@code workerCount < 0},
+         * @throws IllegalArgumentException if {@code maxAttempts < 0}, {@code workerCount < 0},
          *                                  or any queue capacity is &le; 0
          */
         public OutboxDispatcher build() {

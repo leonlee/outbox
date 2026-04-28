@@ -14,6 +14,6 @@ public class NoOpConnectionProvider implements ConnectionProvider {
 
     @Override
     public Connection getConnection() {
-        return null;
+        throw new UnsupportedOperationException("NoOpConnectionProvider cannot provide real connections");
     }
 }

@@ -18,7 +18,7 @@ import java.time.Instant;
  * is age.
  *
  * <p>Default SQL uses a subquery-based {@code DELETE} that works for H2 and
- * PostgreSQL. MySQL overrides with {@code DELETE ... ORDER BY ... LIMIT}.
+ * PostgreSQL. MySQL overrides with a direct {@code DELETE ... LIMIT}.
  *
  * @see H2AgeBasedPurger
  * @see MySqlAgeBasedPurger
@@ -45,14 +45,20 @@ public abstract class AbstractJdbcAgeBasedPurger implements EventPurger {
      * Deletes all events older than {@code before}, up to {@code limit} rows.
      *
      * <p>Default implementation uses a subquery to limit the batch size, which
-     * works for H2 and PostgreSQL. MySQL overrides with {@code DELETE ... ORDER BY ... LIMIT}.
+     * works for H2 and PostgreSQL. MySQL overrides with a direct {@code DELETE ... LIMIT}.
+     *
+     * <p>Deliberately UNORDERED. An {@code ORDER BY created_at} forces the database to identify the
+     * globally oldest rows, which means considering every candidate before deleting any: on a large
+     * table each batch becomes a full table scan, where without the ordering it is a bounded index
+     * range scan. Ordering buys nothing here — every matching row is going
+     * to be deleted eventually, so which 500 go first does not matter.
      */
     @Override
     public int purge(Connection conn, Instant before, int limit) {
         String sql = "DELETE FROM " + tableName() + " WHERE event_id IN (" +
                 "SELECT event_id FROM " + tableName() +
                 " WHERE created_at < ?" +
-                " ORDER BY created_at, event_id LIMIT ?)";
+                " LIMIT ?)";
         return JdbcTemplate.update(conn, sql, Timestamp.from(before), limit);
     }
 }

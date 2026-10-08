@@ -26,7 +26,13 @@ public final class DispatcherPollerHandler implements OutboxPollerHandler {
 
     @Override
     public boolean handle(EventEnvelope event, int attempts) {
-        QueuedEvent queuedEvent = new QueuedEvent(event, QueuedEvent.Source.COLD, attempts);
+        return handle(event, attempts, null);
+    }
+
+    @Override
+    public boolean handle(EventEnvelope event, int attempts, QueuedEvent.ClaimLease claimLease) {
+        QueuedEvent queuedEvent = new QueuedEvent(
+                event, QueuedEvent.Source.COLD, attempts, System.nanoTime(), claimLease);
         return dispatcher.enqueueCold(queuedEvent);
     }
 }

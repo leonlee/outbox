@@ -16,7 +16,7 @@ import java.util.ServiceLoader;
  * <ol>
  *   <li>Programmatic override via {@link #setDefault(JsonCodec)}</li>
  *   <li>{@link ServiceLoader} — exactly one provider from
- *       {@code META-INF/services/io.elestyle.outbox.spi.JsonCodec}</li>
+ *       {@code META-INF/services/io.outbox.spi.JsonCodec}</li>
  * </ol>
  *
  * <p>If no implementation is found, {@link #getDefault()} throws {@link IllegalStateException}.

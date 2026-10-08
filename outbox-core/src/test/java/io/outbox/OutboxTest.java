@@ -15,6 +15,7 @@ import java.time.Instant;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -231,6 +232,57 @@ class OutboxTest {
                         .outboxStore(STUB_STORE)
                         .purger(stubPurger)
                         .build());
+    }
+
+    /**
+     * Purging is background work, so a deferred start must hold it back along with the poller.
+     * Left ungated it begins during bean creation, and its first cycle drains until a batch comes
+     * back short — on an environment with a backlog that is a large job competing with startup.
+     */
+    @Test
+    void deferStart_holdsThePurgeSchedulerUntilStart() {
+        java.util.concurrent.atomic.AtomicInteger purgeCalls =
+                new java.util.concurrent.atomic.AtomicInteger();
+        Outbox outbox = Outbox.writerOnly()
+                .txContext(STUB_TX)
+                .outboxStore(STUB_STORE)
+                .connectionProvider(STUB_CP)
+                .purger((conn, before, limit) -> {
+                    purgeCalls.incrementAndGet();
+                    return 0;
+                })
+                .purgeIntervalSeconds(1)
+                .deferStart(true)
+                .build();
+        try {
+            assertEquals(0, purgeCalls.get(), "nothing may run before start()");
+            outbox.start();
+            // start() is the only thing that arms it; the scheduler's own first delay still applies.
+            assertDoesNotThrow(outbox::start);
+        } finally {
+            outbox.close();
+        }
+    }
+
+    /**
+     * Purging is housekeeping; delivery is the job. A purge scheduler that cannot start must not
+     * take the poller down with it — that would leave an outbox accepting writes and dispatching
+     * nothing because it failed to schedule a cleanup.
+     */
+    @Test
+    void aPurgeSchedulerThatCannotStartDoesNotStopDelivery() {
+        EventPurger purger = (conn, before, limit) -> 0;
+        Outbox outbox = Outbox.writerOnly()
+                .txContext(STUB_TX)
+                .outboxStore(STUB_STORE)
+                .connectionProvider(STUB_CP)
+                .purger(purger)
+                .purgeIntervalSeconds(3600)
+                .deferStart(true)
+                .build();
+        // Closing the scheduler out from under start() is the cheapest way to make it throw.
+        outbox.close();
+        assertDoesNotThrow(outbox::start, "a broken purger must not abort start()");
     }
 
     @Test

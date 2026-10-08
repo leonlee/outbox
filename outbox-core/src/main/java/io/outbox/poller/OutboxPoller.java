@@ -1,6 +1,7 @@
 package io.outbox.poller;
 
 import io.outbox.EventEnvelope;
+import io.outbox.dispatch.QueuedEvent.ClaimLease;
 import io.outbox.model.OutboxEvent;
 import io.outbox.spi.ConnectionProvider;
 import io.outbox.spi.JsonCodec;
@@ -118,16 +119,16 @@ public final class OutboxPoller implements AutoCloseable {
             }
 
             Instant now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
-            List<OutboxEvent> rows = fetchPendingRows(now);
-            if (rows == null) {
+            Batch batch = fetchPendingRows(now);
+            if (batch == null) {
                 return; // fetch failed — don't reset lag metric
             }
-            if (rows.isEmpty()) {
+            if (batch.rows().isEmpty()) {
                 metrics.recordOldestLagMs(0);
                 return;
             }
 
-            Instant oldest = dispatchRows(rows);
+            Instant oldest = dispatchRows(batch);
             if (oldest != null) {
                 long lagMs = Duration.between(oldest, now).toMillis();
                 metrics.recordOldestLagMs(Math.max(0L, lagMs));
@@ -138,13 +139,28 @@ public final class OutboxPoller implements AutoCloseable {
     }
 
     /**
+     * Rows from one claim, together with the lease they were claimed under.
+     *
+     * <p>Kept together rather than stashed on the poller: {@link #poll()} is public, so two calls
+     * can be in flight at once, and a lease held in a field can be overwritten by the second claim
+     * between the first one claiming and dispatching. Its rows would then be handed out carrying a
+     * lease they were never claimed under — and a release naming that lease would clear a
+     * generation belonging to the other batch.
+     *
+     * @param rows  the claimed rows, oldest first
+     * @param lease the lease stamped on them, or {@code null} without claim locking
+     */
+    private record Batch(List<OutboxEvent> rows, ClaimLease lease) {
+    }
+
+    /**
      * Fetches pending rows from the store. Returns {@code null} on failure
      * (to distinguish from a successful empty result).
      */
-    private List<OutboxEvent> fetchPendingRows(Instant now) {
+    private Batch fetchPendingRows(Instant now) {
         int effectiveBatch = Math.min(batchSize, handler.availableCapacity());
         if (effectiveBatch <= 0) {
-            return List.of();
+            return new Batch(List.of(), null);
         }
         try (Connection conn = connectionProvider.getConnection()) {
             if (ownerId != null) {
@@ -152,34 +168,38 @@ public final class OutboxPoller implements AutoCloseable {
                 conn.setAutoCommit(false);
                 try {
                     Instant lockExpiry = now.minus(lockTimeout);
+                    // Same instant the claim stamps on locked_at — asked of the store rather than
+                    // recomputed here, so a handler can name this exact lease when releasing it.
+                    ClaimLease lease = new ClaimLease(ownerId, outboxStore.leaseTimestamp(now));
                     List<OutboxEvent> claimed = outboxStore.claimPending(conn, ownerId, now, lockExpiry, skipRecent, effectiveBatch);
                     conn.commit();
-                    return claimed;
+                    return new Batch(claimed, lease);
                 } catch (SQLException | RuntimeException e) {
                     conn.rollback();
                     throw e;
                 }
             }
             conn.setAutoCommit(true);
-            return outboxStore.pollPending(conn, now, skipRecent, effectiveBatch);
+            return new Batch(outboxStore.pollPending(conn, now, skipRecent, effectiveBatch), null);
         } catch (SQLException e) {
             logger.log(Level.SEVERE, "Failed to fetch pending outbox rows", e);
             return null;
         }
     }
 
-    private Instant dispatchRows(List<OutboxEvent> rows) {
+    private Instant dispatchRows(Batch batch) {
+        List<OutboxEvent> rows = batch.rows();
         // Rows are sorted oldest-first by SQL ORDER BY created_at
         Instant oldest = rows.isEmpty() ? null : rows.get(0).createdAt();
         for (OutboxEvent row : rows) {
-            if (!dispatchRow(row)) {
+            if (!dispatchRow(row, batch.lease())) {
                 break; // cold queue full
             }
         }
         return oldest;
     }
 
-    private boolean dispatchRow(OutboxEvent row) {
+    private boolean dispatchRow(OutboxEvent row, ClaimLease lease) {
         EventEnvelope envelope;
         try {
             envelope = convertToEnvelope(row);
@@ -189,8 +209,13 @@ public final class OutboxPoller implements AutoCloseable {
             return true; // continue processing other rows
         }
 
-        boolean accepted = handler.handle(envelope, row.attempts());
+        boolean accepted = handler.handle(envelope, row.attempts(), lease);
         if (accepted) {
+            // Counts rows handed to the handler, which is not the same as rows queued: a handler
+            // may accept and then drop a copy of something it is already running. Those drops are
+            // in outbox.dispatch.suppressed — but so are hot-side and dispatch-time rejections, so
+            // no subtraction of these two counters yields the true queue inflow. Read the queue
+            // depth gauges for that.
             metrics.incrementColdEnqueued();
         }
         return accepted;

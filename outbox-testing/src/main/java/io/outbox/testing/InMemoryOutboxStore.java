@@ -93,6 +93,11 @@ public class InMemoryOutboxStore implements OutboxStore {
                 .toList();
     }
 
+    /**
+     * Delegates to {@link #pollPending} — no locking at all, which is why
+     * {@code supportsClaimLocking()} is left at {@code false}. Two pollers sharing one of these
+     * would both get the same rows.
+     */
     @Override
     public List<OutboxEvent> claimPending(
             Connection conn, String ownerId, Instant now,

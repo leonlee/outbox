@@ -14,17 +14,22 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class JdbcOutboxStoreTest {
+
+    private static final String TABLE = "outbox_event";
+    private static final String POD_A = "pod-a";
 
     private JdbcDataSource dataSource;
     private H2OutboxStore outboxStore;
@@ -746,6 +751,280 @@ class JdbcOutboxStoreTest {
                     now.plusSeconds(3601), Duration.ZERO, 10);
             assertEquals(1, future.size());
             assertEquals(delayed.eventId(), future.get(0).eventId());
+        }
+    }
+
+    // ── releaseClaim: hand a lease back without resurrecting anything ──
+
+    @Test
+    void releaseClaimFreesAPendingRowForTheNextPoll() throws SQLException {
+        insertTestEvent();
+        Instant now = Instant.now().plusSeconds(1);
+        Instant lockExpiry = now.minus(Duration.ofMinutes(5));
+
+        try (Connection conn = dataSource.getConnection()) {
+            assertEquals(1, outboxStore.claimPending(conn, POD_A, now, lockExpiry, Duration.ZERO, 10).size());
+            assertEquals(0, outboxStore.claimPending(conn, "pod-b", now, lockExpiry, Duration.ZERO, 10).size(),
+                    "leased, so nobody else gets it");
+
+            assertEquals(1, outboxStore.releaseClaim(conn, eventIdOf(conn), POD_A, leaseOf(conn)));
+
+            assertEquals(1, outboxStore.claimPending(conn, "pod-b", now, lockExpiry, Duration.ZERO, 10).size(),
+                    "lease handed back — no need to wait out the lock timeout");
+        }
+    }
+
+    @Test
+    void releaseClaimLeavesASettledRowAlone() throws SQLException {
+        String eventId = insertTestEvent();
+        try (Connection conn = dataSource.getConnection()) {
+            outboxStore.markDone(conn, eventId);
+
+            // The guard that stops this being a resurrection: a completed event must never become
+            // claimable again just because some dispatch was abandoned.
+            assertEquals(0, outboxStore.releaseClaim(conn, eventId, POD_A, Instant.now()));
+
+            Instant now = Instant.now().plusSeconds(1);
+            assertEquals(0, outboxStore.claimPending(
+                    conn, POD_A, now, now.minus(Duration.ofMinutes(5)), Duration.ZERO, 10).size());
+        }
+    }
+
+    @Test
+    void releaseClaimRefusesToClearSomebodyElsesLease() throws SQLException {
+        insertTestEvent();
+        Instant now = Instant.now().plusSeconds(1);
+        Instant lockExpiry = now.minus(Duration.ofMinutes(5));
+
+        try (Connection conn = dataSource.getConnection()) {
+            assertEquals(1, outboxStore.claimPending(conn, POD_A, now, lockExpiry, Duration.ZERO, 10).size());
+
+            // A copy queued under an older lease arriving after pod-b took the row over. Clearing
+            // pod-b's lease here would put the event back in circulation while pod-b delivers it.
+            assertEquals(0, outboxStore.releaseClaim(conn, eventIdOf(conn), "pod-b", leaseOf(conn)));
+            assertEquals(0, outboxStore.claimPending(conn, "pod-c", now, lockExpiry, Duration.ZERO, 10).size(),
+                    "the lease must still be pod-a's");
+        }
+    }
+
+    /**
+     * A release must name the exact lease it is undoing, not just the owner. An owner id lives as
+     * long as the pod, so once a lease expires and the SAME pod re-claims the row, a copy queued
+     * under the old lease would otherwise clear the new one — and the copy riding that new lease
+     * goes on delivering while the row is back in circulation.
+     */
+    @Test
+    void releaseClaimRefusesAnOlderLeaseOfTheSameOwner() throws SQLException {
+        insertTestEvent();
+        Instant now = Instant.now().plusSeconds(1);
+
+        try (Connection conn = dataSource.getConnection()) {
+            assertEquals(1, outboxStore.claimPending(
+                    conn, POD_A, now, now.minus(Duration.ofMinutes(5)), Duration.ZERO, 10).size());
+            Instant firstLease = leaseOf(conn);
+
+            // The lease lapses and pod-a takes the row again: same owner, new locked_at.
+            Instant later = now.plusSeconds(600);
+            assertEquals(1, outboxStore.claimPending(
+                    conn, POD_A, later, later.minus(Duration.ofMinutes(5)), Duration.ZERO, 10).size());
+            assertNotEquals(firstLease, leaseOf(conn), "the re-claim must stamp a new lease");
+
+            assertEquals(0, outboxStore.releaseClaim(conn, eventIdOf(conn), POD_A, firstLease),
+                    "a copy from the lapsed lease must not clear the current one");
+            assertEquals(0, outboxStore.claimPending(
+                    conn, "pod-b", later, later.minus(Duration.ofMinutes(5)), Duration.ZERO, 10).size(),
+                    "so the row stays locked");
+        }
+    }
+
+    /** The locked_at currently on the single row, i.e. the lease a release must name. */
+    private Instant leaseOf(Connection conn) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT locked_at FROM outbox_event");
+             ResultSet rs = ps.executeQuery()) {
+            assertTrue(rs.next());
+            return rs.getTimestamp(1).toInstant();
+        }
+    }
+
+    private String eventIdOf(Connection conn) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT event_id FROM outbox_event");
+             ResultSet rs = ps.executeQuery()) {
+            assertTrue(rs.next());
+            return rs.getString(1);
+        }
+    }
+
+    // ── Writer-stamped ownership ────────────────────────────────────
+
+    @Test
+    void writerOwnerIsStampedAtInsert() throws SQLException {
+        H2OutboxStore owned = new H2OutboxStore(TABLE, POD_A);
+        try (Connection conn = dataSource.getConnection()) {
+            owned.insertNew(conn, EventEnvelope.builder("TestEvent").payloadJson("{}").build());
+
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT locked_by, locked_at FROM outbox_event");
+                 ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next());
+                assertEquals(POD_A, rs.getString("locked_by"),
+                        "the row must be owned the moment it becomes visible to other instances");
+                assertNotNull(rs.getTimestamp("locked_at"));
+            }
+        }
+    }
+
+    /**
+     * A reservation that is already expired is worse than none, so it is not written.
+     *
+     * <p>{@code locked_at} is set from the event's own {@code occurredAt}, which is also
+     * {@code created_at}. A backfilled event — or one whose transaction outlived the lock timeout
+     * before committing — would therefore arrive carrying a lease older than any {@code lockExpiry}
+     * the poller computes, so every instance reads it as expired and claims it at once. That is the
+     * opposite of a reservation, and it reads from the configuration as though the row were
+     * protected.
+     */
+    @Test
+    void anEventTooOldToReserveIsInsertedUnowned() throws SQLException {
+        H2OutboxStore owned = new H2OutboxStore(TABLE, POD_A);
+        try (Connection conn = dataSource.getConnection()) {
+            owned.insertNew(conn, EventEnvelope.builder("TestEvent")
+                    .occurredAt(Instant.now().minus(Duration.ofHours(2)))
+                    .payloadJson("{}").build());
+
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT locked_by, locked_at FROM outbox_event");
+                 ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next());
+                assertNull(rs.getString("locked_by"),
+                        "a lease that is born expired must not be written at all");
+                assertNull(rs.getTimestamp("locked_at"));
+            }
+        }
+    }
+
+    @Test
+    void writerOwnerIsAbsentByDefault() throws SQLException {
+        insertTestEvent();
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement("SELECT locked_by FROM outbox_event");
+             ResultSet rs = ps.executeQuery()) {
+            assertTrue(rs.next());
+            assertNull(rs.getString("locked_by"), "unowned unless a writer owner is configured");
+        }
+    }
+
+    @Test
+    void anotherInstanceCannotClaimRowsWeWrote() throws SQLException {
+        H2OutboxStore podA = new H2OutboxStore(TABLE, POD_A);
+        Instant now = Instant.now().plusSeconds(1);
+        Instant lockExpiry = now.minus(Duration.ofMinutes(5));
+
+        try (Connection conn = dataSource.getConnection()) {
+            podA.insertNew(conn, EventEnvelope.builder("TestEvent").payloadJson("{}").build());
+
+            // This is the cross-pod duplicate: pod-a still holds the hot copy in its own JVM,
+            // so pod-b claiming the row here is what produces a second delivery no in-memory
+            // guard can see.
+            assertEquals(0, podA.claimPending(conn, "pod-b", now, lockExpiry, Duration.ZERO, 10).size());
+        }
+    }
+
+    @Test
+    void weCanClaimOurOwnRowsImmediately() throws SQLException {
+        H2OutboxStore podA = new H2OutboxStore(TABLE, POD_A);
+        Instant now = Instant.now().plusSeconds(1);
+        Instant lockExpiry = now.minus(Duration.ofMinutes(5));
+
+        try (Connection conn = dataSource.getConnection()) {
+            podA.insertNew(conn, EventEnvelope.builder("TestEvent").payloadJson("{}").build());
+
+            // Many writes never enter the hot queue. If the writer had to wait out
+            // the lock timeout for its own rows, ownership would turn a 1s latency into 5 minutes.
+            assertEquals(1, podA.claimPending(conn, POD_A, now, lockExpiry, Duration.ZERO, 10).size());
+        }
+    }
+
+    /**
+     * A poller lease must never look like a writer stamp. The stamp is recognised by
+     * {@code locked_at = created_at} alone, so a claim taken in the same millisecond as a
+     * millisecond-aligned {@code created_at} used to read as an unclaimed stamp, and the next poll
+     * re-claimed the row while the lease was still valid. No writer owner here: the default
+     * configuration was exposed too.
+     */
+    @Test
+    void aClaimInCreatedAtsOwnMillisecondStillHoldsItsLease() throws SQLException {
+        H2OutboxStore store = new H2OutboxStore();
+        Instant created = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+
+        try (Connection conn = dataSource.getConnection()) {
+            store.insertNew(conn, EventEnvelope.builder("TestEvent").occurredAt(created).payloadJson("{}").build());
+            assertEquals(1, store.claimPending(
+                    conn, POD_A, created, created.minus(Duration.ofMinutes(5)), Duration.ZERO, 10).size());
+
+            Instant later = created.plusSeconds(1);
+            assertEquals(0, store.claimPending(
+                    conn, POD_A, later, later.minus(Duration.ofMinutes(5)), Duration.ZERO, 10).size(),
+                    "the first lease is valid for five minutes, so a poll one second later must get nothing");
+        }
+    }
+
+    /**
+     * The self-claim allowance has to be ONE-SHOT. A standing {@code locked_by = <self>} exemption
+     * lets every subsequent poll re-claim the same still-PENDING row and enqueue another copy —
+     * the cold queue fills with duplicates of events already queued and newer events starve.
+     *
+     * <p>What separates the two states is that the writer stamp leaves
+     * {@code locked_at = created_at} while a poller claim overwrites {@code locked_at} with the
+     * current time.
+     */
+    @Test
+    void ourOwnRowIsClaimableOnceAndNotOnTheNextPoll() throws SQLException {
+        H2OutboxStore podA = new H2OutboxStore(TABLE, POD_A);
+        Instant now = Instant.now().plusSeconds(1);
+        Instant lockExpiry = now.minus(Duration.ofMinutes(5));
+
+        try (Connection conn = dataSource.getConnection()) {
+            podA.insertNew(conn, EventEnvelope.builder("TestEvent").payloadJson("{}").build());
+
+            assertEquals(1, podA.claimPending(conn, POD_A, now, lockExpiry, Duration.ZERO, 10).size(),
+                    "first poll picks up its own writer-stamped row");
+            assertEquals(0, podA.claimPending(conn, POD_A, now, lockExpiry, Duration.ZERO, 10).size(),
+                    "the row is still PENDING but now under an active lease — no second copy");
+            assertEquals(0, podA.claimPending(conn, POD_A, now, lockExpiry, Duration.ZERO, 10).size(),
+                    "and it stays that way, poll after poll");
+        }
+    }
+
+    @Test
+    void ourOwnLeasedRowIsClaimableAgainOnceTheLeaseExpires() throws SQLException {
+        H2OutboxStore podA = new H2OutboxStore(TABLE, POD_A);
+        Instant now = Instant.now().plusSeconds(1);
+
+        try (Connection conn = dataSource.getConnection()) {
+            podA.insertNew(conn, EventEnvelope.builder("TestEvent").payloadJson("{}").build());
+            assertEquals(1, podA.claimPending(
+                    conn, "pod-a", now, now.minus(Duration.ofMinutes(5)), Duration.ZERO, 10).size());
+
+            // A worker that died mid-dispatch must not strand the row for its own pod either.
+            assertEquals(1, podA.claimPending(
+                    conn, "pod-a", now, now.plusSeconds(1), Duration.ZERO, 10).size(),
+                    "an expired lease is reclaimable by the owner, same as by anyone else");
+        }
+    }
+
+    @Test
+    void anotherInstanceTakesOverOnceTheLeaseExpires() throws SQLException {
+        H2OutboxStore podA = new H2OutboxStore(TABLE, POD_A);
+        Instant now = Instant.now().plusSeconds(1);
+
+        try (Connection conn = dataSource.getConnection()) {
+            podA.insertNew(conn, EventEnvelope.builder("TestEvent").payloadJson("{}").build());
+
+            // Ownership must not strand rows when the writing instance dies: with a lockExpiry in
+            // the future every stamp counts as stale, which is what the timeout does after PT5M.
+            Instant everythingIsStale = now.plusSeconds(1);
+            assertEquals(1,
+                    podA.claimPending(conn, "pod-b", now, everythingIsStale, Duration.ZERO, 10).size());
         }
     }
 

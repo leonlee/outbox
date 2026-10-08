@@ -162,6 +162,10 @@ start();
 
 If clients need to archive events for audit, they should do so in their `EventListener` before events are purged.
 
+The composite builders accept `.purger(...)` and `.purgeRetention(...)` in every mode. With the Spring Boot starter,
+`outbox.purge.enabled=true` attaches a status-based purger (DONE + DEAD only) in dispatcher modes and an age-based
+purger in writer-only mode.
+
 ## Failure and Delivery Semantics
 
 - Delivery is **at-least-once**. Downstream must dedupe by `eventId`.
@@ -171,6 +175,11 @@ If clients need to archive events for audit, they should do so in their `EventLi
   `RetryAfterException` for handler-controlled retry timing that does count.
 - `UnrecoverableException` (and subclass `PayloadParseException`) marks events DEAD immediately without retry.
 - If status updates fail, the event remains in DB and may be retried later.
+- The hot path and the poller can both pick up the same event. Opt-in dispatcher guards narrow that window:
+  `hotTripMs` stops hot enqueue once the hot queue backs up, `suppressReplays` (with an in-flight TTL) refuses a
+  second copy after the first has settled, and writer-stamped ownership keeps other nodes off a row that is being
+  delivered from memory. Or turn the hot path off entirely — see [Poller-Only Delivery](#poller-only-delivery).
+  None of these replaces downstream dedupe by `eventId`.
 
 ## Composite Builder
 
@@ -247,6 +256,38 @@ to inspect and replay them manually.
 
 Trade-off: higher latency (poll interval vs. immediate hot-path delivery). For
 unordered events, use the default hot + poller mode for lowest latency.
+
+## Poller-Only Delivery
+
+`hotPathEnabled(false)` on `Outbox.multiNode()` (or `outbox.dispatcher.hot-path-enabled=false` with the starter)
+removes the after-commit path entirely: no writer hook is installed, `enqueueHot` refuses, and every event reaches a
+listener through exactly one poller claim.
+
+**Requires multi-node mode.** The guarantee is the claim, and single-node mode polls without locking. A row stays
+PENDING for as long as its listener runs, so any listener slower than the poll interval would be handed the same
+event on every poll. `Outbox.singleNode().hotPathEnabled(false)` is therefore rejected at `build()`, and the starter
+fails startup on the same combination. Multi-node is correct on a single node too.
+
+The store must also report `supportsClaimLocking()`; the build fails otherwise. The SPI default `claimPending` is an
+unlocked read, and only the MySQL and PostgreSQL stores (`FOR UPDATE SKIP LOCKED`) opt in. Configuring an owner id is
+not the same as having the rows locked.
+
+The trade is latency for simplicity. Delivery no longer beats the poll interval, but the settings that exist to police
+the hot/cold race are no longer needed:
+
+| Setting              | With the hot path                                       | Poller-only                         |
+|----------------------|---------------------------------------------------------|-------------------------------------|
+| `stamp-writer-owner` | keeps other nodes off the row being delivered from memory | redundant — ignored, with a warning |
+| `skip-recent-ms`     | holds the poller back so it cannot race that delivery   | can be `0`                          |
+| `suppress-replays`   | dedupes a hot copy against the poller's copy            | no second copy exists to dedupe     |
+| `hot-trip-ms`        | sheds hot work when the queue backs up                  | nothing is enqueued hot             |
+
+The claim is a single atomic `UPDATE`: one node wins, its lease holds until the row settles or the lock timeout
+passes, and a node that dies mid-delivery has its row taken over afterwards. Delivery stays at-least-once.
+
+`ordered` is poller-only by construction, and `writer-only` dispatches nothing. Independently of the mode, the
+dispatcher will not queue a second copy of an event it is already running — an in-memory guard that holds within one
+JVM; only a claim makes exclusivity a property of the database.
 
 ## Spring Boot Starter
 

@@ -54,6 +54,9 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
     private final Counter dispatchDead;
     private final Counter dispatchDeferred;
     private final Counter hotSkippedDelayed;
+    private final Counter hotSkippedStale;
+    private final Counter hotTripped;
+    private final Counter dispatchSuppressed;
     private final Gauge hotDepthGauge;
     private final Gauge coldDepthGauge;
     private final Gauge lagGauge;
@@ -92,10 +95,10 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
 
         this.registry = registry;
         this.hotEnqueued = Counter.builder(namePrefix + ".enqueue.hot")
-                .description("Events enqueued via hot path")
+                .description("Events the hot path accepted — includes duplicates it refused as already on their way")
                 .register(registry);
         this.hotDropped = Counter.builder(namePrefix + ".enqueue.hot.dropped")
-                .description("Events dropped (hot queue full)")
+                .description("Hot-path fallbacks to the poller: queue full OR breaker tripped. Superset of .tripped — subtract it for the full-queue count")
                 .register(registry);
         this.coldEnqueued = Counter.builder(namePrefix + ".enqueue.cold")
                 .description("Events enqueued via cold (poller) path")
@@ -115,6 +118,15 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
         this.hotSkippedDelayed = Counter.builder(namePrefix + ".enqueue.hot.skipped.delayed")
                 .description("Delayed events skipped on hot path (poller will deliver)")
                 .register(registry);
+        this.hotSkippedStale = Counter.builder(namePrefix + ".enqueue.hot.skipped.stale")
+                .description("Backfill events too old for a writer stamp, left to the poller")
+                .register(registry);
+        this.hotTripped = Counter.builder(namePrefix + ".enqueue.hot.tripped")
+                .description("Hot-path fallbacks caused by the breaker. A subset of .dropped, not a sibling")
+                .register(registry);
+        this.dispatchSuppressed = Counter.builder(namePrefix + ".dispatch.suppressed")
+                .description("Duplicate copies refused by the in-flight tracker, at the cold queue or at dispatch")
+                .register(registry);
 
         this.hotDepthGauge = Gauge.builder(namePrefix + ".queue.hot.depth", hotDepth, AtomicInteger::get)
                 .register(registry);
@@ -133,74 +145,122 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
 
     @Override
     public void incrementHotEnqueued() {
-        if (closed) return;
+        if (closed) {
+            return;
+        }
         hotEnqueued.increment();
     }
 
     @Override
     public void incrementHotDropped() {
-        if (closed) return;
+        if (closed) {
+            return;
+        }
         hotDropped.increment();
     }
 
     @Override
     public void incrementColdEnqueued() {
-        if (closed) return;
+        if (closed) {
+            return;
+        }
         coldEnqueued.increment();
     }
 
     @Override
     public void incrementDispatchSuccess() {
-        if (closed) return;
+        if (closed) {
+            return;
+        }
         dispatchSuccess.increment();
     }
 
     @Override
     public void incrementDispatchFailure() {
-        if (closed) return;
+        if (closed) {
+            return;
+        }
         dispatchFailure.increment();
     }
 
     @Override
     public void incrementDispatchDead() {
-        if (closed) return;
+        if (closed) {
+            return;
+        }
         dispatchDead.increment();
     }
 
     @Override
     public void incrementDispatchDeferred() {
-        if (closed) return;
+        if (closed) {
+            return;
+        }
         dispatchDeferred.increment();
     }
 
     @Override
     public void incrementHotSkippedDelayed() {
-        if (closed) return;
+        if (closed) {
+            return;
+        }
         hotSkippedDelayed.increment();
     }
 
     @Override
+    public void incrementHotSkippedStale() {
+        if (closed) {
+            return;
+        }
+        hotSkippedStale.increment();
+    }
+
+    @Override
+    public void incrementHotTripped() {
+        if (closed) {
+            return;
+        }
+        hotTripped.increment();
+    }
+
+    @Override
+    public void incrementDispatchSuppressed() {
+        if (closed) {
+            return;
+        }
+        dispatchSuppressed.increment();
+    }
+
+    @Override
     public void recordQueueDepths(int hotDepth, int coldDepth) {
-        if (closed) return;
+        if (closed) {
+            return;
+        }
         this.hotDepth.set(hotDepth);
         this.coldDepth.set(coldDepth);
     }
 
     @Override
     public void recordOldestLagMs(long lagMs) {
-        if (closed) return;
+        if (closed) {
+            return;
+        }
         this.oldestLagMs.set(lagMs);
     }
 
     @Override
     public void recordDispatchLatencyMs(long latencyMs) {
-        if (closed) return;
+        if (closed) {
+            return;
+        }
         dispatchLatency.record(latencyMs);
     }
 
     @Override
     public void recordListenerDurationMs(long durationMs) {
-        if (closed) return;
+        if (closed) {
+            return;
+        }
         listenerDuration.record(durationMs);
     }
 
@@ -216,16 +276,21 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
         RuntimeException first = null;
         for (Meter meter : List.of(hotEnqueued, hotDropped, coldEnqueued,
                 dispatchSuccess, dispatchFailure, dispatchDead, dispatchDeferred,
-                hotSkippedDelayed,
+                hotSkippedDelayed, hotSkippedStale, hotTripped, dispatchSuppressed,
                 hotDepthGauge, coldDepthGauge, lagGauge,
                 dispatchLatency, listenerDuration)) {
             try {
                 registry.remove(meter);
             } catch (RuntimeException e) {
-                if (first == null) first = e;
-                else first.addSuppressed(e);
+                if (first == null) {
+                    first = e;
+                } else {
+                    first.addSuppressed(e);
+                }
             }
         }
-        if (first != null) throw first;
+        if (first != null) {
+            throw first;
+        }
     }
 }

@@ -20,6 +20,30 @@ import java.util.List;
 public interface OutboxStore {
 
     /**
+     * How stale an event may be and still travel the hot path with a writer stamp.
+     *
+     * <p>One threshold, two coupled decisions. A store that stamps writer ownership writes
+     * {@code locked_at = created_at = occurredAt}; for an event already older than this, that lease
+     * reads as expired to every poller the moment it becomes visible — a reservation that reserves
+     * nothing. So the store inserts such rows unowned. But an unowned row is claimable by any node
+     * at once, so the writer hook must not race a hot copy against those claims: it skips hot
+     * delivery for the same events, and the poller — whose claim is exclusive — delivers them.
+     * A backfill has already lost any latency the hot path could offer.
+     *
+     * <p>The hook checks at afterCommit and the store at insert, and insert-age &le; commit-age,
+     * so a hot copy always rides with a stamp; the unprotected combination cannot occur.
+     *
+     * <p>Must stay well below the claim lock-timeout (default PT5M): a stamp aged anywhere inside
+     * this window is only a reservation if the timeout has not already passed it. The Spring
+     * starter refuses {@code stamp-writer-owner} with a lock-timeout under twice this value;
+     * anyone wiring the store directly owes the same check. A stamp on a fresh event still expires
+     * if its transaction takes longer than the lock-timeout to commit, and that residual — a
+     * multi-minute write transaction racing another node's claim — is the at-least-once tail this
+     * design accepts rather than closes.
+     */
+    Duration WRITER_STAMP_MAX_AGE = Duration.ofSeconds(30);
+
+    /**
      * Inserts a new event with status NEW.
      *
      * @param conn  the JDBC connection (typically within a transaction)
@@ -108,6 +132,22 @@ public interface OutboxStore {
     List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit);
 
     /**
+     * Whether {@link #claimPending} really claims, rather than falling through to an unlocked read.
+     *
+     * <p>The default {@code claimPending} delegates to {@link #pollPending}, which is a reasonable
+     * convenience — most callers only want delivery — but it means "claim locking is configured"
+     * and "rows are actually locked" are different statements. Anything whose correctness rests on
+     * exclusivity has to ask this one, not the presence of an owner id.
+     *
+     * <p>Defaults to {@code false}: a store that has not said it locks must not be assumed to.
+     *
+     * @return {@code true} if {@code claimPending} takes an exclusive lease
+     */
+    default boolean supportsClaimLocking() {
+        return false;
+    }
+
+    /**
      * Claims and returns pending events with owner-based locking for multi-instance deployments.
      *
      * <p>Default falls back to {@link #pollPending} (no locking). Database-specific
@@ -152,6 +192,51 @@ public interface OutboxStore {
      */
     default int replayDead(Connection conn, String eventId) {
         return 0;
+    }
+
+    /**
+     * Clears the claim lease on an event that is still awaiting delivery, leaving its status alone.
+     *
+     * <p>Used when a dispatch is abandoned before it runs — the poller has already stamped
+     * {@code locked_by}, and without this the row sits unclaimable until the lock timeout even
+     * though nothing is working on it.
+     *
+     * <p>Implementations MUST honour BOTH guards:
+     * <ul>
+     *   <li>only rows in a pending state, so releasing an event that did complete is a no-op
+     *       rather than a resurrection;
+     *   <li>only rows still leased by {@code claimOwner}. A queued copy can outlive its lease —
+     *       the timeout expires, another instance claims the row and starts delivering it — and
+     *       clearing that newer lease would hand the event out twice, which is precisely the
+     *       duplicate this machinery exists to stop.
+     * </ul>
+     *
+     * <p>Defaults to doing nothing, which is safe but leaves the lease in place; a store that
+     * supports claim locking should override it.
+     *
+     * @param conn       the connection to use
+     * @param eventId    the event whose lease should be dropped
+     * @param claimOwner the instance that took the lease being released
+     * @return number of rows affected
+     */
+    default int releaseClaim(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+        return 0;
+    }
+
+    /**
+     * The value {@link #claimPending} will write to {@code locked_at} for a claim taken at
+     * {@code now}.
+     *
+     * <p>Exists so the lease timestamp has exactly one definition. A caller that wants to undo its
+     * own claim later has to name the lease it took, and deriving that by re-implementing the
+     * store's rounding somewhere else is how the two drift apart — at which point the release
+     * silently matches nothing, or worse, matches a lease it does not own.
+     *
+     * @param now the instant the claim is being taken at
+     * @return the timestamp that claim will carry
+     */
+    default Instant leaseTimestamp(Instant now) {
+        return now;
     }
 
     /**

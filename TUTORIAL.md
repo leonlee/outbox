@@ -472,6 +472,19 @@ outbox.dispatcher.hot-queue-capacity=1000
 outbox.dispatcher.cold-queue-capacity=1000
 outbox.dispatcher.max-attempts=10
 outbox.dispatcher.drain-timeout-ms=5000
+# false = poller-only delivery (requires multi-node mode and a store with claim locking)
+outbox.dispatcher.hot-path-enabled=true
+# Stop accepting into the hot queue once its head is this old (ms); 0 disables.
+# Keep it below poller.skip-recent-ms.
+outbox.dispatcher.hot-trip-ms=0
+# Keep settled events in the in-flight tracker so a late second copy is refused
+outbox.dispatcher.suppress-replays=false
+# In-flight tracker entry TTL (ms); 0 = no TTL. With suppress-replays on and this left at 0,
+# the starter uses 60000 and logs a warning. Must exceed your slowest listener.
+outbox.dispatcher.in-flight-ttl-ms=0
+# Stamp locked_by at INSERT so other nodes leave the hot copy alone (multi-node);
+# requires claim-locking.lock-timeout of at least 60s
+outbox.dispatcher.stamp-writer-owner=false
 # Retry backoff
 outbox.retry.base-delay-ms=200
 outbox.retry.max-delay-ms=60000
@@ -483,7 +496,7 @@ outbox.poller.skip-recent-ms=0
 outbox.claim-locking.enabled=false
 outbox.claim-locking.owner-id=# auto-generated if empty
 outbox.claim-locking.lock-timeout=PT5M
-# Age-based purge (for writer-only/CDC mode)
+# Purge: status-based (DONE + DEAD) in dispatcher modes, age-based in writer-only (CDC) mode
 outbox.purge.enabled=false
 outbox.purge.retention=P7D
 outbox.purge.batch-size=500
@@ -1345,11 +1358,16 @@ Metrics are then available at `/actuator/prometheus`.
 | Name                         | Description                            |
 |------------------------------|----------------------------------------|
 | `outbox.enqueue.hot`         | Events enqueued via hot path           |
-| `outbox.enqueue.hot.dropped` | Events dropped (hot queue full)        |
+| `outbox.enqueue.hot.dropped` | Hot-path fallbacks to the poller (queue full or breaker tripped) |
+| `outbox.enqueue.hot.tripped` | Fallbacks caused by the hot-path breaker — a subset of `.dropped`, not a sibling |
+| `outbox.enqueue.hot.skipped.delayed` | Delayed events left for the poller (`availableAt` in the future) |
+| `outbox.enqueue.hot.skipped.stale` | Events older than the writer-stamp window at commit (backfills), left for the poller |
 | `outbox.enqueue.cold`        | Events enqueued via cold (poller) path |
 | `outbox.dispatch.success`    | Events dispatched successfully         |
 | `outbox.dispatch.failure`    | Events failed (will retry)             |
 | `outbox.dispatch.dead`       | Events moved to DEAD                   |
+| `outbox.dispatch.deferred`   | Events deferred by `DispatchResult.retryAfter` |
+| `outbox.dispatch.suppressed` | Duplicate copies refused by the in-flight tracker |
 
 **Gauges:**
 

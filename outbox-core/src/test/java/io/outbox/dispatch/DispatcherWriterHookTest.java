@@ -3,6 +3,7 @@ package io.outbox.dispatch;
 import io.outbox.EventEnvelope;
 import io.outbox.registry.DefaultListenerRegistry;
 import io.outbox.spi.MetricsExporter;
+import io.outbox.spi.OutboxStore;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -107,6 +108,35 @@ class DispatcherWriterHookTest {
         assertEquals(2, metrics.hotSkippedDelayed.get());
     }
 
+    /**
+     * An event too stale for a writer stamp must not travel the hot path either.
+     *
+     * <p>The store inserts events older than {@link OutboxStore#WRITER_STAMP_MAX_AGE} unowned —
+     * a stamp that old reads as an expired lease to every poller. Unowned means any node can claim
+     * the row immediately, so hot-delivering it on this node races that claim and recreates the
+     * cross-node backfill duplicate the stamp exists to prevent. Poller-only for those.
+     */
+    @Test
+    void afterCommitSkipsEventsTooStaleToCarryAWriterStamp() {
+        var dispatcher = newDispatcher(0, 10);
+        var metrics = new CountingMetrics();
+        var hook = new DispatcherWriterHook(dispatcher, metrics);
+
+        EventEnvelope stale = EventEnvelope.builder("Backfill")
+                .occurredAt(Instant.now().minus(OutboxStore.WRITER_STAMP_MAX_AGE).minusSeconds(1))
+                .payloadJson("{}")
+                .build();
+        EventEnvelope fresh = EventEnvelope.ofJson("Live", "{}");
+
+        hook.afterCommit(List.of(stale, fresh));
+
+        assertEquals(1, metrics.hotEnqueued.get(), "the fresh event still rides the hot path");
+        assertEquals(1, metrics.hotSkippedStale.get(), "the stale one is left to the poller");
+        assertEquals(0, metrics.hotSkippedDelayed.get(),
+                "a backfill is not a delayed event and must not read as a scheduling problem");
+        assertEquals(0, metrics.hotDropped.get());
+    }
+
     @Test
     void afterCommitWithNullMetricsFallsBackToNoop() {
         var dispatcher = newDispatcher(0, 10);
@@ -133,6 +163,7 @@ class DispatcherWriterHookTest {
         final AtomicInteger hotEnqueued = new AtomicInteger();
         final AtomicInteger hotDropped = new AtomicInteger();
         final AtomicInteger hotSkippedDelayed = new AtomicInteger();
+        final AtomicInteger hotSkippedStale = new AtomicInteger();
         final AtomicInteger coldEnqueued = new AtomicInteger();
 
         @Override
@@ -148,6 +179,11 @@ class DispatcherWriterHookTest {
         @Override
         public void incrementHotSkippedDelayed() {
             hotSkippedDelayed.incrementAndGet();
+        }
+
+        @Override
+        public void incrementHotSkippedStale() {
+            hotSkippedStale.incrementAndGet();
         }
 
         @Override

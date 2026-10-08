@@ -14,7 +14,13 @@ public interface MetricsExporter {
     MetricsExporter NOOP = new Noop();
 
     /**
-     * Increments the count of events successfully enqueued via the hot path.
+     * Increments the count of events the hot path accepted from the writer hook.
+     *
+     * <p>Accepted, not necessarily queued: a copy of an event that is already queued or running is
+     * refused-but-accepted (the event is on its way, so falling back to the poller would double
+     * it), and lands in {@link #incrementDispatchSuppressed()} instead of the queue. Same shape as
+     * {@link #incrementColdEnqueued()} on the poller side; the queue depth gauges are the accurate
+     * view of what is actually queued.
      */
     void incrementHotEnqueued();
 
@@ -55,6 +61,44 @@ public interface MetricsExporter {
      * These events will be delivered by the poller when their {@code availableAt} time arrives.
      */
     default void incrementHotSkippedDelayed() {
+    }
+
+    /**
+     * Increments the count of events skipped on the hot path because they were already older than
+     * {@link OutboxStore#WRITER_STAMP_MAX_AGE} at commit — backfills, in practice. The store
+     * inserts those rows unowned, so hot delivery would race every node's claim; the poller
+     * delivers them instead. Not a failure, and not the same thing as a <em>delayed</em> event,
+     * which was skipped because its {@code availableAt} lies in the future.
+     */
+    default void incrementHotSkippedStale() {
+    }
+
+    /**
+     * Increments the count of events refused by the hot path because its head-of-line age exceeded
+     * the trip threshold.
+     *
+     * <p><b>This is a SUBSET of {@link #incrementHotDropped()}, not a sibling of it.</b> Every
+     * refusal — full queue or tripped breaker — falls back to the poller and is counted as dropped
+     * by {@code DispatcherWriterHook}, because a boolean return cannot carry the reason. So:
+     * {@code dropped} = all fallbacks, {@code tripped} = the slow-path subset, and
+     * {@code dropped - tripped} = the full-queue ones. Charting them as two independent series
+     * double-counts every trip.
+     */
+    default void incrementHotTripped() {
+    }
+
+    /**
+     * Increments the count of duplicates refused by the {@code InFlightTracker} — the event was
+     * already in flight, or (with replay suppression on) had already settled. This is the copy that
+     * was NOT delivered, so it is the direct measure of the guard working.
+     *
+     * <p>Counted wherever a duplicate is refused: at the hot queue, at the cold queue, and at
+     * dispatch when a worker loses the acquire race. It is one aggregate across all three, so no
+     * arithmetic against {@link #incrementColdEnqueued()} — which counts rows the poller handed
+     * over, queued or not — recovers the exact queue inflow. The queue depth gauges are the
+     * accurate view of what is actually queued.
+     */
+    default void incrementDispatchSuppressed() {
     }
 
     /**

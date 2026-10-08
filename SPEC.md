@@ -838,7 +838,8 @@ public interface InFlightTracker {
     default void release(String eventId, long token);
     default void markSettled(String eventId, long token); // keep the entry until TTL (replay suppression)
     default void markSettled(String eventId);
-    default void releaseSettled(String eventId);           // drop a settled marker, never a running entry
+    default long settledToken(String eventId);             // the settled marker's token, or NOT_ACQUIRED
+    default void releaseSettled(String eventId, long token); // drop that marker only, never a newer one
 
     default boolean isSettled(String eventId);
     default boolean isRunning(String eventId);

@@ -14,6 +14,7 @@ import io.outbox.spi.JsonCodec;
 import io.outbox.spi.TxContext;
 import io.outbox.spring.SpringTxContext;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.InitializingBean;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -22,6 +23,7 @@ import org.springframework.context.annotation.Configuration;
 
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -323,6 +325,65 @@ class OutboxAutoConfigurationTest {
         }
     }
 
+    /**
+     * A bean that writes while the context is still starting must already see the application's
+     * codec. Registering it only once every singleton existed was too late: such a write failed,
+     * or with an SPI codec on the classpath used the wrong one.
+     */
+    @Test
+    void aCustomJsonCodecIsInPlaceForWritesDuringStartup() {
+        StartupWriteConfig.WRITTEN.set(null);
+        try {
+            runner.withUserConfiguration(ListenerConfig.class, StartupWriteConfig.class)
+                    .run(ctx -> {
+                        assertNull(ctx.getStartupFailure());
+                        assertEquals(StartupWriteConfig.CUSTOM_JSON, StartupWriteConfig.WRITTEN.get(),
+                                "the startup write serialised its headers with the custom codec");
+                    });
+        } finally {
+            JsonCodec.resetDefault();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class StartupWriteConfig {
+        static final String CUSTOM_JSON = "{\"via\":\"custom\"}";
+        static final AtomicReference<String> WRITTEN = new AtomicReference<>();
+
+        @Bean
+        JsonCodec customCodec() {
+            return new StubJsonCodec() {
+                @Override
+                public String toJson(Object value) {
+                    return CUSTOM_JSON;
+                }
+            };
+        }
+
+        @Bean
+        InitializingBean writeDuringStartup(AbstractJdbcOutboxStore store, ConnectionProvider connectionProvider) {
+            return () -> {
+                try (Connection conn = connectionProvider.getConnection()) {
+                    conn.setAutoCommit(true);
+                    try (var st = conn.createStatement()) {
+                        st.execute(new String(OutboxAutoConfigurationTest.class.getResourceAsStream("/schema.sql")
+                                .readAllBytes(), StandardCharsets.UTF_8));
+                    }
+                    EventEnvelope event = EventEnvelope.builder("StartupEvent")
+                            .payloadJson("{}").headers(Map.of("phase", "startup")).build();
+                    store.insertNew(conn, event);
+                    try (var ps = conn.prepareStatement("SELECT headers FROM outbox_event WHERE event_id=?")) {
+                        ps.setString(1, event.eventId());
+                        try (var rs = ps.executeQuery()) {
+                            assertTrue(rs.next());
+                            WRITTEN.set(rs.getString(1));
+                        }
+                    }
+                }
+            };
+        }
+    }
+
     /** Two codecs with neither @Primary is the application's ambiguity; it must not fail startup. */
     @Test
     void severalJsonCodecBeansWithoutAPrimaryDoNotFailStartup() {
@@ -361,7 +422,7 @@ class OutboxAutoConfigurationTest {
         }
     };
 
-    private static final class StubJsonCodec implements JsonCodec {
+    private static class StubJsonCodec implements JsonCodec {
         @Override
         public String toJson(Object value) {
             return "{}";

@@ -83,18 +83,36 @@ public interface InFlightTracker {
     }
 
     /**
-     * Drops the entry only if it is a settled marker, never a running acquisition.
+     * The token of the settled marker currently held for this id, so a caller about to do slow
+     * work can later drop exactly that marker with {@link #releaseSettled(String, long)}.
      *
-     * <p>For clearing a replay-suppression marker found to be stale. An id-keyed {@link #release}
-     * is not safe there: the marker can expire while the caller is busy, the event can be handed
-     * out again, and the caller would then end that newer acquisition instead.
+     * <p>The default reports {@code 0} — the token the default {@link #acquire} hands out — for any
+     * settled entry; a tracker that overrides {@link #markSettled(String, long)} should override
+     * this too.
      *
-     * <p>The default is check-then-act and so not atomic; a tracker that overrides
-     * {@link #markSettled} should override this too.
+     * @param eventId the event to look up
+     * @return the marker's token, or {@link #NOT_ACQUIRED} if the id is not held as settled
+     */
+    default long settledToken(String eventId) {
+        return isSettled(eventId) ? 0L : NOT_ACQUIRED;
+    }
+
+    /**
+     * Drops the entry only if it is still the settled marker identified by {@code token}.
+     *
+     * <p>For clearing a replay-suppression marker found to be stale. Neither an id-keyed
+     * {@link #release} nor a plain "is it settled" check is safe there: the marker can expire while
+     * the caller is busy, and the event can be handed out again — and may even settle again,
+     * leaving a newer marker. Removing either would end that newer acquisition, or let a late copy
+     * through its marker. Only the marker the caller saw may go.
+     *
+     * <p>The default cannot compare tokens and is check-then-act; a tracker that overrides
+     * {@link #markSettled(String, long)} should override this too.
      *
      * @param eventId the event whose settled marker should be dropped
+     * @param token   the marker's token, from {@link #settledToken}
      */
-    default void releaseSettled(String eventId) {
+    default void releaseSettled(String eventId, long token) {
         if (isSettled(eventId)) {
             release(eventId);
         }

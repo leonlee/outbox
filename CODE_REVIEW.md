@@ -40,8 +40,8 @@ its **Outcome**; the follow-up findings are listed separately at the end.
 
 ### M1. ExponentialBackoffRetryPolicy with baseDelayMs ≥ maxDelayMs
 
-- **Problem:** Every attempt then waits `maxDelayMs` — a fixed delay. That is a coherent
-  configuration, not a malfunction.
+- **Problem:** Every attempt is then capped at `maxDelayMs` (still jittered) — effectively a fixed
+  delay. That is a coherent configuration, not a malfunction.
 - **Outcome:** Won't fix. The proposed constructor check rejected configurations that work today,
   and because the Spring Boot starter builds the policy in every mode, it would have failed
   application startup — including in writer-only and ordered mode, which never retry.
@@ -71,7 +71,11 @@ its **Outcome**; the follow-up findings are listed separately at the end.
 
 ### M6. DefaultInFlightTracker eviction threshold
 
-- **Outcome:** Superseded by the #56 tracker rewrite.
+- **Problem:** The background sweep runs every ~1024 acquires and removes entries older than
+  `2 × ttlMs`, so stale entries linger between sweeps.
+- **Outcome:** Won't fix. The sweep only bounds memory; correctness never depends on it, because
+  every acquire checks expiry itself and reclaims an expired entry on the spot. Changing the cadence
+  or threshold trades memory for sweep work, and no memory problem has been observed.
 
 ### M7. DispatchResult.RetryAfter accepts zero delay
 
@@ -93,7 +97,7 @@ its **Outcome**; the follow-up findings are listed separately at the end.
 | m3 | Planning docs referenced the removed `DefaultJsonCodec` | N/A — historical |
 | m4 | `OutboxPoller.close()` timeout was a magic number | Fixed (`TERMINATION_TIMEOUT_SECONDS`) |
 | m5 | `MySqlOutboxStore.claimPending` transaction requirement undocumented | Fixed |
-| m6 | Negative tracker TTL undocumented | Superseded by the #56 tracker rewrite |
+| m6 | Negative tracker TTL undocumented | Fixed — constructor Javadoc: zero or negative disables expiry |
 | m7 | `OutboxDispatcher.close()` had no idempotency guard | Fixed — see F2 for why a CAS guard was wrong |
 | m8 | `Outbox.start()` thread-safety undocumented | Fixed — `synchronized`; Javadoc says it is not restartable |
 
@@ -122,15 +126,18 @@ its **Outcome**; the follow-up findings are listed separately at the end.
 | F8 | `fetchPendingRows` re-read capacity; an empty batch from that zeroed the lag gauge | Capacity read once per poll and passed in |
 | F9 | No tests covered the behaviour changes | Every fix above has a test that fails without it |
 | F10 | This file contradicted the code | This revision |
+| F11 | Stale-marker cleanup could delete a *newer* settled marker if its database call returned after the event was re-claimed and settled again, letting a late copy run twice | The marker's token is taken before the call; `releaseSettled(id, token)` removes only that marker |
+| F12 | The codec registrar ran only after every singleton existed, too late for a bean that writes during its own initialisation | Also registered from the auto-configured store and outbox factories, so before any writer can run |
+| F13 | `InMemoryOutboxStore.markDeferred` read, checked and wrote separately, so a concurrent `markDone` could be overwritten with NEW | Done in one atomic `computeIfPresent` |
+| F14 | `start()` Javadoc said the poller throws after `close()`; it returns early if already started | Javadoc states both cases |
 
 ---
 
 ## Summary
 
-| Outcome | Original (22) | Follow-up (10) |
+| Outcome | Original (22) | Follow-up (14) |
 |---------|---------------|----------------|
-| Fixed (here or in #56) | 15 | 9 |
-| Superseded by #56 | 2 | — |
-| Won't fix / N/A | 4 | — |
+| Fixed (here or in #56) | 16 | 13 |
+| Won't fix / N/A | 5 | — |
 | Resolved by dropping M1 | — | 1 |
 | Deferred | 1 | — |

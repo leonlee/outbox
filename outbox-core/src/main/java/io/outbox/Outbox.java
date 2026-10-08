@@ -83,9 +83,11 @@ public final class Outbox implements AutoCloseable {
      * {@code SmartLifecycle} bean) after all listeners are registered,
      * guaranteeing no startup race.
      *
-     * <p>Thread-safe and idempotent: concurrent and repeated calls start the poller once. Not
-     * restartable — after {@link #close()} the poller refuses to start and throws
-     * {@link IllegalStateException}.
+     * <p>Thread-safe and idempotent: concurrent and repeated calls start the poller once.
+     *
+     * <p>Not restartable. After {@link #close()}, a call on an outbox that had already started
+     * returns without doing anything; on one that never started, a poller (if there is one)
+     * refuses with {@link IllegalStateException}. Writer-only outboxes have no poller to refuse.
      */
     public synchronized void start() {
         if (started) {

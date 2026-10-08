@@ -6,12 +6,19 @@ import io.outbox.model.OutboxEvent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BiFunction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class InMemoryOutboxStoreTest {
 
@@ -85,6 +92,59 @@ class InMemoryOutboxStoreTest {
         // Should reset to NEW without incrementing attempts
         assertEquals(EventStatus.NEW, store.statusOf(event.eventId()));
         assertEquals(0, store.all().get(0).attempts());
+    }
+
+    /**
+     * A deferral racing a terminal update must not write a stale snapshot back over DONE. The
+     * deferral is paused at its first touch of the map — after a read, as a get-check-put would be —
+     * the event is marked DONE, then the deferral resumes.
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void markDeferredRacingMarkDoneCannotReviveTheEvent() throws Exception {
+        EventEnvelope event = EventEnvelope.ofJson("Test", "{}");
+        store.insertNew(null, event);
+        CountDownLatch paused = new CountDownLatch(1);
+        CountDownLatch resume = new CountDownLatch(1);
+        Map<Object, Object> racing = new ConcurrentHashMap<>() {
+            private void pauseDeferral() {
+                if ("defer".equals(Thread.currentThread().getName()) && paused.getCount() > 0) {
+                    paused.countDown();
+                    try {
+                        resume.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
+
+            @Override
+            public Object get(Object key) {
+                Object value = super.get(key);
+                pauseDeferral();
+                return value;
+            }
+
+            @Override
+            public Object computeIfPresent(Object key, BiFunction<? super Object, ? super Object, ?> remap) {
+                pauseDeferral();
+                return super.computeIfPresent(key, remap);
+            }
+        };
+        Field events = InMemoryOutboxStore.class.getDeclaredField("events");
+        events.setAccessible(true);
+        racing.putAll((Map<Object, Object>) events.get(store));
+        events.set(store, racing);
+
+        Thread deferral = new Thread(
+                () -> store.markDeferred(null, event.eventId(), Instant.now().plusSeconds(30)), "defer");
+        deferral.start();
+        assertTrue(paused.await(5, TimeUnit.SECONDS));
+        store.markDone(null, event.eventId());
+        resume.countDown();
+        deferral.join(5000);
+
+        assertEquals(EventStatus.DONE, store.statusOf(event.eventId()));
     }
 
     @Test

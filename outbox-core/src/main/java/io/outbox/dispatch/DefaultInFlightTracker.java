@@ -57,7 +57,8 @@ public final class DefaultInFlightTracker implements InFlightTracker {
     /**
      * Creates a tracker with a time-to-live for stale entries.
      *
-     * @param ttlMs time-to-live in milliseconds; entries older than this are reclaimable
+     * @param ttlMs time-to-live in milliseconds; entries older than this are reclaimable. Zero or
+     *              a negative value disables expiry, exactly like {@link #DefaultInFlightTracker()}
      */
     public DefaultInFlightTracker(long ttlMs) {
         this.ttlMs = ttlMs;
@@ -114,8 +115,15 @@ public final class DefaultInFlightTracker implements InFlightTracker {
     }
 
     @Override
-    public void releaseSettled(String eventId) {
-        inflight.computeIfPresent(eventId, (id, entry) -> entry.settled() ? null : entry);
+    public long settledToken(String eventId) {
+        Entry entry = inflight.get(eventId);
+        return entry != null && entry.settled() ? entry.token() : NOT_ACQUIRED;
+    }
+
+    @Override
+    public void releaseSettled(String eventId, long token) {
+        inflight.computeIfPresent(eventId,
+                (id, entry) -> entry.settled() && entry.token() == token ? null : entry);
     }
 
     @Override

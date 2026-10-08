@@ -470,7 +470,10 @@ public final class OutboxDispatcher implements AutoCloseable {
         if (!suppressReplays || event.source() != QueuedEvent.Source.COLD) {
             return;
         }
-        if (!inFlightTracker.isSettled(eventId)) {
+        // Name the marker now: the database call below takes time, and by the time it returns
+        // this one may have expired and been replaced by a newer acquisition's marker.
+        long marker = inFlightTracker.settledToken(eventId);
+        if (marker == InFlightTracker.NOT_ACQUIRED) {
             // Still in flight on this JVM. The lease is what keeps every other node off the row
             // while that listener runs; dropping it here would invite exactly the cross-JVM
             // duplicate this class is trying to remove. Whoever holds it will settle it, and the
@@ -493,10 +496,11 @@ public final class OutboxDispatcher implements AutoCloseable {
             //
             // A miss means the row really is settled and the marker is doing its job, so it stays.
             //
-            // Only the marker, though. The database call above takes time, the marker can expire
-            // during it, and the freed row can be claimed and acquired again — an id-keyed release
-            // here would end that newer acquisition mid-listener and admit a third copy.
-            inFlightTracker.releaseSettled(eventId);
+            // Only the marker seen above, though. The database call takes time; the marker can
+            // expire during it and the freed row be claimed, run and even settled again. An id-keyed
+            // release would end that newer acquisition mid-listener, and a plain "is it settled"
+            // check would delete its new marker and let a late copy through.
+            inFlightTracker.releaseSettled(eventId, marker);
         }
     }
 

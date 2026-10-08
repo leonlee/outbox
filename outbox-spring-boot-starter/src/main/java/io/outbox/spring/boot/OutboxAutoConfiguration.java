@@ -82,15 +82,10 @@ public class OutboxAutoConfiguration {
     }
 
     /**
-     * Makes the application's own {@link JsonCodec} bean, if it defines one, the global default
-     * that {@code EventEnvelope.payload()} and the JDBC stores use. Without this a custom codec
-     * bean is silently ignored: the Jackson codec above backs off for it, and the default falls
-     * through to {@code ServiceLoader}.
-     *
-     * <p>A bean of its own rather than a side effect of {@code outbox()}, which backs off when the
-     * application defines its own {@code Outbox} — the codec must be honoured either way. Several
-     * codec beans with none {@code @Primary} are left alone, with a warning, instead of failing
-     * startup over a choice the framework cannot make.
+     * Backstop for {@link #useApplicationJsonCodec}: runs once every singleton exists, for the
+     * application that defines its own store <em>and</em> its own {@code Outbox}, so neither
+     * auto-configured factory below ever ran. Several codec beans with none {@code @Primary} are
+     * reported here, once, instead of failing startup over a choice the framework cannot make.
      *
      * @param codecs the application's JsonCodec beans, if any
      * @return the registrar
@@ -98,20 +93,36 @@ public class OutboxAutoConfiguration {
     @Bean
     public SmartInitializingSingleton outboxJsonCodecRegistrar(ObjectProvider<JsonCodec> codecs) {
         return () -> {
-            JsonCodec codec = codecs.getIfUnique();
-            if (codec != null) {
-                JsonCodec.setDefault(codec);
-            } else if (codecs.stream().findAny().isPresent()) {
+            useApplicationJsonCodec(codecs);
+            if (codecs.getIfUnique() == null && codecs.stream().findAny().isPresent()) {
                 LOGGER.warning("Several JsonCodec beans and none is @Primary, so the outbox keeps its "
                         + "default codec. Mark the one it should use @Primary.");
             }
         };
     }
 
+    /**
+     * Makes the application's own {@link JsonCodec} bean, if it defines exactly one (or one
+     * {@code @Primary}), the global default that the stores and {@code EventEnvelope.payload()}
+     * use. Without this a custom codec bean is silently ignored: the Jackson codec above backs off
+     * for it, and the default falls through to {@code ServiceLoader}.
+     *
+     * <p>Called from the store and outbox factories so it happens before anything can write: a
+     * bean that writes from its own initialisation depends on the writer, hence on these. The
+     * end-of-startup registrar covers applications that replace both.
+     */
+    private static void useApplicationJsonCodec(ObjectProvider<JsonCodec> codecs) {
+        JsonCodec codec = codecs.getIfUnique();
+        if (codec != null) {
+            JsonCodec.setDefault(codec);
+        }
+    }
+
     @Bean
     @ConditionalOnMissingBean
     public AbstractJdbcOutboxStore outboxStore(DataSource dataSource, OutboxProperties props,
-                                              OutboxOwnerId ownerId) {
+                                              OutboxOwnerId ownerId, ObjectProvider<JsonCodec> codecs) {
+        useApplicationJsonCodec(codecs);
         String tableName = props.getTableName();
         String writerOwnerId = writerOwnerId(props, ownerId);
         AbstractJdbcOutboxStore detected = JdbcOutboxStores.detect(dataSource);
@@ -288,7 +299,10 @@ public class OutboxAutoConfiguration {
                          AbstractJdbcOutboxStore outboxStore,
                          DefaultListenerRegistry listenerRegistry,
                          ObjectProvider<MetricsExporter> metricsProvider,
-                         ObjectProvider<EventInterceptor> interceptorProvider) {
+                         ObjectProvider<EventInterceptor> interceptorProvider,
+                         ObjectProvider<JsonCodec> codecs) {
+        // Again here for an application-defined store, which skips outboxStore().
+        useApplicationJsonCodec(codecs);
 
         MetricsExporter metrics = metricsProvider.getIfAvailable();
         List<EventInterceptor> interceptors = interceptorProvider.orderedStream().toList();

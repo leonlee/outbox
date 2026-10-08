@@ -1883,6 +1883,70 @@ class OutboxDispatcherTest {
     }
 
     /**
+     * The stale cleanup must drop only the marker it saw. If its database call returns after the
+     * freed row was claimed, delivered and settled again, a plain "is it settled" check deleted the
+     * newer marker, and a late copy then ran the listener a second time.
+     */
+    @Test
+    void aStaleMarkerCleanupLeavesANewerMarkerAlone() throws Exception {
+        var tracker = new DefaultInFlightTracker(300);
+        EventEnvelope envelope = EventEnvelope.ofJson(ONCE, "{}");
+        String eventId = envelope.eventId();
+        tracker.markSettled(eventId, tracker.acquire(eventId));
+
+        CountDownLatch releasing = new CountDownLatch(1);
+        CountDownLatch finishRelease = new CountDownLatch(1);
+        var store = new StubOutboxStore() {
+            @Override
+            public int releaseClaim(java.sql.Connection conn, String id, String claimOwner,
+                                    java.time.Instant claimedAt) {
+                releasing.countDown();
+                awaitQuietly(finishRelease);
+                return 1;
+            }
+        };
+        AtomicInteger deliveries = new AtomicInteger();
+        var registry = new DefaultListenerRegistry();
+        registry.register(ONCE, event -> {
+            deliveries.incrementAndGet();
+            return DispatchResult.done();
+        });
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp())
+                .outboxStore(store)
+                .listenerRegistry(registry)
+                .workerCount(2).hotQueueCapacity(10).coldQueueCapacity(10)
+                .drainTimeoutMs(1000)
+                .inFlightTracker(tracker)
+                .suppressReplays(true)
+                .build()) {
+            // Suppressed against the live marker; its lease release stalls in the database.
+            d.enqueueCold(new QueuedEvent(envelope, QueuedEvent.Source.COLD, 0, System.nanoTime(), LEASE));
+            assertTrue(releasing.await(5, TimeUnit.SECONDS));
+
+            // The marker expires, the next poll's copy runs and settles: a newer marker.
+            Thread.sleep(400);
+            d.enqueueCold(new QueuedEvent(envelope, QueuedEvent.Source.COLD, 0, System.nanoTime(), LEASE));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!(deliveries.get() == 1 && tracker.isSettled(eventId)) && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+            assertTrue(tracker.isSettled(eventId));
+
+            finishRelease.countDown();
+            Thread.sleep(100);
+            assertTrue(tracker.isSettled(eventId), "the stale cleanup must leave the newer marker alone");
+
+            d.enqueueHot(new QueuedEvent(envelope, QueuedEvent.Source.HOT, 0));
+            Thread.sleep(200);
+            assertEquals(1, deliveries.get(), "a late copy is refused by the newer marker");
+        } finally {
+            finishRelease.countDown();
+        }
+    }
+
+    /**
      * An enqueue that read "not running" just before the earlier copy handed off from the queue to
      * the tracker must still be refused. Checking the tracker before reserving left that gap: the
      * reservation then succeeded behind a listener that was already running, and the second copy

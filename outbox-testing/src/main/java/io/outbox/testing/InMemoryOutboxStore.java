@@ -72,12 +72,19 @@ public class InMemoryOutboxStore implements OutboxStore {
 
     @Override
     public int markDeferred(Connection conn, String eventId, Instant nextAt) {
-        StoredEvent existing = events.get(eventId);
-        if (existing == null) return 0;
-        events.put(eventId, new StoredEvent(
-                existing.envelope, EventStatus.NEW,
-                existing.attempts, nextAt, null));
-        return 1;
+        // Same rule as the JDBC stores: a settled event is never brought back, and the last error
+        // stays for whoever inspects the row. Checked inside the atomic update, as the JDBC
+        // UPDATE's WHERE clause is: a separate read could see NEW, lose to a concurrent markDone,
+        // and then write its stale snapshot back over DONE.
+        boolean[] deferred = {false};
+        events.computeIfPresent(eventId, (id, existing) -> {
+            if (existing.status == EventStatus.DONE || existing.status == EventStatus.DEAD) {
+                return existing;
+            }
+            deferred[0] = true;
+            return new StoredEvent(existing.envelope, EventStatus.NEW, existing.attempts, nextAt, existing.error);
+        });
+        return deferred[0] ? 1 : 0;
     }
 
     @Override

@@ -1921,4 +1921,4 @@ class OutboxIntegrationTest {
 | `InMemoryOutboxStore`    | `ConcurrentHashMap`-backed `OutboxStore` — supports all operations         |
 | `StubTxContext`          | Controllable `TxContext` with `runAfterCommit()`/`runAfterRollback()`      |
 | `RecordingWriterHook`    | `WriterHook` that records all lifecycle phase invocations                  |
-| `NoOpConnectionProvider` | `ConnectionProvider` returning null (sufficient for `InMemoryOutboxStore`) |
+| `NoOpConnectionProvider` | `ConnectionProvider` whose connection does nothing (for `InMemoryOutboxStore`) |

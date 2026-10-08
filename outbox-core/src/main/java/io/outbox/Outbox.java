@@ -63,6 +63,7 @@ public final class Outbox implements AutoCloseable {
     private final OutboxPurgeScheduler purgeScheduler;
     private final MetricsExporter metrics;
     private volatile boolean started;
+    private boolean closed; // guarded by this
 
     private Outbox(OutboxWriter writer, OutboxPoller poller,
                    OutboxDispatcher dispatcher, OutboxPurgeScheduler purgeScheduler,
@@ -81,8 +82,14 @@ public final class Outbox implements AutoCloseable {
      * <p>In Spring Boot, this is called by {@code OutboxLifecycle} (a
      * {@code SmartLifecycle} bean) after all listeners are registered,
      * guaranteeing no startup race.
+     *
+     * <p>Thread-safe and idempotent: concurrent and repeated calls start the poller once.
+     *
+     * <p>Not restartable. After {@link #close()}, a call on an outbox that had already started
+     * returns without doing anything; on one that never started, a poller (if there is one)
+     * refuses with {@link IllegalStateException}. Writer-only outboxes have no poller to refuse.
      */
-    public void start() {
+    public synchronized void start() {
         if (started) {
             return;
         }
@@ -115,14 +122,28 @@ public final class Outbox implements AutoCloseable {
     /**
      * Shuts down components in order: purge scheduler, poller, dispatcher.
      * Null components (e.g. in writer-only mode) are skipped.
+     *
+     * <p>Idempotent, and a call that overlaps one already in progress waits for it to finish
+     * rather than returning early — a caller that tears down the {@code DataSource} next must
+     * not do so while the dispatcher is still draining. A Spring context can close the outbox
+     * twice (lifecycle stop, then the bean's destroy method), and a JVM shutdown hook can race
+     * either.
+     *
+     * <p>Every component is closed even if an earlier one fails. Each failure is logged at
+     * SEVERE; the first is rethrown with the rest attached as suppressed.
      */
     @Override
-    public void close() {
+    public synchronized void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
         RuntimeException first = null;
         if (purgeScheduler != null) {
             try {
                 purgeScheduler.close();
             } catch (RuntimeException e) {
+                LOGGER.log(Level.SEVERE, "Failed to close purge scheduler", e);
                 first = e;
             }
         }
@@ -130,6 +151,7 @@ public final class Outbox implements AutoCloseable {
             try {
                 poller.close();
             } catch (RuntimeException e) {
+                LOGGER.log(Level.SEVERE, "Failed to close poller", e);
                 if (first == null) {
                     first = e;
                 } else {
@@ -141,6 +163,7 @@ public final class Outbox implements AutoCloseable {
             try {
                 dispatcher.close();
             } catch (RuntimeException e) {
+                LOGGER.log(Level.SEVERE, "Failed to close dispatcher", e);
                 if (first == null) {
                     first = e;
                 } else {
@@ -153,6 +176,7 @@ public final class Outbox implements AutoCloseable {
                 closeable.close();
             } catch (Exception e) {
                 RuntimeException re = (e instanceof RuntimeException r) ? r : new RuntimeException(e);
+                LOGGER.log(Level.SEVERE, "Failed to close metrics exporter", e);
                 if (first == null) {
                     first = re;
                 } else {

@@ -152,6 +152,64 @@ class OutboxTest {
         });
     }
 
+    /**
+     * Spring closes the outbox twice — lifecycle stop, then the bean's destroy method — and a
+     * second pass re-closed every component, including a metrics exporter that unregisters meters.
+     */
+    @Test
+    void closeIsIdempotent() {
+        java.util.concurrent.atomic.AtomicInteger metricsClosed = new java.util.concurrent.atomic.AtomicInteger();
+        class ClosingMetrics implements io.outbox.spi.MetricsExporter, AutoCloseable {
+            @Override
+            public void incrementHotEnqueued() {
+            }
+
+            @Override
+            public void incrementHotDropped() {
+            }
+
+            @Override
+            public void incrementColdEnqueued() {
+            }
+
+            @Override
+            public void incrementDispatchSuccess() {
+            }
+
+            @Override
+            public void incrementDispatchFailure() {
+            }
+
+            @Override
+            public void incrementDispatchDead() {
+            }
+
+            @Override
+            public void recordQueueDepths(int hotDepth, int coldDepth) {
+            }
+
+            @Override
+            public void recordOldestLagMs(long lagMs) {
+            }
+
+            @Override
+            public void close() {
+                metricsClosed.incrementAndGet();
+            }
+        }
+        Outbox outbox = Outbox.singleNode()
+                .connectionProvider(STUB_CP).txContext(STUB_TX)
+                .outboxStore(STUB_STORE).listenerRegistry(STUB_REG)
+                .intervalMs(60_000)
+                .metrics(new ClosingMetrics())
+                .build();
+
+        outbox.close();
+        outbox.close();
+
+        assertEquals(1, metricsClosed.get(), "components are closed once");
+    }
+
     @Test
     void multiNode_buildsAndClosesCleanly() {
         assertDoesNotThrow(() -> {

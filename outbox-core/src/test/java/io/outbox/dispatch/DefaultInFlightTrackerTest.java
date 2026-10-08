@@ -2,6 +2,7 @@ package io.outbox.dispatch;
 
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -201,16 +202,34 @@ class DefaultInFlightTrackerTest {
     }
 
     @Test
-    void releaseSettledDropsAMarkerButNeverARunningAcquisition() {
+    void releaseSettledDropsTheNamedMarkerButNeverARunningAcquisition() {
         var tracker = new DefaultInFlightTracker(60_000);
         tracker.markSettled("settled", tracker.acquire("settled"));
-        tracker.acquire("running");
+        long runningToken = tracker.acquire("running");
 
-        tracker.releaseSettled("settled");
-        tracker.releaseSettled("running");
+        tracker.releaseSettled("settled", tracker.settledToken("settled"));
+        tracker.releaseSettled("running", runningToken);
 
-        assertFalse(tracker.isSettled("settled"), "a settled marker is dropped");
+        assertFalse(tracker.isSettled("settled"), "the named settled marker is dropped");
         assertTrue(tracker.tryAcquire("settled"), "so the event can be acquired again");
         assertTrue(tracker.isRunning("running"), "a running acquisition is left alone");
+    }
+
+    /**
+     * A marker seen before slow work may have been replaced by a newer acquisition's marker by
+     * the time the work returns. Dropping that newer one would let a late copy through it.
+     */
+    @Test
+    void releaseSettledLeavesANewerMarkerAlone() throws Exception {
+        var tracker = new DefaultInFlightTracker(50);
+        tracker.markSettled("e", tracker.acquire("e"));
+        long stale = tracker.settledToken("e");
+
+        Thread.sleep(80);                                  // the first marker expires
+        tracker.markSettled("e", tracker.acquire("e"));    // a newer acquisition settles
+        tracker.releaseSettled("e", stale);
+
+        assertTrue(tracker.isSettled("e"), "the newer marker must survive a stale release");
+        assertEquals(InFlightTracker.NOT_ACQUIRED, tracker.settledToken("unknown"));
     }
 }

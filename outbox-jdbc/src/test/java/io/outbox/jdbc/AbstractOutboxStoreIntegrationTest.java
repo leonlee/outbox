@@ -3,11 +3,14 @@ package io.outbox.jdbc;
 import io.outbox.EventEnvelope;
 import io.outbox.jdbc.store.AbstractJdbcOutboxStore;
 import io.outbox.jdbc.store.JdbcOutboxStores;
+import io.outbox.model.EventStatus;
 import io.outbox.model.OutboxEvent;
 import org.junit.jupiter.api.Test;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -293,6 +296,8 @@ abstract class AbstractOutboxStoreIntegrationTest {
             Instant nextAt = Instant.now().plusSeconds(60);
             int updated = store().markDeferred(conn, envelope.eventId(), nextAt);
             assertEquals(1, updated);
+            // A deferral is not a failure: NEW, matching InMemoryOutboxStore, not RETRY.
+            assertEquals(EventStatus.NEW.code(), statusOf(conn, envelope.eventId()));
 
             // Event should not appear in poll (available_at is in the future)
             List<OutboxEvent> pending = store().pollPending(conn, Instant.now(), Duration.ZERO, 10);
@@ -405,5 +410,15 @@ abstract class AbstractOutboxStoreIntegrationTest {
     void autoDetectFromDataSource() {
         AbstractJdbcOutboxStore detected = JdbcOutboxStores.detect(dataSource());
         assertEquals(store().name(), detected.name());
+    }
+
+    private static int statusOf(Connection conn, String eventId) throws Exception {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT status FROM outbox_event WHERE event_id = ?")) {
+            ps.setString(1, eventId);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next(), "event row missing: " + eventId);
+                return rs.getInt(1);
+            }
+        }
     }
 }

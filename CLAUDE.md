@@ -183,7 +183,8 @@ outbox-jdbc/src/main/java/
   `ordered()` (poller-only, forces `workerCount=1`, `maxAttempts=1`, no `WriterHook`), `writerOnly()` (CDC mode,
   writer + optional age-based purge, no dispatcher/poller). `deferStart(true)` builds all components without starting
   the poller — call `outbox.start()` later (used by Spring Boot's `OutboxLifecycle` to avoid startup race).
-  `close()` shuts down purgeScheduler → poller → dispatcher (null components skipped). Access the writer via
+  `close()` shuts down purgeScheduler → poller → dispatcher (null components skipped); it is idempotent and
+  `synchronized`, so an overlapping call waits for the first to finish. Access the writer via
   `outbox.writer()`. Purge config (`purger`, `purgeRetention`, `purgeBatchSize`, `purgeIntervalSeconds`) lives on
   `AbstractBuilder` (all modes); `WriterOnlyBuilder` re-declares covariant overrides for binary compatibility.
   `hotPathEnabled(false)` is rejected by `singleNode()` (no claim locking) and requires `supportsClaimLocking()` in

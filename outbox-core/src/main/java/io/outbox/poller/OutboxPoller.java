@@ -46,6 +46,7 @@ import java.util.logging.Logger;
  */
 public final class OutboxPoller implements AutoCloseable {
     private static final Logger logger = Logger.getLogger(OutboxPoller.class.getName());
+    private static final long TERMINATION_TIMEOUT_SECONDS = 5;
 
     private final ConnectionProvider connectionProvider;
     private final OutboxStore outboxStore;
@@ -114,12 +115,15 @@ public final class OutboxPoller implements AutoCloseable {
             return;
         }
         try {
-            if (handler.availableCapacity() <= 0) {
+            // Read once. Reading again inside the fetch could see the capacity gone, and an empty
+            // batch from that would reset the lag gauge to zero while rows were still waiting.
+            int capacity = handler.availableCapacity();
+            if (capacity <= 0) {
                 return;
             }
 
             Instant now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
-            Batch batch = fetchPendingRows(now);
+            Batch batch = fetchPendingRows(now, Math.min(batchSize, capacity));
             if (batch == null) {
                 return; // fetch failed — don't reset lag metric
             }
@@ -157,11 +161,7 @@ public final class OutboxPoller implements AutoCloseable {
      * Fetches pending rows from the store. Returns {@code null} on failure
      * (to distinguish from a successful empty result).
      */
-    private Batch fetchPendingRows(Instant now) {
-        int effectiveBatch = Math.min(batchSize, handler.availableCapacity());
-        if (effectiveBatch <= 0) {
-            return new Batch(List.of(), null);
-        }
+    private Batch fetchPendingRows(Instant now, int effectiveBatch) {
         try (Connection conn = connectionProvider.getConnection()) {
             if (ownerId != null) {
                 // Two-phase claim (UPDATE then SELECT) must run in a single transaction
@@ -175,7 +175,13 @@ public final class OutboxPoller implements AutoCloseable {
                     conn.commit();
                     return new Batch(claimed, lease);
                 } catch (SQLException | RuntimeException e) {
-                    conn.rollback();
+                    // A broken connection fails the rollback too; keep the claim failure as the
+                    // cause rather than letting the rollback's error replace it.
+                    try {
+                        conn.rollback();
+                    } catch (SQLException rollbackFailure) {
+                        e.addSuppressed(rollbackFailure);
+                    }
                     throw e;
                 }
             }
@@ -259,7 +265,7 @@ public final class OutboxPoller implements AutoCloseable {
         if (scheduler != null) {
             scheduler.shutdownNow();
             try {
-                scheduler.awaitTermination(5, TimeUnit.SECONDS);
+                scheduler.awaitTermination(TERMINATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }

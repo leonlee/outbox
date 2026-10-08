@@ -28,6 +28,7 @@ import io.outbox.spi.OutboxStore;
 import io.outbox.spi.TxContext;
 import io.outbox.spring.SpringTxContext;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -40,6 +41,7 @@ import javax.sql.DataSource;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Logger;
 
 /**
@@ -78,6 +80,49 @@ public class OutboxAutoConfiguration {
         JacksonJsonCodec codec = new JacksonJsonCodec(objectMapper);
         JsonCodec.setDefault(codec);
         return codec;
+    }
+
+    /**
+     * Makes the application's own {@link JsonCodec} bean the global default that the stores and
+     * {@code EventEnvelope.payload()} use — the only one, or the {@code @Primary} one. Without
+     * this a custom codec bean is silently ignored: the Jackson codec above backs off for it, and
+     * the default falls through to {@code ServiceLoader}.
+     *
+     * <p>Applied when the first outbox store, {@code Outbox} or {@code OutboxWriter} bean is
+     * initialised, whether the application defines it or this configuration does. Nothing can
+     * write without one of those, so the codec is in place before any bean can write, even from
+     * its own initialisation. Several codec beans with none {@code @Primary} are reported, once,
+     * instead of failing startup over a choice the framework cannot make.
+     *
+     * <p>An application that builds its {@code Outbox} around a store that is not a bean, and
+     * starts it inside the factory method, should call {@link JsonCodec#setDefault} itself.
+     *
+     * @param codecs the application's JsonCodec beans, if any
+     * @return the registrar
+     */
+    @Bean
+    public static BeanPostProcessor outboxJsonCodecRegistrar(ObjectProvider<JsonCodec> codecs) {
+        AtomicBoolean applied = new AtomicBoolean();
+        return new BeanPostProcessor() {
+            @Override
+            public Object postProcessBeforeInitialization(Object bean, String beanName) {
+                if ((bean instanceof OutboxStore || bean instanceof Outbox || bean instanceof OutboxWriter)
+                        && applied.compareAndSet(false, true)) {
+                    useApplicationJsonCodec(codecs);
+                }
+                return bean;
+            }
+        };
+    }
+
+    private static void useApplicationJsonCodec(ObjectProvider<JsonCodec> codecs) {
+        JsonCodec codec = codecs.getIfUnique();
+        if (codec != null) {
+            JsonCodec.setDefault(codec);
+        } else if (codecs.stream().findAny().isPresent()) {
+            LOGGER.warning("Several JsonCodec beans and none is @Primary, so the outbox keeps its "
+                    + "default codec. Mark the one it should use @Primary.");
+        }
     }
 
     @Bean

@@ -1214,6 +1214,54 @@ class OutboxDispatcherTest {
         }
     }
 
+    /**
+     * A close() that overlaps one in progress must wait for it. Returning early lets the second
+     * caller go on to tear down what the workers still use — the DataSource, typically — while
+     * they are draining, and their status writes fail.
+     */
+    @Test
+    void anOverlappingCloseWaitsForTheDrainToFinish() throws Exception {
+        CountDownLatch listenerStarted = new CountDownLatch(1);
+        CountDownLatch finishListener = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry();
+        registry.register(ONCE, event -> {
+            listenerStarted.countDown();
+            awaitQuietly(finishListener);
+            return DispatchResult.done();
+        });
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp())
+                .outboxStore(new StubOutboxStore())
+                .listenerRegistry(registry)
+                .workerCount(1)
+                .drainTimeoutMs(5000)
+                .build();
+        try {
+            d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0));
+            assertTrue(listenerStarted.await(5, TimeUnit.SECONDS));
+
+            Thread first = new Thread(d::close);
+            first.start();
+            Thread.sleep(100);
+            CountDownLatch secondReturned = new CountDownLatch(1);
+            Thread second = new Thread(() -> {
+                d.close();
+                secondReturned.countDown();
+            });
+            second.start();
+
+            assertFalse(secondReturned.await(300, TimeUnit.MILLISECONDS),
+                    "the second close must not return while the first is still draining");
+            finishListener.countDown();
+            assertTrue(secondReturned.await(5, TimeUnit.SECONDS));
+            first.join(5000);
+            assertFalse(first.isAlive());
+        } finally {
+            finishListener.countDown();
+            d.close();
+        }
+    }
+
     private static void awaitQuietly(CountDownLatch latch) {
         try {
             latch.await(5, TimeUnit.SECONDS);
@@ -1831,6 +1879,70 @@ class OutboxDispatcherTest {
         } finally {
             finishRelease.countDown();
             finishListener.countDown();
+        }
+    }
+
+    /**
+     * The stale cleanup must drop only the marker it saw. If its database call returns after the
+     * freed row was claimed, delivered and settled again, a plain "is it settled" check deleted the
+     * newer marker, and a late copy then ran the listener a second time.
+     */
+    @Test
+    void aStaleMarkerCleanupLeavesANewerMarkerAlone() throws Exception {
+        var tracker = new DefaultInFlightTracker(300);
+        EventEnvelope envelope = EventEnvelope.ofJson(ONCE, "{}");
+        String eventId = envelope.eventId();
+        tracker.markSettled(eventId, tracker.acquire(eventId));
+
+        CountDownLatch releasing = new CountDownLatch(1);
+        CountDownLatch finishRelease = new CountDownLatch(1);
+        var store = new StubOutboxStore() {
+            @Override
+            public int releaseClaim(java.sql.Connection conn, String id, String claimOwner,
+                                    java.time.Instant claimedAt) {
+                releasing.countDown();
+                awaitQuietly(finishRelease);
+                return 1;
+            }
+        };
+        AtomicInteger deliveries = new AtomicInteger();
+        var registry = new DefaultListenerRegistry();
+        registry.register(ONCE, event -> {
+            deliveries.incrementAndGet();
+            return DispatchResult.done();
+        });
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp())
+                .outboxStore(store)
+                .listenerRegistry(registry)
+                .workerCount(2).hotQueueCapacity(10).coldQueueCapacity(10)
+                .drainTimeoutMs(1000)
+                .inFlightTracker(tracker)
+                .suppressReplays(true)
+                .build()) {
+            // Suppressed against the live marker; its lease release stalls in the database.
+            d.enqueueCold(new QueuedEvent(envelope, QueuedEvent.Source.COLD, 0, System.nanoTime(), LEASE));
+            assertTrue(releasing.await(5, TimeUnit.SECONDS));
+
+            // The marker expires, the next poll's copy runs and settles: a newer marker.
+            Thread.sleep(400);
+            d.enqueueCold(new QueuedEvent(envelope, QueuedEvent.Source.COLD, 0, System.nanoTime(), LEASE));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!(deliveries.get() == 1 && tracker.isSettled(eventId)) && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+            assertTrue(tracker.isSettled(eventId));
+
+            finishRelease.countDown();
+            Thread.sleep(100);
+            assertTrue(tracker.isSettled(eventId), "the stale cleanup must leave the newer marker alone");
+
+            d.enqueueHot(new QueuedEvent(envelope, QueuedEvent.Source.HOT, 0));
+            Thread.sleep(200);
+            assertEquals(1, deliveries.get(), "a late copy is refused by the newer marker");
+        } finally {
+            finishRelease.countDown();
         }
     }
 

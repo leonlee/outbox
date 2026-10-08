@@ -677,7 +677,7 @@ WHERE event_id = ? AND status <> 1
 ```sql
 UPDATE outbox_event
 SET status = 0, available_at = ?, locked_by = NULL, locked_at = NULL
-WHERE event_id = ? AND status <> 1
+WHERE event_id = ? AND status NOT IN (1, 3)
 ```
 
 Default implementation falls back to `markRetry` (which increments attempts). JDBC implementations override with
@@ -838,7 +838,8 @@ public interface InFlightTracker {
     default void release(String eventId, long token);
     default void markSettled(String eventId, long token); // keep the entry until TTL (replay suppression)
     default void markSettled(String eventId);
-    default void releaseSettled(String eventId);           // drop a settled marker, never a running entry
+    default long settledToken(String eventId);             // the settled marker's token, or NOT_ACQUIRED
+    default void releaseSettled(String eventId, long token); // drop that marker only, never a newer one
 
     default boolean isSettled(String eventId);
     default boolean isRunning(String eventId);
@@ -1072,7 +1073,7 @@ public sealed interface DispatchResult permits Done, RetryAfter, Dead {
 ```
 
 - `Done`: event processed successfully → `markDone`
-- `RetryAfter(delay)`: event not yet complete → `markDeferred` (resets to PENDING with `available_at = now + delay`).
+- `RetryAfter(delay)`: event not yet complete → `markDeferred` (resets to NEW with `available_at = now + delay`; settled events are left alone).
   Does **not** increment `attempts`.
 - `Dead` (or `Dead(reason)`): event should not be retried → `markDead` immediately. Optional reason stored in error
   column.

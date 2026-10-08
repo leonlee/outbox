@@ -75,6 +75,8 @@ public final class JdbcTemplate {
                 ps.setString(i + 1, s);
             } else if (param instanceof Integer n) {
                 ps.setInt(i + 1, n);
+            } else if (param instanceof Long n) {
+                ps.setLong(i + 1, n);
             } else if (param instanceof Timestamp ts) {
                 ps.setTimestamp(i + 1, ts);
             } else {

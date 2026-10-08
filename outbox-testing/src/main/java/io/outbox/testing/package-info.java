@@ -6,7 +6,7 @@
  *   <li>{@link io.outbox.testing.InMemoryOutboxStore} — {@code ConcurrentHashMap}-backed store</li>
  *   <li>{@link io.outbox.testing.StubTxContext} — controllable transaction context</li>
  *   <li>{@link io.outbox.testing.RecordingWriterHook} — captures all lifecycle invocations</li>
- *   <li>{@link io.outbox.testing.NoOpConnectionProvider} — null connection provider</li>
+ *   <li>{@link io.outbox.testing.NoOpConnectionProvider} — provider of a connection that does nothing</li>
  *   <li>{@link io.outbox.testing.OutboxTestSupport} — convenience builder that wires everything together</li>
  * </ul>
  *

@@ -48,11 +48,16 @@ public final class MySqlOutboxStore extends AbstractJdbcOutboxStore {
         return true;
     }
 
+    /**
+     * Locks candidate rows with {@code SELECT ... FOR UPDATE SKIP LOCKED}, then records the owner
+     * with an {@code UPDATE}. Both phases must run in one transaction ({@code autoCommit} off) or
+     * the row locks are released between them; {@link io.outbox.poller.OutboxPoller} does this.
+     */
     @Override
     public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
                                           Instant lockExpiry, Duration skipRecent, int limit) {
         Objects.requireNonNull(ownerId, "ownerId");
-        // Truncate to millis so stored value matches query (DB may drop nanos)
+        // The lease this claim writes; see leaseTimestamp() for why it is truncated and offset
         Instant nowMs = leaseTimestamp(now);
         Instant recentCutoff = recentCutoff(now, skipRecent);
         // Phase 1: SELECT with FOR UPDATE SKIP LOCKED to exclusively lock rows (MySQL 8.0+)

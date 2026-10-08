@@ -607,8 +607,35 @@ public interface OutboxStore {
     default List<OutboxEvent> claimPending(
             Connection conn, String ownerId, Instant now,
             Instant lockExpiry, Duration skipRecent, int limit);
+
+    // Whether claimPending takes an exclusive lease (default false: an unlocked read)
+    default boolean supportsClaimLocking();
+
+    // Drop a lease this owner took at claimedAt, only if it is still that lease (default no-op)
+    default int releaseClaim(Connection conn, String eventId, String claimOwner, Instant claimedAt);
+
+    // The locked_at value claimPending writes for a claim taken at `now`
+    default Instant leaseTimestamp(Instant now);
+
+    // Rows older than this at insert are written unowned, even when a writer owner is configured
+    Duration WRITER_STAMP_MAX_AGE = Duration.ofSeconds(30);
 }
 ```
+
+`supportsClaimLocking()` is what poller-only delivery checks: configuring an owner id is not the same as having the
+rows locked. `MySqlOutboxStore` and `PostgresOutboxStore` return `true`; `H2OutboxStore` keeps the default.
+
+**Writer-stamped ownership.** The JDBC stores take an optional `writerOwnerId` constructor argument (e.g.
+`new MySqlOutboxStore(tableName, ownerId)`). When it is set, `insertNew`/`insertBatch` write `locked_by = ownerId` and
+`locked_at = created_at`, so a row is already owned by the writing instance the moment it becomes visible to other
+nodes, and the hot copy and any cold copy land in the same JVM. `claimPending` treats `locked_at = created_at` as an
+*unclaimed writer stamp*: the owner may claim it once immediately, while other nodes wait for the lock timeout. A
+poller claim overwrites `locked_at`, ending the exemption. Events older than `WRITER_STAMP_MAX_AGE` at insert
+(backfills) are written unowned and skip hot delivery.
+
+A poller claim writes `locked_at = leaseTimestamp(now)`, which the JDBC stores define as `now` truncated to
+milliseconds plus 1ms. A row is only claimable once `created_at <= now`, so a lease can never equal `created_at` and be
+mistaken for an unclaimed writer stamp.
 
 ### 8.2 SQL Semantics
 
@@ -796,15 +823,41 @@ public class QueuedEvent {
 
 ### 9.9 InFlightTracker
 
-Prevents concurrent processing of the same event.
+Prevents concurrent processing of the same event and, optionally, replays of an event that has already settled.
 
 ```java
 public interface InFlightTracker {
+    long NOT_ACQUIRED = -1L;
+
     boolean tryAcquire(String eventId);  // Returns false if already in-flight
 
     void release(String eventId);         // Remove from tracking
+
+    // Token-scoped variants: a late completion cannot end someone else's acquisition
+    default long acquire(String eventId);                 // token, or NOT_ACQUIRED
+    default void release(String eventId, long token);
+    default void markSettled(String eventId, long token); // keep the entry until TTL (replay suppression)
+    default void markSettled(String eventId);
+    default void releaseSettled(String eventId);           // drop a settled marker, never a running entry
+
+    default boolean isSettled(String eventId);
+    default boolean isRunning(String eventId);
+    default boolean hasTtl();
 }
 ```
+
+Once entries can expire, an id-keyed `release` is unsafe: a listener that outruns the TTL would, on completion, clear
+the entry of the worker that took the event over. The dispatcher therefore uses `acquire`/`release(id, token)`, and
+`DefaultInFlightTracker` only removes an entry if the token still matches.
+
+With `suppressReplays(true)` the dispatcher calls `markSettled` on DONE/DEAD instead of releasing, so a sequential
+second copy (hot copy settles, then the poller's copy of the same row arrives) is refused until the TTL expires.
+RETRY and DEFERRED always release. `build()` rejects `suppressReplays` without a TTL tracker.
+
+Separately, the dispatcher keeps an internal set of event ids that are queued or running and refuses to queue a second
+copy of any of them, so copies waiting in a queue — which the tracker cannot see — are deduplicated too. An enqueue
+reserves the id first and only then checks `isRunning`; workers acquire the tracker before dropping the reservation, so
+there is no moment at which a copy is neither reserved nor visibly running.
 
 **DefaultInFlightTracker**:
 
@@ -1132,6 +1185,17 @@ advanced use cases, `OutboxDispatcher.Builder` and `OutboxPoller.Builder` are av
 | retryPolicy       | ExponentialBackoffRetryPolicy(200, 60_000) |
 | drainTimeoutMs    | 5000                                       |
 | metrics           | MetricsExporter.NOOP                       |
+| hotPathEnabled    | true (`false` = poller-only delivery)      |
+| hotTripMs         | 0 (breaker disabled)                       |
+| suppressReplays   | false (requires a TTL `InFlightTracker`)   |
+
+`hotTripMs` is a hot-path breaker: once the head of the hot queue is older than this, `enqueueHot` refuses and the
+event falls back to the poller; it recovers at half the threshold. Set it below the poller's `skipRecent` so a hot copy
+reaches a terminal state before the poller may claim the row.
+
+`hotPathEnabled(false)` makes the poller the only delivery path: no writer hook, `enqueueHot` refuses, and workers no
+longer weight the (empty) hot queue. `Outbox.multiNode()` requires the store to report `supportsClaimLocking()` in
+that case.
 
 ### 14.2 Composite Builder Example
 
@@ -1184,6 +1248,12 @@ public interface MetricsExporter {
     default void incrementDispatchDeferred();  // handler returned RetryAfter
 
     default void incrementHotSkippedDelayed(); // delayed event skipped on hot path
+
+    default void incrementHotSkippedStale();   // older than WRITER_STAMP_MAX_AGE at commit, left to the poller
+
+    default void incrementHotTripped();        // refused by the hot-path breaker — a SUBSET of hotDropped
+
+    default void incrementDispatchSuppressed(); // duplicate copy refused by the in-flight tracker
 
     void recordQueueDepths(int hotDepth, int coldDepth);
 

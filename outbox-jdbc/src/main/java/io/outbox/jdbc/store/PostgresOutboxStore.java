@@ -7,7 +7,6 @@ import java.sql.Connection;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Objects;
 
@@ -27,6 +26,10 @@ public final class PostgresOutboxStore extends AbstractJdbcOutboxStore {
         super(tableName);
     }
 
+    public PostgresOutboxStore(String tableName, String writerOwnerId) {
+        super(tableName, writerOwnerId);
+    }
+
     @Override
     public String name() {
         return "postgresql";
@@ -42,24 +45,32 @@ public final class PostgresOutboxStore extends AbstractJdbcOutboxStore {
         return "CAST(? AS jsonb)";
     }
 
+    /** {@code FOR UPDATE SKIP LOCKED} makes this claim genuinely exclusive. */
+    @Override
+    public boolean supportsClaimLocking() {
+        return true;
+    }
+
     @Override
     public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
                                           Instant lockExpiry, Duration skipRecent, int limit) {
         Objects.requireNonNull(ownerId, "ownerId");
-        Instant nowMs = now.truncatedTo(ChronoUnit.MILLIS);
+        Instant nowMs = leaseTimestamp(now);
         Instant recentCutoff = recentCutoff(now, skipRecent);
         // Single round-trip: FOR UPDATE SKIP LOCKED + RETURNING
         String sql = "UPDATE " + tableName() + " SET locked_by=?, locked_at=? " +
                 "WHERE event_id IN (" +
                 "SELECT event_id FROM " + tableName() +
                 " WHERE status IN " + PENDING_STATUS_IN + " AND available_at <= ?" +
-                " AND (locked_by IS NULL OR locked_at < ?)" +
+                " AND (locked_by IS NULL"
+                + " OR (locked_by = ? AND locked_at = created_at)"
+                + " OR locked_at < ?)" +
                 " AND created_at <= ? ORDER BY created_at, event_id LIMIT ?" +
                 " FOR UPDATE SKIP LOCKED" +
                 ") RETURNING event_id, event_type, aggregate_type, aggregate_id, " +
                 "tenant_id, payload, headers, attempts, created_at, available_at";
         return JdbcTemplate.updateReturning(conn, sql, EVENT_ROW_MAPPER,
                 ownerId, Timestamp.from(nowMs), Timestamp.from(now),
-                Timestamp.from(lockExpiry), Timestamp.from(recentCutoff), limit);
+                ownerId, Timestamp.from(lockExpiry), Timestamp.from(recentCutoff), limit);
     }
 }

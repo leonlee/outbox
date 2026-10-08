@@ -5,7 +5,7 @@
  * <ul>
  *   <li><b>Status-based</b> — {@link io.outbox.jdbc.purge.AbstractJdbcEventPurger} deletes only
  *       terminal events (DONE + DEAD) older than a cutoff. Subclasses: H2, MySQL
- *       ({@code DELETE...ORDER BY...LIMIT}), PostgreSQL.</li>
+ *       ({@code DELETE...LIMIT}), PostgreSQL.</li>
  *   <li><b>Age-based</b> — {@link io.outbox.jdbc.purge.AbstractJdbcAgeBasedPurger} deletes all
  *       events regardless of status (for CDC mode where no dispatcher marks DONE).
  *       Subclasses: H2, MySQL, PostgreSQL.</li>

@@ -9,7 +9,7 @@ import java.time.Instant;
 /**
  * MySQL event purger. Also compatible with TiDB.
  *
- * <p>Overrides with {@code DELETE ... ORDER BY ... LIMIT}, which MySQL supports
+ * <p>Overrides with {@code DELETE ... LIMIT}, which MySQL supports
  * natively and avoids the self-referencing subquery.
  */
 public final class MySqlEventPurger extends AbstractJdbcEventPurger {
@@ -27,7 +27,7 @@ public final class MySqlEventPurger extends AbstractJdbcEventPurger {
         String sql = "DELETE FROM " + tableName() +
                 " WHERE status IN " + TERMINAL_STATUS_IN +
                 " AND (done_at < ? OR (done_at IS NULL AND created_at < ?))" +
-                " ORDER BY created_at, event_id LIMIT ?";
+                " LIMIT ?";
         return JdbcTemplate.update(conn, sql, Timestamp.from(before), Timestamp.from(before), limit);
     }
 }

@@ -36,6 +36,9 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
   poller, dispatcher from `application.properties`. `@OutboxListener` annotation and `BoundEventListener` bean
   discovery for declarative listener registration. `JacksonJsonCodec` auto-configured with Spring's `ObjectMapper`.
   `OutboxLifecycle` (`SmartLifecycle`) starts the poller after all listeners are registered, eliminating the startup race.
+  `outbox.purge.enabled` applies in every mode (status-based purger in dispatcher modes, age-based in writer-only).
+  Dispatcher duplicate controls: `outbox.dispatcher.{hot-path-enabled,hot-trip-ms,suppress-replays,in-flight-ttl-ms,
+  stamp-writer-owner}`.
 - **outbox-testing**: Test fixtures for unit testing without JDBC: `InMemoryOutboxStore`, `StubTxContext`,
   `RecordingWriterHook`, `NoOpConnectionProvider`, `OutboxTestSupport`.
 - **benchmarks**: JMH benchmarks for write throughput, dispatch latency, and poller throughput (not published).
@@ -162,7 +165,13 @@ outbox-jdbc/src/main/java/
   `markDeferred`,
   `pollPending`, `claimPending`, `queryDead`, `replayDead`, `countDead`). `insertBatch` defaults to looping `insertNew`;
   `AbstractJdbcOutboxStore` overrides with `addBatch/executeBatch`. Implemented by `AbstractJdbcOutboxStore` hierarchy
-  in `io.outbox.jdbc.store`.
+  in `io.outbox.jdbc.store`. `supportsClaimLocking()` (default `false`; MySQL/Postgres `true`) says whether
+  `claimPending` really locks; `releaseClaim(conn, id, owner, claimedAt)` drops only that exact lease;
+  `leaseTimestamp(now)` is the single definition of the `locked_at` a claim writes.
+- **Writer-stamped ownership**: JDBC stores take an optional `writerOwnerId` constructor arg. When set, inserts write
+  `locked_by = owner, locked_at = created_at`; `claimPending` treats that equality as an unclaimed stamp the owner may
+  claim once immediately while other nodes wait for the lock timeout. Rows older than
+  `OutboxStore.WRITER_STAMP_MAX_AGE` (30s) insert unowned and skip the hot path.
 - **AbstractJdbcOutboxStore** (`io.outbox.jdbc.store`): Base JDBC outbox store with shared SQL, row mapper, and
   H2-compatible default `claimPending`. Subclasses: `H2OutboxStore`, `MySqlOutboxStore` (UPDATE...ORDER BY...LIMIT),
   `PostgresOutboxStore` (FOR UPDATE SKIP LOCKED + RETURNING).
@@ -175,13 +184,21 @@ outbox-jdbc/src/main/java/
   writer + optional age-based purge, no dispatcher/poller). `deferStart(true)` builds all components without starting
   the poller — call `outbox.start()` later (used by Spring Boot's `OutboxLifecycle` to avoid startup race).
   `close()` shuts down purgeScheduler → poller → dispatcher (null components skipped). Access the writer via
-  `outbox.writer()`.
+  `outbox.writer()`. Purge config (`purger`, `purgeRetention`, `purgeBatchSize`, `purgeIntervalSeconds`) lives on
+  `AbstractBuilder` (all modes); `WriterOnlyBuilder` re-declares covariant overrides for binary compatibility.
+  `hotPathEnabled(false)` is rejected by `singleNode()` (no claim locking) and requires `supportsClaimLocking()` in
+  `multiNode()`.
 - **OutboxDispatcher**: Dual-queue single-event processor with hot queue (afterCommit callbacks) and cold queue (poller
   fallback). Each event is dispatched individually: acquire in-flight → run interceptors → call `listener.onEvent()`
   → handle `DispatchResult` (Done/RetryAfter/Dead) → markDone/markDeferred/markRetry/markDead. Created via
   `OutboxDispatcher.builder()`. Uses `InFlightTracker` for deduplication,
-  `RetryPolicy` for exponential backoff, `EventInterceptor` for cross-cutting hooks, fair 2:1 hot/cold queue draining,
-  and graceful shutdown with configurable drain timeout.
+  `RetryPolicy` for exponential backoff, `EventInterceptor` for cross-cutting hooks, fair 2:1 hot/cold weighting (both
+  queues drained non-blocking before a worker parks), and graceful shutdown with configurable drain timeout.
+  Duplicate guards: an internal queued-id set refuses a second copy of an event already queued or running;
+  `InFlightTracker` acquisitions are token-scoped (`acquire` / `release(id, token)`) so a late completion cannot end a
+  newer acquisition; opt-in `suppressReplays` keeps settled entries until TTL (requires a TTL tracker); opt-in
+  `hotTripMs` breaker refuses hot enqueue once the hot queue head is too old (recovers at half). `hotPathEnabled(false)`
+  = poller-only delivery (`enqueueHot` refuses).
 - **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails. Created via `OutboxPoller.builder()`. Uses an
   `OutboxPollerHandler` to forward events. Two modes: single-node (default, `pollPending`) and multi-node (
   `claimLocking()` enables `claimPending` with row-level locks).
@@ -202,7 +219,8 @@ outbox-jdbc/src/main/java/
 - **DispatcherWriterHook** (`io.outbox.dispatch`): `WriterHook` implementation that bridges to the dispatcher's hot
   queue.
   `afterCommit` enqueues each event individually as `QueuedEvent(event, HOT, 0)`. Skips delayed events
-  (`isDelayed()`) — they stay in DB for the poller to deliver at `availableAt`. Accepts optional `MetricsExporter`.
+  (`isDelayed()`) — they stay in DB for the poller to deliver at `availableAt` — and events older than
+  `WRITER_STAMP_MAX_AGE` at commit (`incrementHotSkippedStale`). Accepts optional `MetricsExporter`.
 - **DispatcherPollerHandler** (`io.outbox.dispatch`): `OutboxPollerHandler` implementation that bridges to the
   dispatcher's
   cold queue.

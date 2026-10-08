@@ -19,8 +19,16 @@ class StubOutboxStore implements OutboxStore {
     final AtomicInteger markRetryCount = new AtomicInteger();
     final AtomicInteger markDeadCount = new AtomicInteger();
     final AtomicInteger markDeferredCount = new AtomicInteger();
+    final AtomicInteger releaseClaimCount = new AtomicInteger();
     final AtomicReference<Instant> lastRetryNextAt = new AtomicReference<>();
     final AtomicReference<Instant> lastDeferredNextAt = new AtomicReference<>();
+
+    @Override
+    public int releaseClaim(java.sql.Connection conn, String eventId, String claimOwner,
+                            java.time.Instant claimedAt) {
+        releaseClaimCount.incrementAndGet();
+        return 1;
+    }
 
     @Override
     public void insertNew(Connection conn, EventEnvelope event) {

@@ -14,7 +14,7 @@ import java.time.Instant;
  * and PostgreSQL.
  *
  * <p>Subclasses may override {@link #purge} for databases that support more
- * efficient syntax (e.g. MySQL supports {@code DELETE ... ORDER BY ... LIMIT}).
+ * efficient syntax (e.g. MySQL supports {@code DELETE ... LIMIT} directly).
  *
  * @see H2EventPurger
  * @see MySqlEventPurger
@@ -44,11 +44,17 @@ public abstract class AbstractJdbcEventPurger implements EventPurger {
      * Deletes terminal events older than {@code before}, up to {@code limit} rows.
      *
      * <p>Default implementation uses a subquery to limit the batch size, which
-     * works for H2 and PostgreSQL. MySQL overrides with {@code DELETE ... ORDER BY ... LIMIT}.
+     * works for H2 and PostgreSQL. MySQL overrides with a direct {@code DELETE ... LIMIT}.
      *
      * <p>Uses an index-friendly OR pattern instead of {@code COALESCE}: the database
      * can use an index on {@code done_at} for the first branch and {@code created_at}
      * for the NULL fallback branch.
+     *
+     * <p>Deliberately UNORDERED. An {@code ORDER BY created_at} forces the database to identify the
+     * globally oldest rows, which means considering every candidate before deleting any: on a large
+     * table each batch becomes a full table scan, where without the ordering it is a bounded index
+     * range scan. Ordering buys nothing here — every matching row is going
+     * to be deleted eventually, so which 500 go first does not matter.
      */
     @Override
     public int purge(Connection conn, Instant before, int limit) {
@@ -56,7 +62,7 @@ public abstract class AbstractJdbcEventPurger implements EventPurger {
                 "SELECT event_id FROM " + tableName() +
                 " WHERE status IN " + TERMINAL_STATUS_IN +
                 " AND (done_at < ? OR (done_at IS NULL AND created_at < ?))" +
-                " ORDER BY created_at, event_id LIMIT ?)";
+                " LIMIT ?)";
         return JdbcTemplate.update(conn, sql, Timestamp.from(before), Timestamp.from(before), limit);
     }
 }

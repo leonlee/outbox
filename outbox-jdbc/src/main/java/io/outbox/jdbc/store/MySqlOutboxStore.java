@@ -7,7 +7,6 @@ import java.sql.Connection;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
@@ -29,6 +28,10 @@ public final class MySqlOutboxStore extends AbstractJdbcOutboxStore {
         super(tableName);
     }
 
+    public MySqlOutboxStore(String tableName, String writerOwnerId) {
+        super(tableName, writerOwnerId);
+    }
+
     @Override
     public String name() {
         return "mysql";
@@ -39,22 +42,30 @@ public final class MySqlOutboxStore extends AbstractJdbcOutboxStore {
         return List.of("jdbc:mysql:", "jdbc:tidb:");
     }
 
+    /** {@code FOR UPDATE SKIP LOCKED} makes this claim genuinely exclusive. */
+    @Override
+    public boolean supportsClaimLocking() {
+        return true;
+    }
+
     @Override
     public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
                                           Instant lockExpiry, Duration skipRecent, int limit) {
         Objects.requireNonNull(ownerId, "ownerId");
         // Truncate to millis so stored value matches query (DB may drop nanos)
-        Instant nowMs = now.truncatedTo(ChronoUnit.MILLIS);
+        Instant nowMs = leaseTimestamp(now);
         Instant recentCutoff = recentCutoff(now, skipRecent);
         // Phase 1: SELECT with FOR UPDATE SKIP LOCKED to exclusively lock rows (MySQL 8.0+)
         String lockSql = "SELECT event_id, event_type, aggregate_type, aggregate_id, " +
                 "tenant_id, payload, headers, attempts, created_at, available_at FROM " + tableName() +
                 " WHERE status IN " + PENDING_STATUS_IN + " AND available_at <= ?" +
-                " AND (locked_by IS NULL OR locked_at < ?)" +
+                " AND (locked_by IS NULL"
+                + " OR (locked_by = ? AND locked_at = created_at)"
+                + " OR locked_at < ?)" +
                 " AND created_at <= ? ORDER BY created_at, event_id LIMIT ?" +
                 " FOR UPDATE SKIP LOCKED";
         List<OutboxEvent> events = JdbcTemplate.query(conn, lockSql, EVENT_ROW_MAPPER,
-                Timestamp.from(now), Timestamp.from(lockExpiry),
+                Timestamp.from(now), ownerId, Timestamp.from(lockExpiry),
                 Timestamp.from(recentCutoff), limit);
         if (events.isEmpty()) {
             return List.of();

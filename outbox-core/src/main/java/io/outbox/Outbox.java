@@ -1,5 +1,6 @@
 package io.outbox;
 
+import io.outbox.dispatch.DefaultInFlightTracker;
 import io.outbox.dispatch.DispatcherPollerHandler;
 import io.outbox.dispatch.DispatcherWriterHook;
 import io.outbox.dispatch.EventInterceptor;
@@ -14,6 +15,8 @@ import io.outbox.spi.MetricsExporter;
 import io.outbox.spi.OutboxStore;
 import io.outbox.spi.TxContext;
 
+import java.util.logging.Logger;
+import java.util.logging.Level;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -52,6 +55,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * @see OutboxPoller
  */
 public final class Outbox implements AutoCloseable {
+    private static final Logger LOGGER = Logger.getLogger(Outbox.class.getName());
+
     private final OutboxWriter writer;
     private final OutboxPoller poller;
     private final OutboxDispatcher dispatcher;
@@ -78,10 +83,24 @@ public final class Outbox implements AutoCloseable {
      * guaranteeing no startup race.
      */
     public void start() {
-        if (poller != null && !started) {
-            poller.start();
-            started = true;
+        if (started) {
+            return;
         }
+        if (poller != null) {
+            poller.start();
+        }
+        if (purgeScheduler != null) {
+            // Deliberately after the poller, and deliberately not fatal. Purging is housekeeping;
+            // delivery is the job. Letting a failure here abort start() would leave an outbox that
+            // accepts writes and never dispatches them because it could not schedule a cleanup.
+            try {
+                purgeScheduler.start();
+            } catch (RuntimeException e) {
+                LOGGER.log(Level.SEVERE,
+                        "Purge scheduler failed to start; events will be delivered but not purged", e);
+            }
+        }
+        started = true;
     }
 
     /**
@@ -193,6 +212,10 @@ public final class Outbox implements AutoCloseable {
      *
      * @param <B> the concrete builder type (CRTP)
      */
+    // Builder fields intentionally share their setter names — that is the builder idiom,
+    // and PMD's AvoidFieldNameMatchingMethodName has no exception for it. Suppressed at the
+    // class so the rule stops reporting the whole builder every time one field is touched.
+    @SuppressWarnings("PMD.AvoidFieldNameMatchingMethodName")
     public abstract static sealed class AbstractBuilder<B extends AbstractBuilder<B>>
             permits SingleNodeBuilder, MultiNodeBuilder, OrderedBuilder, WriterOnlyBuilder {
 
@@ -206,6 +229,13 @@ public final class Outbox implements AutoCloseable {
         int batchSize = 50;
         Duration skipRecent;
         long drainTimeoutMs = 5000;
+        long hotTripMs = 0;
+        long inFlightTtlMs = 0;
+        boolean suppressReplays = false;
+        EventPurger purger;
+        Duration purgeRetention;
+        int purgeBatchSize = 500;
+        long purgeIntervalSeconds = 3600;
         boolean deferStart = false;
         private final AtomicBoolean built = new AtomicBoolean(false);
 
@@ -375,6 +405,142 @@ public final class Outbox implements AutoCloseable {
         }
 
         /**
+         * Head-of-line age above which the hot path stops accepting and lets the poller deliver
+         * instead. {@code 0} (the default) disables the breaker.
+         *
+         * <p>Only meaningful together with {@code skipRecent}: keep this below it, since the hot
+         * copy is only a head start if the event reaches a terminal state before the poller may
+         * claim the row. See
+         * {@link io.outbox.dispatch.OutboxDispatcher.Builder#hotTripMs(long)}.
+         *
+         * @param hotTripMs age in milliseconds, or 0 to disable
+         * @return this builder
+         */
+        public B hotTripMs(long hotTripMs) {
+            this.hotTripMs = hotTripMs;
+            return self();
+        }
+
+        /**
+         * TTL for {@link io.outbox.dispatch.DefaultInFlightTracker} entries.
+         * {@code 0} (the default) means entries live until explicitly released.
+         *
+         * <p>Required by {@link #suppressReplays(boolean)}, which deliberately does not release
+         * settled events.
+         *
+         * @param inFlightTtlMs entry time-to-live in milliseconds, or 0 for none
+         * @return this builder
+         */
+        public B inFlightTtlMs(long inFlightTtlMs) {
+            this.inFlightTtlMs = inFlightTtlMs;
+            return self();
+        }
+
+        /**
+         * Keeps terminal (DONE / DEAD) events in the in-flight tracker until the TTL expires them,
+         * so a second copy of an already-settled event is rejected instead of re-delivered. See
+         * {@link io.outbox.dispatch.OutboxDispatcher.Builder#suppressReplays(boolean)}.
+         *
+         * @param suppressReplays whether settled events stay tracked until TTL
+         * @return this builder
+         */
+        public B suppressReplays(boolean suppressReplays) {
+            this.suppressReplays = suppressReplays;
+            return self();
+        }
+
+        /**
+         * Enables periodic deletion of events that are no longer needed.
+         *
+         * <p>Pick the implementation to match how events reach a terminal state. With a dispatcher
+         * running, that is {@code status IN (DONE, DEAD)} — use an
+         * {@code AbstractJdbcEventPurger}. In CDC / writer-only setups nothing marks events DONE,
+         * so age is the only safe criterion and {@code AbstractJdbcAgeBasedPurger} is correct.
+         * Using the age-based purger where a dispatcher IS running would delete undelivered events.
+         *
+         * <p>Optional. Without it, terminal events accumulate forever.
+         *
+         * @param purger the purger implementation
+         * @return this builder
+         */
+        public B purger(EventPurger purger) {
+            this.purger = purger;
+            return self();
+        }
+
+        /**
+         * How long a terminal event is kept before it becomes eligible for deletion.
+         *
+         * @param purgeRetention retention duration
+         * @return this builder
+         */
+        public B purgeRetention(Duration purgeRetention) {
+            this.purgeRetention = purgeRetention;
+            return self();
+        }
+
+        /**
+         * Rows deleted per statement. The scheduler repeats within a cycle until a batch comes back
+         * short, so this bounds the size of a single DELETE, not the work done per cycle.
+         *
+         * @param purgeBatchSize max rows per statement
+         * @return this builder
+         */
+        public B purgeBatchSize(int purgeBatchSize) {
+            this.purgeBatchSize = purgeBatchSize;
+            return self();
+        }
+
+        /**
+         * Seconds between purge cycles.
+         *
+         * @param purgeIntervalSeconds interval in seconds
+         * @return this builder
+         */
+        public B purgeIntervalSeconds(long purgeIntervalSeconds) {
+            this.purgeIntervalSeconds = purgeIntervalSeconds;
+            return self();
+        }
+
+        /**
+         * Builds the purge scheduler, or returns {@code null} if no purger was set.
+         *
+         * <p>Honours {@link #deferStart(boolean)}: purging is background work, so under a deferred
+         * start it waits for {@link Outbox#start()} along with the poller rather than beginning
+         * during bean creation. That matters on an environment carrying a backlog, where the first
+         * cycle is not a trickle — it drains until a batch comes back short, and doing that while
+         * the context is still coming up competes with startup for the database.
+         */
+        OutboxPurgeScheduler buildPurgeScheduler() {
+            if (purger == null) {
+                return null;
+            }
+            OutboxPurgeScheduler.Builder pb = OutboxPurgeScheduler.builder()
+                    .connectionProvider(connectionProvider)
+                    .purger(purger)
+                    .batchSize(purgeBatchSize)
+                    .intervalSeconds(purgeIntervalSeconds);
+            if (purgeRetention != null) {
+                pb.retention(purgeRetention);
+            }
+            OutboxPurgeScheduler scheduler = pb.build();
+            if (deferStart) {
+                return scheduler;
+            }
+            try {
+                scheduler.start();
+            } catch (RuntimeException e) {
+                // Same policy as Outbox.start(), which handles the deferred path: purging is
+                // housekeeping and delivery is the job. Rethrowing here made the non-deferred
+                // builders fail build() — tearing down a poller and dispatcher that had already
+                // started — over a cleanup task the deferred path would merely have logged.
+                LOGGER.log(Level.SEVERE,
+                        "Purge scheduler failed to start; events will be delivered but not purged", e);
+            }
+            return scheduler;
+        }
+
+        /**
          * Defers poller startup until {@link Outbox#start()} is called explicitly.
          *
          * <p>When {@code true}, {@code build()} creates all components but does not
@@ -419,7 +585,13 @@ public final class Outbox implements AutoCloseable {
                     .coldQueueCapacity(coldQueueCapacity)
                     .maxAttempts(maxAttempts)
                     .drainTimeoutMs(drainTimeoutMs)
+                    .hotTripMs(hotTripMs)
+                    .suppressReplays(suppressReplays)
+                    .hotPathEnabled(hotPathEnabled)
                     .interceptors(interceptors);
+            if (inFlightTtlMs > 0) {
+                db.inFlightTracker(new DefaultInFlightTracker(inFlightTtlMs));
+            }
             if (retryPolicy != null) {
                 db.retryPolicy(retryPolicy);
             }
@@ -467,7 +639,16 @@ public final class Outbox implements AutoCloseable {
             } else {
                 writer = new DefaultOutboxWriter(txContext, outboxStore);
             }
-            return new Outbox(writer, poller, dispatcher, null, metrics);
+
+            OutboxPurgeScheduler purgeScheduler;
+            try {
+                purgeScheduler = buildPurgeScheduler();
+            } catch (RuntimeException e) {
+                poller.close();
+                dispatcher.close();
+                throw e;
+            }
+            return new Outbox(writer, poller, dispatcher, purgeScheduler, metrics);
         }
 
         /**
@@ -483,9 +664,14 @@ public final class Outbox implements AutoCloseable {
     /**
      * Builder for single-node deployments: hot path + poller fallback.
      */
+    // Builder fields intentionally share their setter names — that is the builder idiom,
+    // and PMD's AvoidFieldNameMatchingMethodName has no exception for it. Suppressed at the
+    // class so the rule stops reporting the whole builder every time one field is touched.
+    @SuppressWarnings("PMD.AvoidFieldNameMatchingMethodName")
     public static final class SingleNodeBuilder extends AbstractBuilder<SingleNodeBuilder> {
         private int workerCount = 4;
         private int hotQueueCapacity = 1000;
+        private boolean hotPathEnabled = true;
         private int coldQueueCapacity = 1000;
         private int maxAttempts = 10;
         private RetryPolicy retryPolicy;
@@ -516,6 +702,22 @@ public final class Outbox implements AutoCloseable {
          */
         public SingleNodeBuilder hotQueueCapacity(int hotQueueCapacity) {
             this.hotQueueCapacity = hotQueueCapacity;
+            return this;
+        }
+
+        /**
+         * Whether after-commit events are dispatched from memory. On by default.
+         *
+         * <p>Off makes the poller the only delivery path: no writer hook is installed, so an event
+         * is dispatched exactly once per claim and the hot/cold race disappears along with the
+         * machinery that exists to police it. See
+         * {@link io.outbox.dispatch.OutboxDispatcher.Builder#hotPathEnabled(boolean)}.
+         *
+         * @param hotPathEnabled whether the hot path is in use
+         * @return this builder
+         */
+        public SingleNodeBuilder hotPathEnabled(boolean hotPathEnabled) {
+            this.hotPathEnabled = hotPathEnabled;
             return this;
         }
 
@@ -561,10 +763,22 @@ public final class Outbox implements AutoCloseable {
         @Override
         public Outbox build() {
             validateRequired();
+            if (!hotPathEnabled) {
+                // Poller-only delivery rests on the claim being exclusive, and single-node takes no
+                // claims — it polls without locking. Nothing would then stop a poll from handing
+                // out a row whose listener is still running, so the mode cannot keep the promise
+                // its name makes. The dispatcher's in-flight guard narrows that to a race rather
+                // than closing it, and a guarantee is not something to leave to a race.
+                throw new IllegalStateException(
+                        "hotPathEnabled(false) requires claim locking, which singleNode() does not "
+                                + "use: without a claim the poller re-delivers any row whose "
+                                + "listener outlives the poll interval. Use multiNode() with "
+                                + "claimLocking() — it is correct on one node too.");
+            }
             return buildComposite(
                     workerCount, hotQueueCapacity, coldQueueCapacity,
                     maxAttempts, retryPolicy,
-                    null, null, true);
+                    null, null, hotPathEnabled);
         }
     }
 
@@ -576,6 +790,7 @@ public final class Outbox implements AutoCloseable {
     public static final class MultiNodeBuilder extends AbstractBuilder<MultiNodeBuilder> {
         private int workerCount = 4;
         private int hotQueueCapacity = 1000;
+        private boolean hotPathEnabled = true;
         private int coldQueueCapacity = 1000;
         private int maxAttempts = 10;
         private RetryPolicy retryPolicy;
@@ -608,6 +823,22 @@ public final class Outbox implements AutoCloseable {
          */
         public MultiNodeBuilder hotQueueCapacity(int hotQueueCapacity) {
             this.hotQueueCapacity = hotQueueCapacity;
+            return this;
+        }
+
+        /**
+         * Whether after-commit events are dispatched from memory. On by default.
+         *
+         * <p>Off makes the poller the only delivery path: no writer hook is installed, so an event
+         * is dispatched exactly once per claim and the hot/cold race disappears along with the
+         * machinery that exists to police it. See
+         * {@link io.outbox.dispatch.OutboxDispatcher.Builder#hotPathEnabled(boolean)}.
+         *
+         * @param hotPathEnabled whether the hot path is in use
+         * @return this builder
+         */
+        public MultiNodeBuilder hotPathEnabled(boolean hotPathEnabled) {
+            this.hotPathEnabled = hotPathEnabled;
             return this;
         }
 
@@ -683,10 +914,20 @@ public final class Outbox implements AutoCloseable {
             if (lockTimeout == null) {
                 throw new IllegalStateException("claimLocking() is required for multiNode()");
             }
+            if (!hotPathEnabled && !outboxStore.supportsClaimLocking()) {
+                // claimLocking() configures an owner; it does not make the store honour one. The
+                // SPI's claimPending falls through to an unlocked read by default, so without this
+                // a custom store would pass every check here and still re-deliver anything slower
+                // than the poll interval — the defect singleNode() is refused for, unannounced.
+                throw new IllegalStateException(
+                        "hotPathEnabled(false) requires a store whose claimPending actually locks, "
+                                + "and " + outboxStore.getClass().getName() + " does not report "
+                                + "supportsClaimLocking(). Override it, or leave the hot path on.");
+            }
             return buildComposite(
                     workerCount, hotQueueCapacity, coldQueueCapacity,
                     maxAttempts, retryPolicy,
-                    ownerId, lockTimeout, true);
+                    ownerId, lockTimeout, hotPathEnabled);
         }
     }
 
@@ -698,6 +939,10 @@ public final class Outbox implements AutoCloseable {
      * <p>Forces {@code workerCount=1}, {@code maxAttempts=1}, and no {@link WriterHook}
      * (events are delivered exclusively via the poller).
      */
+    // Builder fields intentionally share their setter names — that is the builder idiom,
+    // and PMD's AvoidFieldNameMatchingMethodName has no exception for it. Suppressed at the
+    // class so the rule stops reporting the whole builder every time one field is touched.
+    @SuppressWarnings("PMD.AvoidFieldNameMatchingMethodName")
     public static final class OrderedBuilder extends AbstractBuilder<OrderedBuilder> {
 
         OrderedBuilder() {
@@ -725,11 +970,37 @@ public final class Outbox implements AutoCloseable {
      * {@code skipRecent}, {@code drainTimeoutMs}) are not supported in this
      * mode and throw {@link UnsupportedOperationException}.
      */
+    // Builder fields intentionally share their setter names — that is the builder idiom,
+    // and PMD's AvoidFieldNameMatchingMethodName has no exception for it. Suppressed at the
+    // class so the rule stops reporting the whole builder every time one field is touched.
+    @SuppressWarnings("PMD.AvoidFieldNameMatchingMethodName")
     public static final class WriterOnlyBuilder extends AbstractBuilder<WriterOnlyBuilder> {
-        private EventPurger purger;
-        private Duration purgeRetention;
-        private int purgeBatchSize = 500;
-        private long purgeIntervalSeconds = 3600;
+
+        // Purge configuration used to live here and return WriterOnlyBuilder; it moved up to
+        // AbstractBuilder so the dispatcher modes could reach it, which erases the return type to
+        // AbstractBuilder. outbox is published as a library, so anything
+        // already compiled against the old signatures would fail with NoSuchMethodError rather
+        // than at compile time. These covariant overrides put the original signatures back.
+
+        @Override
+        public WriterOnlyBuilder purger(EventPurger purger) {
+            return super.purger(purger);
+        }
+
+        @Override
+        public WriterOnlyBuilder purgeRetention(Duration purgeRetention) {
+            return super.purgeRetention(purgeRetention);
+        }
+
+        @Override
+        public WriterOnlyBuilder purgeBatchSize(int purgeBatchSize) {
+            return super.purgeBatchSize(purgeBatchSize);
+        }
+
+        @Override
+        public WriterOnlyBuilder purgeIntervalSeconds(long purgeIntervalSeconds) {
+            return super.purgeIntervalSeconds(purgeIntervalSeconds);
+        }
 
         WriterOnlyBuilder() {
         }
@@ -790,58 +1061,9 @@ public final class Outbox implements AutoCloseable {
             throw new UnsupportedOperationException("drainTimeoutMs is not used in writer-only mode");
         }
 
-        /**
-         * Sets the age-based purger for cleaning up old events.
-         *
-         * <p>Optional. If set, {@code connectionProvider} is also required.
-         *
-         * @param purger the event purger
-         * @return this builder
-         */
-        public WriterOnlyBuilder purger(EventPurger purger) {
-            this.purger = purger;
-            return this;
-        }
 
-        /**
-         * Sets the retention period for the purge scheduler. Events older than
-         * this duration are eligible for purging.
-         *
-         * <p>Optional. Defaults to {@code 7 days}.
-         *
-         * @param purgeRetention the retention duration
-         * @return this builder
-         */
-        public WriterOnlyBuilder purgeRetention(Duration purgeRetention) {
-            this.purgeRetention = purgeRetention;
-            return this;
-        }
 
-        /**
-         * Sets the maximum number of events deleted per batch within a purge cycle.
-         *
-         * <p>Optional. Defaults to {@code 500}.
-         *
-         * @param purgeBatchSize max events per batch
-         * @return this builder
-         */
-        public WriterOnlyBuilder purgeBatchSize(int purgeBatchSize) {
-            this.purgeBatchSize = purgeBatchSize;
-            return this;
-        }
 
-        /**
-         * Sets the interval in seconds between purge cycles.
-         *
-         * <p>Optional. Defaults to {@code 3600} (1 hour).
-         *
-         * @param purgeIntervalSeconds purge interval in seconds
-         * @return this builder
-         */
-        public WriterOnlyBuilder purgeIntervalSeconds(long purgeIntervalSeconds) {
-            this.purgeIntervalSeconds = purgeIntervalSeconds;
-            return this;
-        }
 
         @Override
         void validateRequired() {
@@ -857,25 +1079,7 @@ public final class Outbox implements AutoCloseable {
             validateRequired();
             markBuilt();
             OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore);
-            OutboxPurgeScheduler scheduler = null;
-            if (purger != null) {
-                OutboxPurgeScheduler.Builder pb = OutboxPurgeScheduler.builder()
-                        .connectionProvider(connectionProvider)
-                        .purger(purger)
-                        .batchSize(purgeBatchSize)
-                        .intervalSeconds(purgeIntervalSeconds);
-                if (purgeRetention != null) {
-                    pb.retention(purgeRetention);
-                }
-                scheduler = pb.build();
-                try {
-                    scheduler.start();
-                } catch (RuntimeException e) {
-                    scheduler.close();
-                    throw e;
-                }
-            }
-            return new Outbox(writer, null, null, scheduler, metrics);
+            return new Outbox(writer, null, null, buildPurgeScheduler(), metrics);
         }
     }
 }

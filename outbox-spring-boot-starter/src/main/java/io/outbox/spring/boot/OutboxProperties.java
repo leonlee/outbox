@@ -82,6 +82,11 @@ public class OutboxProperties {
         private int coldQueueCapacity = 1000;
         private int maxAttempts = 10;
         private long drainTimeoutMs = 5000;
+        private long hotTripMs = 0;
+        private long inFlightTtlMs = 0;
+        private boolean suppressReplays = false;
+        private boolean stampWriterOwner = false;
+        private boolean hotPathEnabled = true;
 
         public int getWorkerCount() {
             return workerCount;
@@ -117,6 +122,61 @@ public class OutboxProperties {
 
         public long getDrainTimeoutMs() {
             return drainTimeoutMs;
+        }
+
+        public long getHotTripMs() {
+            return hotTripMs;
+        }
+
+        public void setHotTripMs(long hotTripMs) {
+            this.hotTripMs = hotTripMs;
+        }
+
+        public long getInFlightTtlMs() {
+            return inFlightTtlMs;
+        }
+
+        public void setInFlightTtlMs(long inFlightTtlMs) {
+            this.inFlightTtlMs = inFlightTtlMs;
+        }
+
+        public boolean isSuppressReplays() {
+            return suppressReplays;
+        }
+
+        public void setSuppressReplays(boolean suppressReplays) {
+            this.suppressReplays = suppressReplays;
+        }
+
+        /**
+         * Whether after-commit events are dispatched from memory. {@code true} by default.
+         *
+         * <p>Set {@code false} for poller-only delivery: no writer hook, no hot queue, every event
+         * reaching a listener through exactly one poller claim.
+         *
+         * <p><b>Requires {@code outbox.mode=multi-node}.</b> The guarantee is the claim, and
+         * {@code single-node} polls without locking — so it would re-deliver any listener slower
+         * than the poll interval. That combination is rejected at startup. {@code ordered} is
+         * poller-only by construction and {@code writer-only} dispatches nothing.
+         *
+         * <p>With it off, {@code stamp-writer-owner} is redundant (and ignored), and
+         * {@code skip-recent-ms} can go to 0 — both exist only to keep the poller off a row the
+         * hot path is delivering.
+         */
+        public boolean isHotPathEnabled() {
+            return hotPathEnabled;
+        }
+
+        public void setHotPathEnabled(boolean hotPathEnabled) {
+            this.hotPathEnabled = hotPathEnabled;
+        }
+
+        public boolean isStampWriterOwner() {
+            return stampWriterOwner;
+        }
+
+        public void setStampWriterOwner(boolean stampWriterOwner) {
+            this.stampWriterOwner = stampWriterOwner;
         }
 
         public void setDrainTimeoutMs(long drainTimeoutMs) {

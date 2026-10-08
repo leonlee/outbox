@@ -17,6 +17,10 @@ public final class H2OutboxStore extends AbstractJdbcOutboxStore {
         super(tableName);
     }
 
+    public H2OutboxStore(String tableName, String writerOwnerId) {
+        super(tableName, writerOwnerId);
+    }
+
     @Override
     public String name() {
         return "h2";

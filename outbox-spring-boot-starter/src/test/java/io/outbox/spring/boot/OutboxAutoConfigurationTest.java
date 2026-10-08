@@ -20,7 +20,10 @@ import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
+import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.util.Map;
@@ -342,6 +345,72 @@ class OutboxAutoConfigurationTest {
                     });
         } finally {
             JsonCodec.resetDefault();
+        }
+    }
+
+    /**
+     * The same for an application that defines its own store and Outbox, so neither
+     * auto-configured factory runs. A registrar that waited for the end of startup was too late
+     * for a bean writing through the writer during its own initialisation.
+     */
+    @Test
+    void aCustomJsonCodecIsInPlaceForStartupWritesWithApplicationStoreAndOutbox() {
+        ApplicationBeansConfig.WRITTEN.set(null);
+        try {
+            runner.withUserConfiguration(ListenerConfig.class, ApplicationBeansConfig.class)
+                    .run(ctx -> {
+                        assertNull(ctx.getStartupFailure());
+                        assertEquals(StartupWriteConfig.CUSTOM_JSON, ApplicationBeansConfig.WRITTEN.get(),
+                                "the startup write serialised its headers with the custom codec");
+                    });
+        } finally {
+            JsonCodec.resetDefault();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class ApplicationBeansConfig {
+        static final AtomicReference<String> WRITTEN = new AtomicReference<>();
+
+        @Bean
+        JsonCodec customCodec() {
+            return new StubJsonCodec() {
+                @Override
+                public String toJson(Object value) {
+                    return StartupWriteConfig.CUSTOM_JSON;
+                }
+            };
+        }
+
+        @Bean
+        H2OutboxStore applicationStore() {
+            return new H2OutboxStore();
+        }
+
+        @Bean
+        Outbox applicationOutbox(TxContext txContext, H2OutboxStore store) {
+            return Outbox.writerOnly().txContext(txContext).outboxStore(store).build();
+        }
+
+        @Bean
+        InitializingBean writeDuringStartup(OutboxWriter writer, DataSource dataSource) {
+            return () -> {
+                try (Connection conn = dataSource.getConnection(); var st = conn.createStatement()) {
+                    st.execute(new String(OutboxAutoConfigurationTest.class.getResourceAsStream("/schema.sql")
+                            .readAllBytes(), StandardCharsets.UTF_8));
+                }
+                String eventId = new TransactionTemplate(new DataSourceTransactionManager(dataSource))
+                        .execute(status -> writer.write(EventEnvelope.builder("StartupEvent")
+                                .payloadJson("{}").headers(Map.of("phase", "startup")).build()));
+                try (Connection conn = dataSource.getConnection();
+                     var ps = conn.prepareStatement("SELECT headers FROM outbox_event WHERE event_id=?")) {
+                    ps.setString(1, eventId);
+                    try (var rs = ps.executeQuery()) {
+                        assertTrue(rs.next());
+                        WRITTEN.set(rs.getString(1));
+                    }
+                }
+            };
         }
     }
 

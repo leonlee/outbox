@@ -119,7 +119,7 @@ its **Outcome**; the follow-up findings are listed separately at the end.
 | F1 | The M1 check failed Spring Boot startup for configurations that work today | Resolved by not adopting M1 |
 | F2 | A CAS `close()` guard let an overlapping caller return while the first was still draining, so it could tear down the `DataSource` under running workers | `close()` is `synchronized` in `Outbox` and `OutboxDispatcher`; an overlapping call waits |
 | F3 | `ObjectProvider.getIfAvailable()` threw on several `JsonCodec` beans, failing startup | Registration uses `getIfUnique()` and warns instead |
-| F4 | A custom `JsonCodec` was registered only inside the auto-configured `Outbox`, so defining your own `Outbox` lost it | Dedicated `SmartInitializingSingleton` registrar |
+| F4 | A custom `JsonCodec` was registered only inside the auto-configured `Outbox`, so defining your own `Outbox` lost it | Registered by a `BeanPostProcessor` when the first store, `Outbox` or `OutboxWriter` bean initialises — application-defined or auto-configured |
 | F5 | `start()` Javadoc claimed it was safe after `close()`; the poller throws | Javadoc corrected; behaviour kept (an existing test relies on it) |
 | F6 | `InFlightTracker.release` could remove a newer owner's entry | Fixed in #56 (token-scoped release) |
 | F7 | A failing `rollback()` replaced the claim failure | Claim failure kept, rollback failure attached as suppressed |
@@ -127,7 +127,7 @@ its **Outcome**; the follow-up findings are listed separately at the end.
 | F9 | No tests covered the behaviour changes | Every fix above has a test that fails without it |
 | F10 | This file contradicted the code | This revision |
 | F11 | Stale-marker cleanup could delete a *newer* settled marker if its database call returned after the event was re-claimed and settled again, letting a late copy run twice | The marker's token is taken before the call; `releaseSettled(id, token)` removes only that marker |
-| F12 | The codec registrar ran only after every singleton existed, too late for a bean that writes during its own initialisation | Also registered from the auto-configured store and outbox factories, so before any writer can run |
+| F12 | The codec registrar ran only after every singleton existed, too late for a bean that writes during its own initialisation | Same `BeanPostProcessor`: nothing writes without a store, `Outbox` or writer bean, so the codec is in place first — including when the application defines both the store and the `Outbox` |
 | F13 | `InMemoryOutboxStore.markDeferred` read, checked and wrote separately, so a concurrent `markDone` could be overwritten with NEW | Done in one atomic `computeIfPresent` |
 | F14 | `start()` Javadoc said the poller throws after `close()`; it returns early if already started | Javadoc states both cases |
 

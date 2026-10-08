@@ -55,6 +55,7 @@ public final class OutboxDispatcher implements AutoCloseable {
     private final ExecutorService workers;
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final AtomicBoolean accepting = new AtomicBoolean(true);
+    private boolean closed; // guarded by this
     private final AtomicInteger pollCounter = new AtomicInteger(0);
     /**
      * Ids sitting in a queue, waiting for a worker.
@@ -141,7 +142,8 @@ public final class OutboxDispatcher implements AutoCloseable {
                 workers.submit(this::workerLoop);
             }
         } else {
-            // workerCount=0: no workers started; events remain queued (testing only)
+            // workerCount=0: no workers started; events remain queued (testing only). A cached
+            // pool because nothing is ever submitted to it, so it never holds a thread.
             logger.warning("workerCount=0: no dispatch workers started; events will not be processed");
             this.workers = Executors.newCachedThreadPool(new DaemonThreadFactory("outbox-dispatcher-"));
         }
@@ -615,9 +617,17 @@ public final class OutboxDispatcher implements AutoCloseable {
     /**
      * Initiates graceful shutdown: stops accepting new events, drains remaining queued
      * events within the configured drain timeout, then shuts down worker threads.
+     *
+     * <p>Idempotent, and a call that overlaps one already in progress waits for it to finish
+     * rather than returning early, so no caller proceeds to release resources the workers are
+     * still using.
      */
     @Override
-    public void close() {
+    public synchronized void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
         accepting.set(false);
         running.set(false);
         workers.shutdown();
@@ -632,12 +642,16 @@ public final class OutboxDispatcher implements AutoCloseable {
             workers.shutdownNow();
             Thread.currentThread().interrupt();
         }
-        // Log stranded events (poller will retry them on next cycle)
+        // Dropping the in-memory copies loses nothing: hot events were committed before they were
+        // queued and cold events were read from the table. The poller delivers them again — on its
+        // next cycle for unclaimed rows, and only once the lock timeout expires for rows this
+        // instance had claimed in multi-node mode (their leases are not released here).
         int strandedHot = hotQueue.size();
         int strandedCold = coldQueue.size();
         if (strandedHot > 0 || strandedCold > 0) {
             logger.log(Level.INFO, "Shutdown complete with {0} hot and {1} cold events still queued; "
-                    + "poller will retry them", new Object[]{strandedHot, strandedCold});
+                    + "the poller will deliver them again (claimed rows after their lock timeout)",
+                    new Object[]{strandedHot, strandedCold});
         }
         hotQueue.clear();
         coldQueue.clear();
@@ -739,7 +753,8 @@ public final class OutboxDispatcher implements AutoCloseable {
         /**
          * Sets the maximum number of delivery attempts before an event is marked DEAD.
          *
-         * <p>Optional. Defaults to {@code 10}. Must be &ge; 1.
+         * <p>Optional. Defaults to {@code 10}. Must be &ge; 0; {@code 0} marks an event DEAD on its
+         * first failure.
          *
          * @param maxAttempts maximum attempts per event
          * @return this builder

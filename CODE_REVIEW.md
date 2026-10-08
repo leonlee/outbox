@@ -1,158 +1,136 @@
-# Code Review
+# Code Review — outbox 0.9.3-SNAPSHOT
 
-Full code review of the outbox framework. Last updated: 2026-03-02 (v0.9.1-SNAPSHOT).
+Full review of all modules (outbox-core, outbox-jdbc, outbox-gson, outbox-micrometer,
+outbox-spring-boot-starter, outbox-spring-adapter, outbox-testing).
 
-## Fixed Issues
-
-Issues identified and fixed in commit `02fe82e`:
-
-### [C2] Missing `spring-boot-configuration-processor` — Fixed
-
-**Severity:** Critical | **File:** `outbox-spring-boot-starter/pom.xml`
-
-The starter module had no `spring-boot-configuration-processor` dependency, so no
-`spring-configuration-metadata.json` was generated. Users got zero IDE auto-completion
-for `outbox.*` properties.
-
-**Fix:** Added as `<optional>true</optional>` dependency.
+The first attempt at these fixes (#55) was itself reviewed twice before merging; several of its
+fixes were wrong and are corrected below. The fixes were then re-applied on top of the
+duplicate-dispatch work in #56, which had rewritten some of the same code. Every entry ends with
+its **Outcome**; the follow-up findings are listed separately at the end.
 
 ---
 
-### [H1] `withConnection` catches only `SQLException` — Fixed
+## CRITICAL (3)
 
-**Severity:** High | **File:** `outbox-core/.../dispatch/OutboxDispatcher.java:296-303`
+### C1. NoOpConnectionProvider returns null
 
-`withConnection` only caught `SQLException`. If a store method threw `RuntimeException`
-(e.g. `OutboxStoreException`), it propagated into `dispatchEvent`'s catch block, causing
-`handleFailure` to run on a **successfully-processed** event — potentially re-delivering
-or marking DEAD an event whose listener already succeeded.
+- **File:** `outbox-testing/.../NoOpConnectionProvider.java`
+- **Problem:** `getConnection()` returns `null`. Not because of try-with-resources — that skips
+  `close()` for a null resource (JLS 14.20.3) — but because the dispatcher and poller call
+  `conn.setAutoCommit(...)` on it. The NPE is caught and logged by the status-update helper, so
+  with `InMemoryOutboxStore`, the fixture's documented partner, every status update silently fails
+  and events never reach DONE.
+- **Outcome:** Fixed. It now returns a connection proxy whose every method does nothing.
+  The first attempt made it throw and then deleted it; both broke the documented use, and deleting
+  it removed a public class from a published artifact.
 
-**Fix:** Broadened catch to `SQLException | RuntimeException`.
+### C2+C3. markDeferred status differs between the JDBC and in-memory stores
 
----
-
-### [H2] `WriterOnlyBuilder` silently accepts irrelevant config — Fixed
-
-**Severity:** High | **File:** `outbox-core/.../Outbox.java` (WriterOnlyBuilder)
-
-`WriterOnlyBuilder` inherited `listenerRegistry()`, `interceptor()`, `interceptors()`,
-`jsonCodec()`, `intervalMs()`, `batchSize()`, `skipRecent()`, `drainTimeoutMs()` from
-`AbstractBuilder` — all silently ignored at build time. Users could misconfigure without
-any feedback.
-
-**Fix:** Each irrelevant method overridden to throw `UnsupportedOperationException`.
-`metrics()` intentionally kept (see H3).
-
----
-
-### [H3] `WriterOnlyBuilder.build()` discards `MetricsExporter` — Fixed
-
-**Severity:** High | **Files:** `outbox-core/.../Outbox.java:797`,
-`outbox-spring-boot-starter/.../OutboxAutoConfiguration.java:185-198`
-
-`WriterOnlyBuilder.build()` passed `null` for metrics to the `Outbox` constructor, so
-`Outbox.close()` never called `metrics.close()` — leaking Micrometer meters. Auto-config
-also never wired metrics in `WRITER_ONLY` mode.
-
-**Fix:** Pass `metrics` field instead of `null` in `build()`. Wire `builder.metrics(metrics)`
-in auto-config's `WRITER_ONLY` case.
+- **Files:** `AbstractJdbcOutboxStore.markDeferred` (wrote RETRY), `InMemoryOutboxStore.markDeferred` (writes NEW)
+- **Problem:** A deferral (`DispatchResult.RetryAfter`) is not a failure, but the JDBC store marked
+  it RETRY, so monitoring that counts RETRY rows reads deferrals as failures. SPEC §8.2 already
+  specified `status = 0`.
+- **Outcome:** Fixed. JDBC writes NEW. The in-memory store now also matches JDBC in refusing
+  DONE/DEAD rows (it used to revive them, so the in-memory poller redelivered settled events) and in
+  keeping `last_error`.
 
 ---
 
-### [M1] `OutboxPoller.markDead` catches only `SQLException` — Fixed
+## MAJOR (8)
 
-**Severity:** Medium | **File:** `outbox-core/.../poller/OutboxPoller.java:213-220`
+### M1. ExponentialBackoffRetryPolicy with baseDelayMs ≥ maxDelayMs
 
-Same pattern as H1. Broadened catch to `SQLException | RuntimeException`.
+- **Problem:** Every attempt then waits `maxDelayMs` — a fixed delay. That is a coherent
+  configuration, not a malfunction.
+- **Outcome:** Won't fix. The proposed constructor check rejected configurations that work today,
+  and because the Spring Boot starter builds the policy in every mode, it would have failed
+  application startup — including in writer-only and ordered mode, which never retry.
 
----
+### M2. DefaultInFlightTracker expiry uses the wall clock
 
-### [M2] `convertToEnvelope` doesn't reconstruct `availableAt` — Fixed
+- **Problem:** A backward clock adjustment makes `now - at` small or negative, delaying expiry.
+- **Outcome:** Deferred. The delay is bounded by the size of the adjustment, not permanent, and the
+  tracker was rewritten in #56 (token-scoped entries, settled markers). Revisit with monotonic time
+  if it matters in practice.
 
-**Severity:** Low | **File:** `outbox-core/.../poller/OutboxPoller.java:200-211`
+### M3. Outbox.close() reports only the first component failure
 
-Added `available_at` to all SELECT queries (`pollPending`, `selectClaimed`, `queryDead`,
-PostgreSQL `RETURNING`), added `availableAt` field to `OutboxEvent` record, and set it on
-the reconstructed `EventEnvelope` in `convertToEnvelope`.
+- **Outcome:** Fixed. Each component failure is logged at SEVERE before the first is rethrown with
+  the rest suppressed. `close()` is also idempotent and serialised — see F2.
 
----
+### M4. OutboxDispatcher shutdown comment
 
-### [L1] `DefaultJsonCodec` doesn't validate lone surrogates — Fixed
+- **Problem:** "poller will retry them" omits that in multi-node mode a claimed row waits out its
+  lock timeout first. (The first attempt's rewrite claimed immediate redelivery, which was worse.)
+- **Outcome:** Fixed. The comment and the shutdown log both say so.
 
-**Severity:** Low | **File:** `outbox-core/.../util/DefaultJsonCodec.java:159-170`
+### M5. MicrometerMetricsExporter close() racing recording
 
-Added surrogate pair validation: high surrogates must be followed by `\uDC00-\uDFFF`,
-lone low surrogates are rejected.
+- **Outcome:** Fixed (documentation). `close()` must follow the end of recording;
+  `Outbox.close()` guarantees that by closing the exporter last.
 
----
+### M6. DefaultInFlightTracker eviction threshold
 
-### [L2] `DeadEventManager` returns defaults on failure — Fixed
+- **Outcome:** Superseded by the #56 tracker rewrite.
 
-**Severity:** Low | **File:** `outbox-core/.../dead/DeadEventManager.java`
+### M7. DispatchResult.RetryAfter accepts zero delay
 
-Changed from swallowing exceptions (returning `List.of()` / `0` / `false`) to wrapping
-`SQLException` in `RuntimeException` and letting `RuntimeException` propagate. Callers
-can now distinguish database failures from empty results.
+- **Outcome:** Won't fix. A zero delay is valid and consistent with `RetryAfterException`. (The
+  first attempt added the check and then reverted it.)
 
----
+### M8. maxAttempts Javadoc said ≥ 1, code allows 0
 
-### [P1] `AggregateType.name()` / `EventType.name()` default returns `getClass().getName()` — Fixed
-
-**Severity:** High | **Files:** `outbox-core/.../AggregateType.java`, `outbox-core/.../EventType.java`
-
-Both interfaces had `default name() { return this.getClass().getName(); }`. Non-enum
-implementations (anonymous classes, lambdas) would persist unstable class names like
-`Foo$$Lambda$123/0x00000001` to the database, breaking listener routing on restart or
-across JVM versions.
-
-**Fix:** Made `name()` abstract. Enum implementations inherit `Enum.name()` automatically;
-records and classes must override explicitly. All existing implementations already did.
+- **Outcome:** Fixed. Javadoc says ≥ 0, with 0 marking an event DEAD on its first failure.
 
 ---
 
-### [P2] `claimPending` missing `available_at` filtering tests — Fixed
+## MINOR (8)
 
-**Severity:** Medium | **Files:** `outbox-jdbc/.../AbstractOutboxStoreIntegrationTest.java`,
-`outbox-jdbc/.../OutboxPollerTest.java`, `outbox-jdbc/.../OutboxAcceptanceTest.java`
+| ID | Finding | Outcome |
+|----|---------|---------|
+| m1 | `JdbcTemplate.bindParams` had no `Long` branch | Fixed |
+| m2 | Javadoc referenced `io.elestyle.outbox.spi.JsonCodec` | Fixed in #56 |
+| m3 | Planning docs referenced the removed `DefaultJsonCodec` | N/A — historical |
+| m4 | `OutboxPoller.close()` timeout was a magic number | Fixed (`TERMINATION_TIMEOUT_SECONDS`) |
+| m5 | `MySqlOutboxStore.claimPending` transaction requirement undocumented | Fixed |
+| m6 | Negative tracker TTL undocumented | Superseded by the #56 tracker rewrite |
+| m7 | `OutboxDispatcher.close()` had no idempotency guard | Fixed — see F2 for why a CAS guard was wrong |
+| m8 | `Outbox.start()` thread-safety undocumented | Fixed — `synchronized`; Javadoc says it is not restartable |
 
-`pollPending` had `available_at` filtering tests but `claimPending` did not. Also missing:
-`convertToEnvelope` `availableAt` reconstruction tests and end-to-end delayed delivery
-integration test.
+## NIT (4)
 
-**Fix:** Added 8 tests: 4 for `claimPending` `available_at` filtering (delayed insert,
-markRetry, markDeferred, elapsed delay), 3 for `convertToEnvelope` reconstruction (poll,
-claim, immediate event), 1 end-to-end delayed delivery (hot skip → poller → DONE with
-`availableAt` preserved).
+| ID | Finding | Outcome |
+|----|---------|---------|
+| n1 | `workerCount=0` cached pool unexplained | Fixed (comment) |
+| n2 | Redundant `baseDelayMs != 0` check | Fixed |
+| n3 | Gauge fields kept only for `close()` | Fixed (comment) |
+| n4 | `DaemonThreadFactory` counter never resets | Won't fix — cosmetic |
 
 ---
 
-## Reviewed and Verified (No Issues)
+## Follow-up findings (reviews of the first attempt)
 
-Areas specifically checked and found to be correct:
+| ID | Finding | Outcome |
+|----|---------|---------|
+| F1 | The M1 check failed Spring Boot startup for configurations that work today | Resolved by not adopting M1 |
+| F2 | A CAS `close()` guard let an overlapping caller return while the first was still draining, so it could tear down the `DataSource` under running workers | `close()` is `synchronized` in `Outbox` and `OutboxDispatcher`; an overlapping call waits |
+| F3 | `ObjectProvider.getIfAvailable()` threw on several `JsonCodec` beans, failing startup | Registration uses `getIfUnique()` and warns instead |
+| F4 | A custom `JsonCodec` was registered only inside the auto-configured `Outbox`, so defining your own `Outbox` lost it | Dedicated `SmartInitializingSingleton` registrar |
+| F5 | `start()` Javadoc claimed it was safe after `close()`; the poller throws | Javadoc corrected; behaviour kept (an existing test relies on it) |
+| F6 | `InFlightTracker.release` could remove a newer owner's entry | Fixed in #56 (token-scoped release) |
+| F7 | A failing `rollback()` replaced the claim failure | Claim failure kept, rollback failure attached as suppressed |
+| F8 | `fetchPendingRows` re-read capacity; an empty batch from that zeroed the lag gauge | Capacity read once per poll and passed in |
+| F9 | No tests covered the behaviour changes | Every fix above has a test that fails without it |
+| F10 | This file contradicted the code | This revision |
 
-- **SQL injection prevention:** All queries use parameterized statements. `TableNames.validate()`
-  enforces `[a-zA-Z_][a-zA-Z0-9_]*` for table names used in string concatenation.
-- **Connection lifecycle:** `try-with-resources` used consistently across `OutboxPoller`,
-  `OutboxDispatcher.withConnection`, `DeadEventManager`, and `OutboxPurgeScheduler`.
-  `OutboxPoller.fetchPendingRows` properly rolls back on failure within try-with-resources.
-- **Thread safety:** `AtomicBoolean`/`AtomicInteger` for flags, `volatile` for visibility,
-  `ConcurrentHashMap` in `DefaultListenerRegistry`, `synchronized` on `OutboxPoller` lifecycle
-  methods. `OutboxDispatcher.pollCounter` overflow handled correctly via `& 0x7FFFFFFF` bitmask.
-- **Shutdown ordering:** `Outbox.close()` shuts down purgeScheduler → poller → dispatcher → metrics.
-  This is correct: the poller should stop producing before the dispatcher stops consuming, and
-  metrics should be closed last so shutdown activity is still recorded.
-- **Queue draining on shutdown:** `OutboxDispatcher.close()` clears in-memory queues after workers
-  stop. Events are already persisted in the database, so the poller will re-fetch them on
-  restart. The "stranded" log message confirms this is by design.
-- **Fair queue distribution:** The `pollCounter % 3 == 2` pattern provides stable 2:1 hot:cold
-  ratio even across int overflow, thanks to the sign-bit mask.
-- **Retry policy overflow:** `ExponentialBackoffRetryPolicy` caps at `attempts >= 31`, guards
-  against multiplication overflow, and applies `Math.min(maxDelayMs, ...)` as final bound.
-- **WriterHook suppression:** `OutboxWriter.writeAll()` returns empty list when
-  `beforeWrite` returns null/empty. This is the documented contract — hooks that
-  intentionally suppress writes should not generate warnings.
-- **Spring auto-config:** All four mode branches properly validate required fields via the
-  builder's own `validateRequired()`. No configuration can slip through without validation.
-- **MicrometerMetricsExporter.close():** The `volatile boolean closed` guard is sufficient.
-  Worst case is a harmless metric recorded between `closed = true` and meter removal.
-  Micrometer's `MeterRegistry` is itself thread-safe.
+---
+
+## Summary
+
+| Outcome | Original (22) | Follow-up (10) |
+|---------|---------------|----------------|
+| Fixed (here or in #56) | 15 | 9 |
+| Superseded by #56 | 2 | — |
+| Won't fix / N/A | 4 | — |
+| Resolved by dropping M1 | — | 1 |
+| Deferred | 1 | — |

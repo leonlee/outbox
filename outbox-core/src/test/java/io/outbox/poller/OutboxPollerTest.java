@@ -5,6 +5,7 @@ import io.outbox.dispatch.QueuedEvent.ClaimLease;
 import io.outbox.model.OutboxEvent;
 import io.outbox.spi.ConnectionProvider;
 import io.outbox.spi.JsonCodec;
+import io.outbox.spi.MetricsExporter;
 import io.outbox.spi.OutboxStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -12,16 +13,22 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -178,6 +185,113 @@ class OutboxPollerTest {
         }
 
         assertNull(seen[0], "no claim locking means no lease");
+    }
+
+    /**
+     * Capacity is read once per poll. Reading it again inside the fetch could find it gone, and
+     * the empty batch that produced reset the lag gauge to zero while rows were still waiting.
+     */
+    @Test
+    void capacityGoneMidPollDoesNotReportZeroLag() {
+        OutboxStore store = new StubStore() {
+            @Override
+            public List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit) {
+                return List.of(row("waiting"));
+            }
+        };
+        AtomicInteger capacityReads = new AtomicInteger();
+        OutboxPollerHandler handler = new OutboxPollerHandler() {
+            @Override
+            public boolean handle(EventEnvelope event, int attempts) {
+                return true;
+            }
+
+            @Override
+            public int availableCapacity() {
+                // Room for one at the first look, none after: the queue filled in between.
+                return capacityReads.getAndIncrement() == 0 ? 1 : 0;
+            }
+        };
+        List<Long> lags = new CopyOnWriteArrayList<>();
+        MetricsExporter metrics = (MetricsExporter) Proxy.newProxyInstance(
+                MetricsExporter.class.getClassLoader(),
+                new Class<?>[]{MetricsExporter.class},
+                (proxy, method, args) -> {
+                    if ("recordOldestLagMs".equals(method.getName())) {
+                        lags.add((Long) args[0]);
+                    }
+                    return null;
+                });
+
+        try (OutboxPoller poller = OutboxPoller.builder()
+                .connectionProvider(CP)
+                .outboxStore(store)
+                .handler(handler)
+                .metrics(metrics)
+                .build()) {
+            poller.poll();
+        }
+
+        assertFalse(lags.contains(0L), "a row has been waiting since the epoch; lag readings were " + lags);
+    }
+
+    /**
+     * A broken connection fails the rollback too. The rollback's error must not replace the claim
+     * failure, which is the one that says what went wrong.
+     */
+    @Test
+    void aFailedRollbackDoesNotHideTheClaimFailure() {
+        OutboxStore store = new StubStore() {
+            @Override
+            public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
+                                                  Instant lockExpiry, Duration skipRecent, int limit) {
+                throw new IllegalStateException("claim failed");
+            }
+        };
+        ConnectionProvider brokenRollback = () -> (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> {
+                    if ("rollback".equals(method.getName())) {
+                        throw new SQLException("connection closed");
+                    }
+                    return null;
+                });
+        List<Throwable> logged = new CopyOnWriteArrayList<>();
+        Handler capture = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                if (record.getThrown() != null) {
+                    logged.add(record.getThrown());
+                }
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        Logger logger = Logger.getLogger(OutboxPoller.class.getName());
+        logger.addHandler(capture);
+        try (OutboxPoller poller = OutboxPoller.builder()
+                .connectionProvider(brokenRollback)
+                .outboxStore(store)
+                .handler((event, attempts) -> true)
+                .claimLocking("owner-1", Duration.ofMinutes(5))
+                .build()) {
+            poller.poll();
+        } finally {
+            logger.removeHandler(capture);
+        }
+
+        assertEquals(1, logged.size(), "one failure logged: " + logged);
+        Throwable failure = logged.get(0);
+        assertEquals("claim failed", failure.getMessage());
+        assertEquals(1, failure.getSuppressed().length);
+        assertEquals("connection closed", failure.getSuppressed()[0].getMessage());
     }
 
     private static void awaitOrFail(CountDownLatch latch) {

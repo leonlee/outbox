@@ -73,10 +73,14 @@ public class InMemoryOutboxStore implements OutboxStore {
     @Override
     public int markDeferred(Connection conn, String eventId, Instant nextAt) {
         StoredEvent existing = events.get(eventId);
-        if (existing == null) return 0;
+        // Same rule as the JDBC stores: a settled event is never brought back, and the last
+        // error stays for whoever inspects the row.
+        if (existing == null || existing.status == EventStatus.DONE || existing.status == EventStatus.DEAD) {
+            return 0;
+        }
         events.put(eventId, new StoredEvent(
                 existing.envelope, EventStatus.NEW,
-                existing.attempts, nextAt, null));
+                existing.attempts, nextAt, existing.error));
         return 1;
     }
 

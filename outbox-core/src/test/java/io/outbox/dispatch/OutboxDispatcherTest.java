@@ -1214,6 +1214,54 @@ class OutboxDispatcherTest {
         }
     }
 
+    /**
+     * A close() that overlaps one in progress must wait for it. Returning early lets the second
+     * caller go on to tear down what the workers still use — the DataSource, typically — while
+     * they are draining, and their status writes fail.
+     */
+    @Test
+    void anOverlappingCloseWaitsForTheDrainToFinish() throws Exception {
+        CountDownLatch listenerStarted = new CountDownLatch(1);
+        CountDownLatch finishListener = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry();
+        registry.register(ONCE, event -> {
+            listenerStarted.countDown();
+            awaitQuietly(finishListener);
+            return DispatchResult.done();
+        });
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp())
+                .outboxStore(new StubOutboxStore())
+                .listenerRegistry(registry)
+                .workerCount(1)
+                .drainTimeoutMs(5000)
+                .build();
+        try {
+            d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0));
+            assertTrue(listenerStarted.await(5, TimeUnit.SECONDS));
+
+            Thread first = new Thread(d::close);
+            first.start();
+            Thread.sleep(100);
+            CountDownLatch secondReturned = new CountDownLatch(1);
+            Thread second = new Thread(() -> {
+                d.close();
+                secondReturned.countDown();
+            });
+            second.start();
+
+            assertFalse(secondReturned.await(300, TimeUnit.MILLISECONDS),
+                    "the second close must not return while the first is still draining");
+            finishListener.countDown();
+            assertTrue(secondReturned.await(5, TimeUnit.SECONDS));
+            first.join(5000);
+            assertFalse(first.isAlive());
+        } finally {
+            finishListener.countDown();
+            d.close();
+        }
+    }
+
     private static void awaitQuietly(CountDownLatch latch) {
         try {
             latch.await(5, TimeUnit.SECONDS);

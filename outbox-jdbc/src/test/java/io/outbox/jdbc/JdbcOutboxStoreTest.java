@@ -170,6 +170,26 @@ class JdbcOutboxStoreTest {
         }
     }
 
+    /** A deferral is not a failure: NEW, as InMemoryOutboxStore has it, with attempts untouched. */
+    @Test
+    void markDeferredResetsToNewWithoutCountingAnAttempt() throws SQLException {
+        String eventId = insertTestEvent();
+
+        try (Connection conn = dataSource.getConnection()) {
+            outboxStore.markRetry(conn, eventId, Instant.now(), "first failure");
+            assertEquals(1, outboxStore.markDeferred(conn, eventId, Instant.now().plusSeconds(60)));
+
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT status, attempts FROM outbox_event WHERE event_id = ?")) {
+                ps.setString(1, eventId);
+                ResultSet rs = ps.executeQuery();
+                assertTrue(rs.next());
+                assertEquals(EventStatus.NEW.code(), rs.getInt("status"));
+                assertEquals(1, rs.getInt("attempts"));
+            }
+        }
+    }
+
     @Test
     void markRetryTruncatesLongError() throws SQLException {
         String eventId = insertTestEvent();

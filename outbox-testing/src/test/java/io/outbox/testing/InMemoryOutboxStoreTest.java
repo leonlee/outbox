@@ -88,6 +88,24 @@ class InMemoryOutboxStoreTest {
     }
 
     @Test
+    void markDeferredLeavesSettledEventsAlone() {
+        EventEnvelope done = EventEnvelope.ofJson("Test", "{}");
+        EventEnvelope dead = EventEnvelope.ofJson("Test", "{}");
+        store.insertNew(null, done);
+        store.insertNew(null, dead);
+        store.markDone(null, done.eventId());
+        store.markDead(null, dead.eventId(), "boom");
+
+        Instant nextAt = Instant.now().plusSeconds(30);
+        assertEquals(0, store.markDeferred(null, done.eventId(), nextAt));
+        assertEquals(0, store.markDeferred(null, dead.eventId(), nextAt));
+
+        // As in the JDBC stores — otherwise the in-memory poller would redeliver a settled event.
+        assertEquals(EventStatus.DONE, store.statusOf(done.eventId()));
+        assertEquals(EventStatus.DEAD, store.statusOf(dead.eventId()));
+    }
+
+    @Test
     void pollPendingReturnsNewEvents() {
         store.insertNew(null, EventEnvelope.ofJson("A", "{}"));
         store.insertNew(null, EventEnvelope.ofJson("B", "{}"));

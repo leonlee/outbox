@@ -10,6 +10,7 @@ import io.outbox.jdbc.store.AbstractJdbcOutboxStore;
 import io.outbox.jdbc.store.H2OutboxStore;
 import io.outbox.registry.DefaultListenerRegistry;
 import io.outbox.spi.ConnectionProvider;
+import io.outbox.spi.JsonCodec;
 import io.outbox.spi.TxContext;
 import io.outbox.spring.SpringTxContext;
 import org.junit.jupiter.api.Test;
@@ -28,6 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class OutboxAutoConfigurationTest {
@@ -278,6 +280,97 @@ class OutboxAutoConfigurationTest {
                         "outbox.dispatcher.suppress-replays=true",
                         "outbox.dispatcher.in-flight-ttl-ms=5000")
                 .run(ctx -> assertNull(ctx.getStartupFailure()));
+    }
+
+    // ── Custom JsonCodec ────────────────────────────────────────────
+
+    /** An application's own JsonCodec bean must become the codec the outbox actually uses. */
+    @Test
+    void aCustomJsonCodecBeanBecomesTheDefault() {
+        JsonCodec custom = new StubJsonCodec();
+        try {
+            runner.withUserConfiguration(ListenerConfig.class)
+                    .withBean(JsonCodec.class, () -> custom)
+                    .run(ctx -> {
+                        assertNull(ctx.getStartupFailure());
+                        assertSame(custom, JsonCodec.getDefault());
+                    });
+        } finally {
+            JsonCodec.resetDefault();
+        }
+    }
+
+    /**
+     * Registering the codec used to be a side effect of the auto-configured Outbox, so an
+     * application that defined its own Outbox silently lost its codec.
+     */
+    @Test
+    void aCustomJsonCodecIsHonouredAlongsideACustomOutbox() {
+        JsonCodec custom = new StubJsonCodec();
+        try {
+            runner.withUserConfiguration(ListenerConfig.class)
+                    .withBean(JsonCodec.class, () -> custom)
+                    .withBean(Outbox.class, () -> Outbox.writerOnly()
+                            .txContext(STUB_TX)
+                            .outboxStore(new H2OutboxStore())
+                            .build())
+                    .run(ctx -> {
+                        assertNull(ctx.getStartupFailure());
+                        assertSame(custom, JsonCodec.getDefault());
+                    });
+        } finally {
+            JsonCodec.resetDefault();
+        }
+    }
+
+    /** Two codecs with neither @Primary is the application's ambiguity; it must not fail startup. */
+    @Test
+    void severalJsonCodecBeansWithoutAPrimaryDoNotFailStartup() {
+        JsonCodec baseline = new StubJsonCodec();
+        JsonCodec.setDefault(baseline);
+        try {
+            runner.withUserConfiguration(ListenerConfig.class)
+                    .withBean("firstCodec", JsonCodec.class, StubJsonCodec::new)
+                    .withBean("secondCodec", JsonCodec.class, StubJsonCodec::new)
+                    .run(ctx -> {
+                        assertNull(ctx.getStartupFailure());
+                        assertSame(baseline, JsonCodec.getDefault(), "neither codec is picked");
+                    });
+        } finally {
+            JsonCodec.resetDefault();
+        }
+    }
+
+    private static final TxContext STUB_TX = new TxContext() {
+        @Override
+        public boolean isTransactionActive() {
+            return false;
+        }
+
+        @Override
+        public Connection currentConnection() {
+            throw new IllegalStateException("no transaction");
+        }
+
+        @Override
+        public void afterCommit(Runnable callback) {
+        }
+
+        @Override
+        public void afterRollback(Runnable callback) {
+        }
+    };
+
+    private static final class StubJsonCodec implements JsonCodec {
+        @Override
+        public String toJson(Object value) {
+            return "{}";
+        }
+
+        @Override
+        public <T> T fromJson(String json, Class<T> type) {
+            throw new UnsupportedOperationException();
+        }
     }
 
     // ── Purge wiring ────────────────────────────────────────────────

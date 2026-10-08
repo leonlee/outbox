@@ -57,6 +57,7 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
     private final Counter hotSkippedStale;
     private final Counter hotTripped;
     private final Counter dispatchSuppressed;
+    // Held only so close() can remove them; the gauges read the Atomic* fields below.
     private final Gauge hotDepthGauge;
     private final Gauge coldDepthGauge;
     private final Gauge lagGauge;
@@ -266,6 +267,10 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
 
     /**
      * Removes all meters registered by this exporter from the registry.
+     *
+     * <p>Call it <strong>after</strong> the dispatcher and poller have stopped recording.
+     * {@link io.outbox.Outbox#close()} does: it closes the exporter last. The {@code closed} flag
+     * on the recording methods is a best-effort guard, not a substitute for that ordering.
      *
      * <p>Call this when the exporter is no longer needed (e.g. when the
      * {@link io.outbox.Outbox} is closed) to prevent stale gauges.

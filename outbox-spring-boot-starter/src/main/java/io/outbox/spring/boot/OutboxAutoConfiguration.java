@@ -28,6 +28,7 @@ import io.outbox.spi.OutboxStore;
 import io.outbox.spi.TxContext;
 import io.outbox.spring.SpringTxContext;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -78,6 +79,33 @@ public class OutboxAutoConfiguration {
         JacksonJsonCodec codec = new JacksonJsonCodec(objectMapper);
         JsonCodec.setDefault(codec);
         return codec;
+    }
+
+    /**
+     * Makes the application's own {@link JsonCodec} bean, if it defines one, the global default
+     * that {@code EventEnvelope.payload()} and the JDBC stores use. Without this a custom codec
+     * bean is silently ignored: the Jackson codec above backs off for it, and the default falls
+     * through to {@code ServiceLoader}.
+     *
+     * <p>A bean of its own rather than a side effect of {@code outbox()}, which backs off when the
+     * application defines its own {@code Outbox} — the codec must be honoured either way. Several
+     * codec beans with none {@code @Primary} are left alone, with a warning, instead of failing
+     * startup over a choice the framework cannot make.
+     *
+     * @param codecs the application's JsonCodec beans, if any
+     * @return the registrar
+     */
+    @Bean
+    public SmartInitializingSingleton outboxJsonCodecRegistrar(ObjectProvider<JsonCodec> codecs) {
+        return () -> {
+            JsonCodec codec = codecs.getIfUnique();
+            if (codec != null) {
+                JsonCodec.setDefault(codec);
+            } else if (codecs.stream().findAny().isPresent()) {
+                LOGGER.warning("Several JsonCodec beans and none is @Primary, so the outbox keeps its "
+                        + "default codec. Mark the one it should use @Primary.");
+            }
+        };
     }
 
     @Bean

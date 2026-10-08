@@ -38,7 +38,7 @@ public final class ExponentialBackoffRetryPolicy implements RetryPolicy {
         } else {
             long shift = 1L << (attempts - 1);
             // Guard against overflow: if shift exceeds maxDelayMs/baseDelayMs, cap directly
-            expDelay = (baseDelayMs != 0 && shift > maxDelayMs / baseDelayMs)
+            expDelay = (shift > maxDelayMs / baseDelayMs)
                     ? Long.MAX_VALUE : baseDelayMs * shift;
         }
         long capped = Math.min(maxDelayMs, expDelay);

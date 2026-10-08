@@ -260,7 +260,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     @Override
     public int markDeferred(Connection conn, String eventId, Instant nextAt) {
         String sql = "UPDATE " + tableName() +
-                " SET status=" + EventStatus.RETRY.code() +
+                " SET status=" + EventStatus.NEW.code() +
                 ", available_at=?, locked_by=NULL, locked_at=NULL" +
                 " WHERE event_id=? AND status NOT IN " + TERMINAL_STATUS_IN;
         return JdbcTemplate.update(conn, sql, Timestamp.from(nextAt), eventId);
@@ -295,7 +295,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
                                           Instant lockExpiry, Duration skipRecent, int limit) {
         Objects.requireNonNull(ownerId, "ownerId");
-        // Truncate to millis so stored value matches query (DB may drop nanos)
+        // The lease this claim writes; see leaseTimestamp() for why it is truncated and offset
         Instant nowMs = leaseTimestamp(now);
         Instant recentCutoff = recentCutoff(now, skipRecent);
         // Phase 1: UPDATE with subquery (H2-compatible default)

@@ -363,7 +363,7 @@ Header keys must be non-null when setting `headers(...)`.
 ## 5. Spring Boot Starter
 
 The `outbox-spring-boot-starter` auto-configures the entire outbox framework from a `DataSource`. No manual
-`@Configuration` class needed.
+`@Configuration` class needed. It requires Spring Boot 4 (on Spring Boot 3, stay on 0.10.x).
 
 ### Add Dependency
 
@@ -1405,7 +1405,7 @@ classpath, you can provide a custom codec for better performance or compatibilit
 - You want to use your existing Jackson/Gson `ObjectMapper` for consistency
 - You need better performance for very large payloads or header maps
 - You want to leverage Jackson's streaming parser
-- The Spring Boot Starter auto-configures `JacksonJsonCodec` when Jackson is on the classpath
+- The Spring Boot Starter auto-configures `JacksonJsonCodec` from Spring Boot's Jackson 3 `JsonMapper`
 
 ### Implement the Interface
 
@@ -1470,7 +1470,7 @@ var outboxStore = JdbcOutboxStores.detect(dataSource);
 
 Alternatively, register your codec via `ServiceLoader` by placing a file at
 `META-INF/services/io.outbox.spi.JsonCodec` containing your implementation class name (see `outbox-gson` for an
-example). The Spring Boot Starter auto-configures `JacksonJsonCodec` when Jackson is on the classpath.
+example). The Spring Boot Starter auto-configures `JacksonJsonCodec` from Spring Boot's Jackson 3 `JsonMapper`.
 
 ---
 

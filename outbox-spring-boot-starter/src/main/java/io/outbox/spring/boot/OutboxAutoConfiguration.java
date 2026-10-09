@@ -1,6 +1,5 @@
 package io.outbox.spring.boot;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.outbox.Outbox;
 import io.outbox.OutboxWriter;
 import io.outbox.dispatch.EventInterceptor;
@@ -33,9 +32,11 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import tools.jackson.databind.json.JsonMapper;
 
 import javax.sql.DataSource;
 import java.time.Duration;
@@ -54,7 +55,10 @@ import java.util.logging.Logger;
  * @see OutboxProperties
  * @see OutboxMicrometerAutoConfiguration
  */
-@AutoConfiguration(after = DataSourceAutoConfiguration.class)
+// Jackson by name: its auto-configuration module is optional, and without the ordering this class
+// sorts ahead of it, so the codec's @ConditionalOnBean(JsonMapper) would never see a mapper.
+@AutoConfiguration(after = DataSourceAutoConfiguration.class,
+        afterName = "org.springframework.boot.jackson.autoconfigure.JacksonAutoConfiguration")
 @ConditionalOnClass(Outbox.class)
 @ConditionalOnBean(DataSource.class)
 @EnableConfigurationProperties(OutboxProperties.class)
@@ -73,13 +77,19 @@ public class OutboxAutoConfiguration {
      */
     private static final long DEFAULT_IN_FLIGHT_TTL_MS = 60_000L;
 
-    @Bean
-    @ConditionalOnMissingBean(JsonCodec.class)
-    @ConditionalOnBean(ObjectMapper.class)
-    public JacksonJsonCodec jacksonJsonCodec(ObjectMapper objectMapper) {
-        JacksonJsonCodec codec = new JacksonJsonCodec(objectMapper);
-        JsonCodec.setDefault(codec);
-        return codec;
+    /** Separate class so that Jackson stays optional: its types are only touched when present. */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(JsonMapper.class)
+    static class JacksonJsonCodecConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(JsonCodec.class)
+        @ConditionalOnBean(JsonMapper.class)
+        public JacksonJsonCodec jacksonJsonCodec(JsonMapper jsonMapper) {
+            JacksonJsonCodec codec = new JacksonJsonCodec(jsonMapper);
+            JsonCodec.setDefault(codec);
+            return codec;
+        }
     }
 
     /**

@@ -16,12 +16,15 @@ import io.outbox.spring.SpringTxContext;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
-import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+import org.springframework.boot.jackson.autoconfigure.JacksonAutoConfiguration;
+import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
+import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.json.JsonMapper;
 
 import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
@@ -285,6 +288,39 @@ class OutboxAutoConfigurationTest {
                         "outbox.dispatcher.suppress-replays=true",
                         "outbox.dispatcher.in-flight-ttl-ms=5000")
                 .run(ctx -> assertNull(ctx.getStartupFailure()));
+    }
+
+    // ── Jackson codec ───────────────────────────────────────────────
+
+    /**
+     * Auto-configurations are sorted by class name before their ordering is applied, so without an
+     * explicit ordering this one ran ahead of Boot's Jackson auto-configuration and the codec's
+     * mapper condition never matched.
+     */
+    @Test
+    void bootsJsonMapperBacksTheDefaultCodec() {
+        try {
+            runner.withConfiguration(AutoConfigurations.of(JacksonAutoConfiguration.class))
+                    .withUserConfiguration(ListenerConfig.class)
+                    .run(ctx -> {
+                        assertNull(ctx.getStartupFailure());
+                        assertSame(ctx.getBean(JacksonJsonCodec.class), JsonCodec.getDefault());
+                    });
+        } finally {
+            JsonCodec.resetDefault();
+        }
+    }
+
+    /** Jackson is optional: without it the outbox still starts, just without the Jackson codec. */
+    @Test
+    void startsWithoutJackson() {
+        runner.withConfiguration(AutoConfigurations.of(JacksonAutoConfiguration.class))
+                .withClassLoader(new FilteredClassLoader(JsonMapper.class))
+                .withUserConfiguration(ListenerConfig.class)
+                .run(ctx -> {
+                    assertNull(ctx.getStartupFailure());
+                    assertTrue(ctx.getBeansOfType(JacksonJsonCodec.class).isEmpty());
+                });
     }
 
     // ── Custom JsonCodec ────────────────────────────────────────────

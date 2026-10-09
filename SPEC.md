@@ -184,8 +184,9 @@ Classes:
   event/aggregate type specification
 - `OutboxListenerRegistrar` - `SmartInitializingSingleton` that scans `@OutboxListener` beans and `BoundEventListener`
   beans, registering them in the `DefaultListenerRegistry`
-- `JacksonJsonCodec` - Jackson-based `JsonCodec` using application's `ObjectMapper`; auto-configured and set as default
-  via `JsonCodec.setDefault()`
+- `JacksonJsonCodec` - Jackson 3-based `JsonCodec` using the application's `JsonMapper`; auto-configured (after
+  Spring Boot's `JacksonAutoConfiguration`) and set as default via `JsonCodec.setDefault()`. Jackson 2 is not
+  supported: applications on Spring Boot's Jackson 2 bridge define their own `JsonCodec` bean
 
 Conditions:
 

@@ -333,6 +333,7 @@ See [TUTORIAL.md](TUTORIAL.md#5-spring-boot-starter) for the full guide with all
 ## Requirements
 
 - Java 17 or later
+- Spring Boot 4.x for `outbox-spring-boot-starter` (on Spring Boot 3, stay on 0.10.x)
 
 ## Documentation
 

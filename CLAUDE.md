@@ -291,27 +291,38 @@ outbox-jdbc/src/main/java/
 
 Published to Maven Central (`io.github.leonlee` groupId). CI workflow (`.github/workflows/publish.yml`) auto-deploys on
 `v*` tags with GPG signing, validates tag matches POM version, and creates a GitHub Release with auto-generated notes.
+`docs.yml` rebuilds the Javadoc site on the same tags.
 
-Uses `versions-maven-plugin` for version updates. **Caveat**: `versions:set` won't update
+Releases go through a PR. Uses `versions-maven-plugin` for version updates. **Caveat**: `versions:set` won't update
 `samples/outbox-spring-demo/pom.xml` or `samples/outbox-spring-boot-starter-demo/pom.xml` (both use Spring Boot
 parent) — must update manually.
 
 ```bash
-# 1. Set release version (updates 8 of 10 pom.xml)
+git switch -c release/X main
+# 1. Set release version (updates 12 of 14 pom.xml)
 mvn versions:set -DnewVersion=X -DgenerateBackupPoms=false
-# 2. Manually update samples/outbox-spring-demo/pom.xml and samples/outbox-spring-boot-starter-demo/pom.xml <version>
+# 2. Manually update <version> in samples/outbox-spring-demo/pom.xml and samples/outbox-spring-boot-starter-demo/pom.xml,
+#    and the dependency versions in README.md and TUTORIAL.md
 # 3. Verify
 mvn clean test
-# 4. Commit and tag
 git commit -am "release: X"
-git tag vX
-# 5. Bump to next dev version
+# 4. Bump to next dev version (sample poms by hand again; README/TUTORIAL stay at X)
 mvn versions:set -DnewVersion=Y-SNAPSHOT -DgenerateBackupPoms=false
-# 6. Manually update samples/outbox-spring-demo/pom.xml and samples/outbox-spring-boot-starter-demo/pom.xml <version>
 git commit -am "chore: bump version to Y-SNAPSHOT"
-# 7. Push (tag triggers publish workflow → deploy to Maven Central + GitHub release)
-git push && git push origin vX
+# 5. Push, open a PR, merge it with a merge commit (not squash) so the release commit lands on main
+git push -u origin release/X
+# 6. Tag the release commit (tag triggers publish → Maven Central + GitHub Release + Javadoc site)
+git switch main && git pull
+git tag vX "$(git log --no-merges --format=%H --grep='^release: X$' -1)"
+git push origin vX
 ```
+
+Tag the `release: X` commit, never the PR merge commit: the merge carries `Y-SNAPSHOT` and fails the tag/POM check.
+`--no-merges` matters because the merge commit's message can contain the PR title. If Central rejects the bundle, the
+version can be reused: fix on a new release PR, then move the tag to the new release commit.
+
+`publish.yml` pins Maven 3.9.16: Maven 3.10.0 writes resolver files into the Central staging directory and Central
+rejects the bundle ("does NOT have a .pom file", apache/maven#13388). Drop the pin once that issue is fixed.
 
 Only library modules are published: `outbox-core`, `outbox-gson`, `outbox-jdbc`, `outbox-spring-adapter`,
 `outbox-micrometer`, `outbox-spring-boot-starter`, `outbox-testing` (not samples or benchmarks).

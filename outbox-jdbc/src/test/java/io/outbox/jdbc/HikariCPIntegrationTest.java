@@ -89,9 +89,8 @@ class HikariCPIntegrationTest {
 
         assertTrue(latch.await(2, TimeUnit.SECONDS));
         awaitStatus(eventId, EventStatus.DONE, 2_000);
-        assertEquals(0, hikariDs.getHikariPoolMXBean().getActiveConnections());
-
         dispatcher.close();
+        assertEquals(0, hikariDs.getHikariPoolMXBean().getActiveConnections());
     }
 
     @Test
@@ -119,9 +118,8 @@ class HikariCPIntegrationTest {
         for (String id : eventIds) {
             awaitStatus(id, EventStatus.DONE, 3_000);
         }
-        assertEquals(0, hikariDs.getHikariPoolMXBean().getActiveConnections());
-
         dispatcher.close();
+        assertEquals(0, hikariDs.getHikariPoolMXBean().getActiveConnections());
     }
 
     @Test
@@ -221,9 +219,8 @@ class HikariCPIntegrationTest {
         for (String id : eventIds) {
             assertEquals(EventStatus.DONE.code(), getStatus(id));
         }
-        assertEquals(0, hikariDs.getHikariPoolMXBean().getActiveConnections());
-
         dispatcher.close();
+        assertEquals(0, hikariDs.getHikariPoolMXBean().getActiveConnections());
     }
 
     @Test

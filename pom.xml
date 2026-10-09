@@ -57,7 +57,7 @@
         <mysql-connector.version>9.6.0</mysql-connector.version>
         <postgresql.version>42.7.10</postgresql.version>
         <hikaricp.version>7.1.0</hikaricp.version>
-        <testcontainers.version>2.0.3</testcontainers.version>
+        <testcontainers.version>2.0.5</testcontainers.version>
     </properties>
 
     <dependencyManagement>

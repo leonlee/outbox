@@ -32,9 +32,9 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
 - **outbox-spring-adapter**: Optional `SpringTxContext` for Spring transaction integration.
 - **outbox-micrometer**: Micrometer metrics bridge (`MicrometerMetricsExporter`) for Prometheus/Grafana.
 - **outbox-gson**: Gson-based `JsonCodec` implementation. Auto-discovered via `ServiceLoader`.
-- **outbox-spring-boot-starter**: Spring Boot auto-configuration starter. Auto-wires `Outbox`, `OutboxWriter`, store,
+- **outbox-spring-boot-starter**: Spring Boot 4 auto-configuration starter. Auto-wires `Outbox`, `OutboxWriter`, store,
   poller, dispatcher from `application.properties`. `@OutboxListener` annotation and `BoundEventListener` bean
-  discovery for declarative listener registration. `JacksonJsonCodec` auto-configured with Spring's `ObjectMapper`.
+  discovery for declarative listener registration. `JacksonJsonCodec` auto-configured with Spring Boot's Jackson 3 `JsonMapper`.
   `OutboxLifecycle` (`SmartLifecycle`) starts the poller after all listeners are registered, eliminating the startup race.
   `outbox.purge.enabled` applies in every mode (status-based purger in dispatcher modes, age-based in writer-only).
   Dispatcher duplicate controls: `outbox.dispatcher.{hot-path-enabled,hot-trip-ms,suppress-replays,in-flight-ttl-ms,
@@ -206,7 +206,7 @@ outbox-jdbc/src/main/java/
 - **JsonCodec** (`io.outbox.spi`): SPI interface for JSON serialization (`toJson(Object)`, `fromJson(String, Class)`,
   `parseStringMap(String)`). Resolved via `setDefault()` or `ServiceLoader` from
   `META-INF/services/io.outbox.spi.JsonCodec`. `outbox-gson` provides `GsonJsonCodec` (auto-discovered);
-  `outbox-spring-boot-starter` provides `JacksonJsonCodec` (auto-configured with Spring's `ObjectMapper`).
+  `outbox-spring-boot-starter` provides `JacksonJsonCodec` (auto-configured with Spring Boot's Jackson 3 `JsonMapper`).
 - **TableNames**: Shared utility in `io.outbox.jdbc` for table name validation (regex `[a-zA-Z_][a-zA-Z0-9_]*`).
 - **OutboxWriter**: Interface for writing events. Four methods: `write(EventEnvelope)`, `write(String, String)`,
   `write(EventType, String)`, `writeAll(List)`. Default implementation is `DefaultOutboxWriter`.

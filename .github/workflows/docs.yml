@@ -1,13 +1,9 @@
 name: Publish Javadoc
 
+# The site documents the latest release, so rebuild when one is tagged.
 on:
   push:
-    branches: [ main ]
-    paths:
-      - 'outbox-core/src/main/java/**'
-      - 'outbox-jdbc/src/main/java/**'
-      - 'outbox-spring-adapter/src/main/java/**'
-      - 'outbox-micrometer/src/main/java/**'
+    tags: [ 'v*' ]
   workflow_dispatch:
 
 permissions:
@@ -45,7 +41,8 @@ jobs:
           cache: maven
 
       - name: Generate Javadoc
-        run: mvn -B javadoc:aggregate
+        # Library API only: leave out the benchmarks and samples modules.
+        run: mvn -B javadoc:aggregate -DexcludePackageNames='io.outbox.benchmark:io.outbox.benchmark.*:io.outbox.demo:io.outbox.demo.*'
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5

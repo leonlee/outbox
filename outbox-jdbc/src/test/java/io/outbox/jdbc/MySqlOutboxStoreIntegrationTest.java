@@ -4,15 +4,16 @@ import io.outbox.jdbc.store.AbstractJdbcOutboxStore;
 import io.outbox.jdbc.store.MySqlOutboxStore;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
-import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.mysql.MySQLContainer;
 
 import javax.sql.DataSource;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
+import java.util.Map;
 
 @DockerAvailable
 @Testcontainers
@@ -20,7 +21,10 @@ class MySqlOutboxStoreIntegrationTest extends AbstractOutboxStoreIntegrationTest
 
     @Container
     static final MySQLContainer mysql = new MySQLContainer("mysql:8.0")
-            .withDatabaseName("outbox_test");
+            .withDatabaseName("outbox_test")
+            // Data dir in memory: on a VM-backed Docker disk InnoDB initialisation can outlast the
+            // startup timeout (seen locally on OrbStack: >90s on disk, 12s on tmpfs).
+            .withTmpFs(Map.of("/var/lib/mysql", "rw"));
 
     private static final MySqlOutboxStore STORE = new MySqlOutboxStore();
     private static SimpleDataSource dataSource;

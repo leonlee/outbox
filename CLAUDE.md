@@ -302,7 +302,7 @@ git switch -c release/X main
 # 1. Set release version (updates 12 of 14 pom.xml)
 mvn versions:set -DnewVersion=X -DgenerateBackupPoms=false
 # 2. Manually update <version> in samples/outbox-spring-demo/pom.xml and samples/outbox-spring-boot-starter-demo/pom.xml,
-#    and the dependency versions in README.md and TUTORIAL.md
+#    and the "Current release" line and dependency versions in README.md and TUTORIAL.md
 # 3. Verify
 mvn clean test
 git commit -am "release: X"

@@ -3,6 +3,7 @@ package io.outbox.dispatch;
 import io.outbox.DispatchResult;
 import io.outbox.EventEnvelope;
 import io.outbox.EventListener;
+import io.outbox.RecoverableException;
 import io.outbox.RetryAfterException;
 import io.outbox.UnrecoverableException;
 import io.outbox.registry.ListenerRegistry;
@@ -423,14 +424,18 @@ public final class OutboxDispatcher implements AutoCloseable {
             } else if (result instanceof DispatchResult.Dead dead) {
                 String reason = dead.reason() != null ? dead.reason() : "Listener returned Dead";
                 settled = markDead(eventId, reason);
-                metrics.incrementDispatchDead();
+                if (settled) {
+                    metrics.incrementDispatchDead();
+                }
             } else if (result instanceof DispatchResult.Done) {
                 long latencyMs = Instant.now().toEpochMilli() - event.envelope().occurredAt().toEpochMilli();
                 if (latencyMs >= 0) {
                     metrics.recordDispatchLatencyMs(latencyMs);
                 }
                 settled = markDone(eventId);
-                metrics.incrementDispatchSuccess();
+                if (settled) {
+                    metrics.incrementDispatchSuccess();
+                }
             }
         } catch (Exception e) {
             settled = handleFailure(event, e);
@@ -443,6 +448,13 @@ public final class OutboxDispatcher implements AutoCloseable {
                 inFlightTracker.markSettled(eventId, token);
             } else {
                 inFlightTracker.release(eventId, token);
+            }
+            // A listener can return with its thread still interrupted (the re-interrupt idiom
+            // after catching InterruptedException), and workerLoop would then end for good: the
+            // pool never resubmits it. Clear first, then restore if shutdown has begun — close()
+            // sets running=false before shutdownNow interrupts, so a forced stop is never lost.
+            if (Thread.interrupted() && !running.get()) {
+                Thread.currentThread().interrupt();
             }
         }
     }
@@ -527,6 +539,13 @@ public final class OutboxDispatcher implements AutoCloseable {
         } catch (Exception e) {
             runAfterDispatch(envelope, e, completedBefore);
             throw e;
+        } catch (Error e) {
+            // Left alone, an Error skips the RETRY/DEAD write: the row keeps its attempt count and
+            // is redelivered forever. Wrapped, it counts against maxAttempts like any failure, and
+            // interceptors see it through the existing Exception parameter.
+            RecoverableException wrapped = new RecoverableException("Listener threw " + e, e);
+            runAfterDispatch(envelope, wrapped, completedBefore);
+            throw wrapped;
         }
     }
 
@@ -534,7 +553,9 @@ public final class OutboxDispatcher implements AutoCloseable {
         for (int i = count - 1; i >= 0; i--) {
             try {
                 interceptors.get(i).afterDispatch(envelope, error);
-            } catch (Exception ex) {
+            } catch (Throwable ex) {
+                // Errors too: an Error escaping here would reach deliverEvent's catch and restart
+                // this unwind, running the hooks already done a second time.
                 logger.log(Level.WARNING, "Interceptor afterDispatch failed", ex);
             }
         }
@@ -545,7 +566,9 @@ public final class OutboxDispatcher implements AutoCloseable {
         String eventId = event.envelope().eventId();
         if (failure instanceof UnrecoverableException) {
             boolean dead = markDead(eventId, failure);
-            metrics.incrementDispatchDead();
+            if (dead) {
+                metrics.incrementDispatchDead();
+            }
             logger.log(Level.SEVERE, "Unrecoverable event marked DEAD: " + eventId, failure);
             return dead;
         }
@@ -553,7 +576,9 @@ public final class OutboxDispatcher implements AutoCloseable {
         int nextAttempt = event.attempts() + 1;
         if (nextAttempt >= maxAttempts) {
             boolean dead = markDead(eventId, failure);
-            metrics.incrementDispatchDead();
+            if (dead) {
+                metrics.incrementDispatchDead();
+            }
             logger.log(Level.SEVERE, "Event moved to DEAD after max attempts: " + eventId, failure);
             return dead;
         } else if (failure instanceof RetryAfterException retryAfterEx) {

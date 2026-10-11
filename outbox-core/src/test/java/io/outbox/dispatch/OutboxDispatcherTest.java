@@ -2,6 +2,7 @@ package io.outbox.dispatch;
 
 import io.outbox.DispatchResult;
 import io.outbox.EventEnvelope;
+import io.outbox.RecoverableException;
 import io.outbox.RetryAfterException;
 import io.outbox.UnrecoverableException;
 import io.outbox.registry.DefaultListenerRegistry;
@@ -11,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import java.sql.Connection;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -1469,6 +1471,8 @@ class OutboxDispatcherTest {
         final AtomicInteger dropped = new AtomicInteger();
         final AtomicInteger suppressed = new AtomicInteger();
         final AtomicInteger enqueued = new AtomicInteger();
+        final AtomicInteger success = new AtomicInteger();
+        final AtomicInteger dead = new AtomicInteger();
 
         @Override public void incrementHotTripped() {
             tripped.incrementAndGet();
@@ -1490,12 +1494,14 @@ class OutboxDispatcherTest {
         }
 
         @Override public void incrementDispatchSuccess() {
+            success.incrementAndGet();
         }
 
         @Override public void incrementDispatchFailure() {
         }
 
         @Override public void incrementDispatchDead() {
+            dead.incrementAndGet();
         }
 
         @Override public void recordQueueDepths(int hotDepth, int coldDepth) {
@@ -2236,5 +2242,241 @@ class OutboxDispatcherTest {
                 .coldQueueCapacity(cold)
                 .drainTimeoutMs(1000)
                 .build();
+    }
+
+    // ── Listener misbehaviour: Errors and leaked interrupts ──────────
+
+    /**
+     * An Error used to skip the RETRY/DEAD write entirely: the row kept its attempt count and was
+     * redelivered forever. It now spends the retry budget like an exception, interceptors unwind
+     * once with it as the cause, and the worker carries on.
+     */
+    @Test
+    void listenerErrorIsRetriedAndInterceptorsUnwind() throws Exception {
+        CountDownLatch tailDone = new CountDownLatch(1);
+        List<Exception> afterErrors = new java.util.concurrent.CopyOnWriteArrayList<>();
+        var store = new StubOutboxStore();
+        var registry = new DefaultListenerRegistry()
+                .register("Broken", event -> {
+                    throw new NoClassDefFoundError("missing/Dependency");
+                })
+                .register(TAIL, event -> {
+                    tailDone.countDown();
+                    return DispatchResult.done();
+                });
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp())
+                .outboxStore(store)
+                .listenerRegistry(registry)
+                .workerCount(1)
+                .maxAttempts(3)
+                .drainTimeoutMs(1000)
+                .interceptor(new EventInterceptor() {
+                    @Override
+                    public void afterDispatch(EventEnvelope event, Exception error) {
+                        if ("Broken".equals(event.eventType())) {
+                            afterErrors.add(error);
+                        }
+                    }
+                })
+                .build()) {
+            d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("Broken", "{}"), QueuedEvent.Source.HOT, 0));
+            d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(TAIL, "{}"), QueuedEvent.Source.HOT, 0));
+
+            assertTrue(tailDone.await(3, TimeUnit.SECONDS), "the worker must survive the Error");
+        }
+
+        assertEquals(1, store.markRetryCount.get());
+        assertEquals(0, store.markDeadCount.get());
+        assertEquals(1, afterErrors.size(), "afterDispatch runs once for the failed event");
+        assertTrue(afterErrors.get(0) instanceof RecoverableException);
+        assertTrue(afterErrors.get(0).getCause() instanceof NoClassDefFoundError);
+    }
+
+    /**
+     * An Error from one afterDispatch is logged like an exception: the unwind runs every hook
+     * exactly once and the listener's own result still decides the status.
+     */
+    @Test
+    void afterDispatchErrorDoesNotRerunHooksOrChangeTheOutcome() {
+        Map<String, AtomicInteger> afterCalls = new ConcurrentHashMap<>();
+        var store = new StubOutboxStore();
+        var registry = new DefaultListenerRegistry()
+                .register(ONCE, event -> DispatchResult.done());
+
+        var builder = OutboxDispatcher.builder()
+                .connectionProvider(stubCp())
+                .outboxStore(store)
+                .listenerRegistry(registry)
+                .workerCount(1)
+                .drainTimeoutMs(1000);
+        for (String name : List.of("first", "broken", "last")) {
+            builder.interceptor(new EventInterceptor() {
+                @Override
+                public void afterDispatch(EventEnvelope event, Exception error) {
+                    afterCalls.computeIfAbsent(name, k -> new AtomicInteger()).incrementAndGet();
+                    if ("broken".equals(name)) {
+                        throw new AssertionError("broken hook");
+                    }
+                }
+            });
+        }
+        var d = builder.build();
+        d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0));
+        d.close(); // drains the queue and waits for the worker
+
+        for (String name : List.of("first", "broken", "last")) {
+            assertEquals(1, afterCalls.getOrDefault(name, new AtomicInteger()).get(), name + ".afterDispatch call count");
+        }
+        assertEquals(1, store.markDoneCount.get());
+        assertEquals(0, store.markRetryCount.get());
+    }
+
+    @Test
+    void listenerErrorGoesDeadOnceAttemptsAreSpent() throws Exception {
+        CountDownLatch dead = new CountDownLatch(1);
+        var store = new StubOutboxStore() {
+            @Override
+            public int markDead(Connection conn, String eventId, String error) {
+                super.markDead(conn, eventId, error);
+                dead.countDown();
+                return 1;
+            }
+        };
+        var registry = new DefaultListenerRegistry()
+                .register("Broken", event -> {
+                    throw new StackOverflowError();
+                });
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp())
+                .outboxStore(store)
+                .listenerRegistry(registry)
+                .workerCount(1)
+                .maxAttempts(2)
+                .drainTimeoutMs(1000)
+                .build()) {
+            d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson("Broken", "{}"), QueuedEvent.Source.HOT, 1));
+
+            assertTrue(dead.await(3, TimeUnit.SECONDS));
+        }
+        assertEquals(0, store.markRetryCount.get());
+    }
+
+    /**
+     * A listener that re-interrupts after catching InterruptedException returns with the flag set.
+     * That used to end workerLoop for good, and with one worker nothing was ever delivered again.
+     */
+    @Test
+    void listenerLeavingTheThreadInterruptedDoesNotStopTheWorker() throws Exception {
+        CountDownLatch tailDone = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry()
+                .register(ONCE, event -> {
+                    Thread.currentThread().interrupt();
+                    return DispatchResult.done();
+                })
+                .register(TAIL, event -> {
+                    tailDone.countDown();
+                    return DispatchResult.done();
+                });
+
+        try (var d = newDispatcher(1, 10, 10, registry, new StubOutboxStore())) {
+            d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0));
+            d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(TAIL, "{}"), QueuedEvent.Source.HOT, 0));
+
+            assertTrue(tailDone.await(3, TimeUnit.SECONDS), "the worker stopped after a leaked interrupt");
+        }
+    }
+
+    /**
+     * The other half: clearing a leaked interrupt must not swallow the one a forced close sends.
+     * The listener re-interrupts after shutdownNow wakes it, and the queued tail must then stay put.
+     */
+    @Test
+    void forcedCloseInterruptIsNotSwallowed() throws Exception {
+        CountDownLatch blocking = new CountDownLatch(1);
+        AtomicInteger tailRuns = new AtomicInteger();
+        var registry = new DefaultListenerRegistry()
+                .register(ONCE, event -> {
+                    blocking.countDown();
+                    try {
+                        Thread.sleep(30_000);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return DispatchResult.done();
+                })
+                .register(TAIL, event -> {
+                    tailRuns.incrementAndGet();
+                    return DispatchResult.done();
+                });
+
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp())
+                .outboxStore(new StubOutboxStore())
+                .listenerRegistry(registry)
+                .workerCount(1)
+                .drainTimeoutMs(100)
+                .build();
+        d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0));
+        d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(TAIL, "{}"), QueuedEvent.Source.HOT, 0));
+        assertTrue(blocking.await(3, TimeUnit.SECONDS));
+
+        d.close();
+
+        assertEquals(0, tailRuns.get(), "a forced stop must not go on to dispatch the queued tail");
+    }
+
+    /** A DONE or DEAD that never reached the database must not be counted as one. */
+    @Test
+    void terminalMetricsCountOnlyWritesThatLanded() throws Exception {
+        CountDownLatch writes = new CountDownLatch(4);
+        var store = new StubOutboxStore() {
+            @Override
+            public int markDone(Connection conn, String eventId) {
+                writes.countDown();
+                if (eventId.startsWith("lost")) {
+                    throw new IllegalStateException("database down");
+                }
+                return super.markDone(conn, eventId);
+            }
+
+            @Override
+            public int markDead(Connection conn, String eventId, String error) {
+                writes.countDown();
+                throw new IllegalStateException("database down");
+            }
+        };
+        var registry = new DefaultListenerRegistry()
+                .register("Done", event -> DispatchResult.done())
+                .register("Dead", event -> DispatchResult.dead("bad"))
+                .register("Unrecoverable", event -> {
+                    throw new UnrecoverableException("bad");
+                });
+        CountingMetrics metrics = new CountingMetrics();
+
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp())
+                .outboxStore(store)
+                .listenerRegistry(registry)
+                .workerCount(1)
+                .metrics(metrics)
+                .drainTimeoutMs(1000)
+                .build();
+        d.enqueueHot(hotWithId("Done", "kept"));
+        d.enqueueHot(hotWithId("Done", "lost-done"));
+        d.enqueueHot(hotWithId("Dead", "lost-dead"));
+        d.enqueueHot(hotWithId("Unrecoverable", "lost-unrecoverable"));
+        assertTrue(writes.await(3, TimeUnit.SECONDS));
+        d.close(); // waits for the worker, so the last counter update has happened
+
+        assertEquals(1, metrics.success.get());
+        assertEquals(0, metrics.dead.get());
+    }
+
+    private static QueuedEvent hotWithId(String type, String eventId) {
+        return new QueuedEvent(EventEnvelope.builder(type).eventId(eventId).payloadJson("{}").build(),
+                QueuedEvent.Source.HOT, 0);
     }
 }

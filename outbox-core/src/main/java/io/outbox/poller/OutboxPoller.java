@@ -122,6 +122,11 @@ public final class OutboxPoller implements AutoCloseable {
                 return;
             }
 
+            // Before claiming: no codec is a configuration fault, not bad rows. Thrown here it fails
+            // the cycle (logged below) with nothing claimed or marked DEAD, and a later poll
+            // delivers the rows once a codec is installed. Resolved per poll for that reason.
+            JsonCodec codec = JsonCodec.getDefault();
+
             Instant now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
             Batch batch = fetchPendingRows(now, Math.min(batchSize, capacity));
             if (batch == null) {
@@ -132,7 +137,7 @@ public final class OutboxPoller implements AutoCloseable {
                 return;
             }
 
-            Instant oldest = dispatchRows(batch);
+            Instant oldest = dispatchRows(batch, codec);
             if (oldest != null) {
                 long lagMs = Duration.between(oldest, now).toMillis();
                 metrics.recordOldestLagMs(Math.max(0L, lagMs));
@@ -193,22 +198,22 @@ public final class OutboxPoller implements AutoCloseable {
         }
     }
 
-    private Instant dispatchRows(Batch batch) {
+    private Instant dispatchRows(Batch batch, JsonCodec codec) {
         List<OutboxEvent> rows = batch.rows();
         // Rows are sorted oldest-first by SQL ORDER BY created_at
         Instant oldest = rows.isEmpty() ? null : rows.get(0).createdAt();
         for (OutboxEvent row : rows) {
-            if (!dispatchRow(row, batch.lease())) {
+            if (!dispatchRow(row, batch.lease(), codec)) {
                 break; // cold queue full
             }
         }
         return oldest;
     }
 
-    private boolean dispatchRow(OutboxEvent row, ClaimLease lease) {
+    private boolean dispatchRow(OutboxEvent row, ClaimLease lease, JsonCodec codec) {
         EventEnvelope envelope;
         try {
-            envelope = convertToEnvelope(row);
+            envelope = convertToEnvelope(row, codec);
         } catch (RuntimeException e) {
             logger.log(Level.SEVERE, "Failed to decode outbox row eventId=" + row.eventId(), e);
             markDead(row.eventId(), e);
@@ -227,8 +232,8 @@ public final class OutboxPoller implements AutoCloseable {
         return accepted;
     }
 
-    private EventEnvelope convertToEnvelope(OutboxEvent row) {
-        Map<String, String> headers = JsonCodec.getDefault().parseStringMap(row.headersJson());
+    private EventEnvelope convertToEnvelope(OutboxEvent row, JsonCodec codec) {
+        Map<String, String> headers = codec.parseStringMap(row.headersJson());
         var builder = EventEnvelope.builder(row.eventType())
                 .eventId(row.eventId())
                 .occurredAt(row.createdAt())

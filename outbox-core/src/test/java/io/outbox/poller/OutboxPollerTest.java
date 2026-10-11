@@ -294,6 +294,95 @@ class OutboxPollerTest {
         assertEquals("connection closed", failure.getSuppressed()[0].getMessage());
     }
 
+    /**
+     * No codec is a configuration fault, not bad rows: the poll must fail before claiming anything
+     * and mark nothing DEAD, so the same rows deliver once a codec is installed.
+     */
+    @Test
+    void missingCodecFailsThePollWithoutClaimingOrKillingRows() {
+        AtomicInteger claims = new AtomicInteger();
+        AtomicInteger dead = new AtomicInteger();
+        OutboxStore store = new StubStore() {
+            @Override
+            public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
+                                                  Instant lockExpiry, Duration skipRecent, int limit) {
+                claims.incrementAndGet();
+                return List.of(row("valid"));
+            }
+
+            @Override
+            public int markDead(Connection conn, String eventId, String error) {
+                dead.incrementAndGet();
+                return 1;
+            }
+        };
+        List<String> handled = new CopyOnWriteArrayList<>();
+
+        try (OutboxPoller poller = OutboxPoller.builder()
+                .connectionProvider(CP)
+                .outboxStore(store)
+                .handler((event, attempts) -> handled.add(event.eventId()))
+                .claimLocking("owner-1", Duration.ofMinutes(5))
+                .build()) {
+            JsonCodec.resetDefault(); // outbox-core has no SPI codec, so discovery fails
+            poller.poll();
+            assertEquals(0, claims.get(), "nothing may be claimed without a way to decode it");
+            assertEquals(0, dead.get());
+
+            installCodec();
+            poller.poll();
+        }
+
+        assertEquals(List.of("valid"), handled);
+        assertEquals(0, dead.get());
+    }
+
+    /** Undecodable headers are a bad row, and that one still goes DEAD while the rest deliver. */
+    @Test
+    void malformedHeadersStillMarkTheRowDead() {
+        JsonCodec.setDefault(new JsonCodec() {
+            @Override
+            public String toJson(Object obj) {
+                return "{}";
+            }
+
+            @Override
+            @SuppressWarnings("unchecked")
+            public <T> T fromJson(String json, Class<T> type) {
+                if ("not json".equals(json)) {
+                    throw new IllegalArgumentException("malformed");
+                }
+                return (T) new java.util.LinkedHashMap<String, String>();
+            }
+        });
+        List<String> deadIds = new CopyOnWriteArrayList<>();
+        OutboxStore store = new StubStore() {
+            @Override
+            public List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit) {
+                return List.of(new OutboxEvent("bad", "test.event", "Agg", "agg-1", null,
+                        "{}", "not json", 0, Instant.EPOCH, null), row("good"));
+            }
+
+            @Override
+            public int markDead(Connection conn, String eventId, String error) {
+                deadIds.add(eventId);
+                return 1;
+            }
+        };
+        List<String> handled = new CopyOnWriteArrayList<>();
+
+        try (OutboxPoller poller = OutboxPoller.builder()
+                .connectionProvider(CP)
+                .outboxStore(store)
+                .handler((event, attempts) -> handled.add(event.eventId()))
+                .build()) {
+            poller.poll();
+        }
+
+        assertEquals(List.of("bad"), deadIds);
+        assertEquals(List.of("good"), handled);
+    }
+
     private static void awaitOrFail(CountDownLatch latch) {
         try {
             if (!latch.await(5, TimeUnit.SECONDS)) {

@@ -232,4 +232,17 @@ class DefaultInFlightTrackerTest {
         assertTrue(tracker.isSettled("e"), "the newer marker must survive a stale release");
         assertEquals(InFlightTracker.NOT_ACQUIRED, tracker.settledToken("unknown"));
     }
+
+    /** A huge TTL used to overflow the eviction threshold and evict every entry, running or not. */
+    @Test
+    void hugeTtlDoesNotEvictRunningEntries() {
+        DefaultInFlightTracker tracker = new DefaultInFlightTracker(Long.MAX_VALUE);
+        assertTrue(tracker.tryAcquire("running"));
+
+        for (int i = 0; i < 2048; i++) { // eviction runs on every 1024th acquire
+            tracker.tryAcquire("other-" + i);
+        }
+
+        assertFalse(tracker.tryAcquire("running"), "still in flight, so a second copy must not acquire");
+    }
 }

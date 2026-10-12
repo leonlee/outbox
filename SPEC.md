@@ -757,6 +757,14 @@ For each queued event:
     - `RetryAfterException`: markRetry with handler delay (counts against maxAttempts)
     - Other exception: markRetry with `RetryPolicy` backoff, or markDead after maxAttempts
     - `UnrecoverableException`: markDead immediately (no retry, no attempt increment)
+    - `Error` from a listener or interceptor: wrapped in `RecoverableException` (the `Error` is the cause, and
+      `afterDispatch` receives the wrapper), then handled like any other exception. This keeps the event inside
+      `maxAttempts`; it does not make the JVM recover from resource exhaustion such as `OutOfMemoryError`.
+      An exception or `Error` from `afterDispatch` is logged and the remaining hooks still run; it does not change
+      the event's outcome.
+9. **Interrupt status**: a listener that returns with its thread interrupted (for example after re-interrupting on
+   `InterruptedException`) has the flag cleared so the worker keeps running. Once `close()` has begun, the flag is
+   kept, and a forced shutdown stops the worker.
 
 ### 9.4 Synchronous Execution Model
 
@@ -908,9 +916,11 @@ void close()    // Stop polling
 - Checks handler capacity before polling; skips cycle if full
 - Skips events created within `skipRecent` duration (default `Duration.ZERO`)
 - Queries status IN (0, 2) with available_at <= now
+- Resolves the `JsonCodec` before fetching; if none is available the cycle fails (logged) without claiming or
+  marking any row, and a later cycle delivers the rows once a codec is installed
 - Converts OutboxEvent to EventEnvelope
 - Delegates to handler for processing (subject to backpressure)
-- On decode failure: marks event DEAD
+- On decode failure (malformed headers): marks that event DEAD
 
 ### 10.4 Event Locking
 
@@ -1286,9 +1296,9 @@ MicrometerMetricsExporter(MeterRegistry registry, String namePrefix) // custom p
 | `{prefix}.enqueue.hot`                 | Events enqueued via hot path            |
 | `{prefix}.enqueue.hot.dropped`         | Events dropped (hot queue full)         |
 | `{prefix}.enqueue.cold`                | Events enqueued via cold (poller) path  |
-| `{prefix}.dispatch.success`            | Events dispatched successfully          |
+| `{prefix}.dispatch.success`            | Events marked DONE (write succeeded)    |
 | `{prefix}.dispatch.failure`            | Events failed (will retry)              |
-| `{prefix}.dispatch.dead`               | Events moved to DEAD                    |
+| `{prefix}.dispatch.dead`               | Events marked DEAD (write succeeded)    |
 | `{prefix}.dispatch.deferred`           | Events deferred by handler (RetryAfter) |
 | `{prefix}.enqueue.hot.skipped.delayed` | Delayed events skipped on hot path      |
 

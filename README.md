@@ -174,6 +174,7 @@ purger in writer-only mode.
   `maxAttempts`, return `DispatchResult.dead()` to immediately dead-letter an event, or throw
   `RetryAfterException` for handler-controlled retry timing that does count.
 - `UnrecoverableException` (and subclass `PayloadParseException`) marks events DEAD immediately without retry.
+- A listener `Error` (e.g. `NoClassDefFoundError`) is retried like an exception and goes DEAD after `maxAttempts`.
 - If status updates fail, the event remains in DB and may be retried later.
 - The hot path and the poller can both pick up the same event. Opt-in dispatcher guards narrow that window:
   `hotTripMs` stops hot enqueue once the hot queue backs up, `suppressReplays` (with an in-flight TTL) refuses a

@@ -1363,9 +1363,9 @@ Metrics are then available at `/actuator/prometheus`.
 | `outbox.enqueue.hot.skipped.delayed` | Delayed events left for the poller (`availableAt` in the future) |
 | `outbox.enqueue.hot.skipped.stale` | Events older than the writer-stamp window at commit (backfills), left for the poller |
 | `outbox.enqueue.cold`        | Events enqueued via cold (poller) path |
-| `outbox.dispatch.success`    | Events dispatched successfully         |
+| `outbox.dispatch.success`    | Events marked DONE (write succeeded)   |
 | `outbox.dispatch.failure`    | Events failed (will retry)             |
-| `outbox.dispatch.dead`       | Events moved to DEAD                   |
+| `outbox.dispatch.dead`       | Events marked DEAD (write succeeded)   |
 | `outbox.dispatch.deferred`   | Events deferred by `DispatchResult.retryAfter` |
 | `outbox.dispatch.suppressed` | Duplicate copies refused by the in-flight tracker |
 

@@ -99,7 +99,11 @@ public final class DefaultInFlightTracker implements InFlightTracker {
         if ((evictCounter.incrementAndGet() & 0x3FF) != 0) {
             return;
         }
-        inflight.entrySet().removeIf(e -> now - e.getValue().at() > ttlMs * 2);
+        // age > 2 * ttlMs without the multiplication, which overflows for very large TTLs.
+        inflight.entrySet().removeIf(e -> {
+            long age = now - e.getValue().at();
+            return age > ttlMs && age - ttlMs > ttlMs;
+        });
     }
 
     @Override

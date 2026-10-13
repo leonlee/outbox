@@ -116,7 +116,8 @@ outbox-core/src/main/java/
         │   └── DefaultListenerRegistry.java
         │
         └── util/
-            └── DaemonThreadFactory.java
+            ├── DaemonThreadFactory.java
+            └── IsolatingMetricsExporter.java (MetricsExporter decorator: exporter exceptions are logged, never thrown)
 
 outbox-gson/src/main/java/
 └── io/
@@ -169,7 +170,8 @@ outbox-jdbc/src/main/java/
   in `io.outbox.jdbc.store`. `supportsClaimLocking()` (default `false`; MySQL/Postgres `true`) says whether
   `claimPending` really locks; `releaseClaim(conn, id, owner, claimedAt)` drops only that exact lease;
   `leaseTimestamp(now)` is the single definition of the `locked_at` a claim writes.
-  The four status writes have claim-fenced overloads `(…, claimOwner, claimedAt)`: owner `null` = unfenced; a
+  The four status writes have claim-fenced overloads `(…, claimOwner, claimedAt)`; the dispatcher and poller call the
+  plain overload for an unfenced write, so a store's override of it still applies. Owner `null` = unfenced; a
   `claimedAt` = exact lease (`locked_by=? AND locked_at=?`); no `claimedAt` = hot copy (needs the store's writer stamp,
   or an unclaimed row if the store does not stamp). `supportsClaimFencing()` (JDBC `true`); the defaults throw for a
   fenced write on a locking store, and dispatcher/poller builders reject that store when a claim owner is set. In the
@@ -193,7 +195,9 @@ outbox-jdbc/src/main/java/
   `singleNode()` (hot path + poller), `multiNode()` (hot path + claim-based locking; `claimLocking()` required),
   `ordered()` (poller-only, forces `workerCount=1`, `maxAttempts=1`, no `WriterHook`), `writerOnly()` (CDC mode,
   writer + optional age-based purge, no dispatcher/poller). `deferStart(true)` builds all components without starting
-  the poller — call `outbox.start()` later (used by Spring Boot's `OutboxLifecycle` to avoid startup race).
+  the poller or purge scheduler and keeps the hot path closed (the writer hook leaves committed events for the poller)
+  until `outbox.start()` (used by Spring Boot's `OutboxLifecycle` to avoid startup race). Non-deferred builds call
+  `start()` themselves, so `start()` after `close()` is a no-op.
   `close()` shuts down purgeScheduler → poller → dispatcher (null components skipped); it is idempotent and
   `synchronized`, so an overlapping call waits for the first to finish. Access the writer via
   `outbox.writer()`. Purge config (`purger`, `purgeRetention`, `purgeBatchSize`, `purgeIntervalSeconds`) lives on
@@ -210,7 +214,11 @@ outbox-jdbc/src/main/java/
   `InFlightTracker` acquisitions are token-scoped (`acquire` / `release(id, token)`) so a late completion cannot end a
   newer acquisition; opt-in `suppressReplays` keeps settled entries until TTL (requires a TTL tracker); opt-in
   `hotTripMs` breaker refuses hot enqueue once the hot queue head is too old (recovers at half). `hotPathEnabled(false)`
-  = poller-only delivery (`enqueueHot` refuses).
+  = poller-only delivery (`enqueueHot` refuses). Claim-leased cold copies and a `claimOwner` need a tracker with
+  `supportsIsRunning()` (`DefaultInFlightTracker`); a `claimOwner` must equal the store's `writerOwnerId()` if it
+  stamps. A listener's leftover interrupt is cleared before the status write. Dispatcher, poller and writer hook wrap
+  the `MetricsExporter` in `IsolatingMetricsExporter` (`io.outbox.util`), so an exporter exception never affects
+  delivery.
 - **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails. Created via `OutboxPoller.builder()`. Uses an
   `OutboxPollerHandler` to forward events. Two modes: single-node (default, `pollPending`) and multi-node (
   `claimLocking()` enables `claimPending` with row-level locks).

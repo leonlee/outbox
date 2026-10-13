@@ -144,6 +144,11 @@ public final class DefaultInFlightTracker implements InFlightTracker {
     }
 
     @Override
+    public boolean supportsIsRunning() {
+        return true;
+    }
+
+    @Override
     public boolean isRunning(String eventId) {
         Entry entry = inflight.get(eventId);
         if (entry == null || entry.settled()) {

@@ -427,6 +427,59 @@ class OutboxPollerTest {
         assertEquals(List.of("owner-1@" + claims.get(0)), fences);
     }
 
+    /**
+     * A retry can schedule next_attempt before created_at (another node's clock behind, or a
+     * business occurredAt in the future). Rebuilding the envelope with that time used to trip
+     * EventEnvelope's "availableAt must not be before occurredAt" check, and the decode-failure path
+     * marked a perfectly valid row DEAD. Both the unleased and the leased paths must deliver it.
+     */
+    @Test
+    void aRetryScheduledBeforeCreatedAtIsDeliveredNotMarkedDead() {
+        Instant createdAt = Instant.parse("2026-10-13T00:00:02Z");
+        OutboxEvent retried = new OutboxEvent("early", "test.event", "Agg", "agg-1", null,
+                "{}", "{}", 1, createdAt, createdAt.minusMillis(1500));
+        for (boolean leased : new boolean[]{false, true}) {
+            List<String> deaths = new CopyOnWriteArrayList<>();
+            List<String> delivered = new CopyOnWriteArrayList<>();
+            OutboxStore store = new StubStore() {
+                @Override
+                public List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit) {
+                    return List.of(retried);
+                }
+
+                @Override
+                public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
+                                                      Instant lockExpiry, Duration skipRecent, int limit) {
+                    return List.of(retried);
+                }
+
+                @Override
+                public int markDead(Connection conn, String eventId, String error) {
+                    deaths.add(error);
+                    return 1;
+                }
+
+                @Override
+                public int markDead(Connection conn, String eventId, String error, String claimOwner, Instant claimedAt) {
+                    deaths.add(error);
+                    return 1;
+                }
+            };
+            OutboxPoller.Builder builder = OutboxPoller.builder()
+                    .connectionProvider(CP)
+                    .outboxStore(store)
+                    .handler((event, attempts) -> delivered.add(event.eventId()));
+            if (leased) {
+                builder.claimLocking("owner-1", Duration.ofMinutes(5));
+            }
+            try (OutboxPoller poller = builder.build()) {
+                poller.poll();
+            }
+            assertEquals(List.of(), deaths, "leased=" + leased);
+            assertEquals(List.of("early"), delivered, "leased=" + leased);
+        }
+    }
+
     /** A locking store that predates fencing is refused up front rather than failing every fenced write. */
     @Test
     void claimLockingRejectsALockingStoreWithoutFencing() {

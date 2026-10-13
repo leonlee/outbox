@@ -62,22 +62,30 @@ public final class Outbox implements AutoCloseable {
     private final OutboxDispatcher dispatcher;
     private final OutboxPurgeScheduler purgeScheduler;
     private final MetricsExporter metrics;
+    /** Read by the writer hook: hot delivery waits for {@link #start()}, i.e. for listeners. */
+    private final AtomicBoolean hotOpen;
     private volatile boolean started;
     private boolean closed; // guarded by this
 
     private Outbox(OutboxWriter writer, OutboxPoller poller,
                    OutboxDispatcher dispatcher, OutboxPurgeScheduler purgeScheduler,
-                   MetricsExporter metrics) {
+                   MetricsExporter metrics, AtomicBoolean hotOpen) {
         this.writer = writer;
         this.poller = poller;
         this.dispatcher = dispatcher;
         this.purgeScheduler = purgeScheduler;
         this.metrics = metrics;
+        this.hotOpen = hotOpen;
     }
 
     /**
-     * Starts the poller. Called automatically by {@code build()} unless
+     * Starts the poller and opens the hot path. Called automatically by {@code build()} unless
      * {@code deferStart(true)} was set on the builder.
+     *
+     * <p>Until then, events committed through the writer are not dispatched from memory: they stay
+     * in the table for the poller, which starts here. Under {@code deferStart(true)} that keeps a
+     * write made before listeners are registered from being dispatched to an empty registry (and
+     * marked DEAD as unroutable).
      *
      * <p>In Spring Boot, this is called by {@code OutboxLifecycle} (a
      * {@code SmartLifecycle} bean) after all listeners are registered,
@@ -96,6 +104,7 @@ public final class Outbox implements AutoCloseable {
         if (poller != null) {
             poller.start();
         }
+        hotOpen.set(true);
         if (purgeScheduler != null) {
             // Deliberately after the poller, and deliberately not fatal. Purging is housekeeping;
             // delivery is the job. Letting a failure here abort start() would leave an outbox that
@@ -529,9 +538,9 @@ public final class Outbox implements AutoCloseable {
         /**
          * Builds the purge scheduler, or returns {@code null} if no purger was set.
          *
-         * <p>Honours {@link #deferStart(boolean)}: purging is background work, so under a deferred
-         * start it waits for {@link Outbox#start()} along with the poller rather than beginning
-         * during bean creation. That matters on an environment carrying a backlog, where the first
+         * <p>Built, not started: {@link Outbox#start()} starts it, at build time or — under
+         * {@link #deferStart(boolean)} — later, along with the poller, rather than during bean
+         * creation. That matters on an environment carrying a backlog, where the first
          * cycle is not a trickle — it drains until a batch comes back short, and doing that while
          * the context is still coming up competes with startup for the database.
          */
@@ -547,29 +556,17 @@ public final class Outbox implements AutoCloseable {
             if (purgeRetention != null) {
                 pb.retention(purgeRetention);
             }
-            OutboxPurgeScheduler scheduler = pb.build();
-            if (deferStart) {
-                return scheduler;
-            }
-            try {
-                scheduler.start();
-            } catch (RuntimeException e) {
-                // Same policy as Outbox.start(), which handles the deferred path: purging is
-                // housekeeping and delivery is the job. Rethrowing here made the non-deferred
-                // builders fail build() — tearing down a poller and dispatcher that had already
-                // started — over a cleanup task the deferred path would merely have logged.
-                LOGGER.log(Level.SEVERE,
-                        "Purge scheduler failed to start; events will be delivered but not purged", e);
-            }
-            return scheduler;
+            return pb.build();
         }
 
         /**
          * Defers poller startup until {@link Outbox#start()} is called explicitly.
          *
-         * <p>When {@code true}, {@code build()} creates all components but does not
-         * start the poller. Use this in Spring Boot with {@code SmartLifecycle} to
-         * ensure listeners are registered before polling begins.
+         * <p>When {@code true}, {@code build()} creates all components but does not start the
+         * poller or the purge scheduler, and the writer does not dispatch from memory until
+         * {@link Outbox#start()}: events written before then are left for the poller. Use this in
+         * Spring Boot with {@code SmartLifecycle} to ensure listeners are registered before
+         * anything is delivered.
          *
          * <p>Optional. Defaults to {@code false} (auto-start on build).
          *
@@ -647,19 +644,10 @@ public final class Outbox implements AutoCloseable {
                 dispatcher.close();
                 throw e;
             }
-            if (!deferStart) {
-                try {
-                    poller.start();
-                } catch (RuntimeException e) {
-                    poller.close();
-                    dispatcher.close();
-                    throw e;
-                }
-            }
-
+            AtomicBoolean hotOpen = new AtomicBoolean();
             OutboxWriter writer;
             if (hotPathEnabled) {
-                WriterHook writerHook = new DispatcherWriterHook(dispatcher, metrics);
+                WriterHook writerHook = new DispatcherWriterHook(dispatcher, metrics, hotOpen::get);
                 writer = new DefaultOutboxWriter(txContext, outboxStore, writerHook);
             } else {
                 writer = new DefaultOutboxWriter(txContext, outboxStore);
@@ -673,7 +661,20 @@ public final class Outbox implements AutoCloseable {
                 dispatcher.close();
                 throw e;
             }
-            return new Outbox(writer, poller, dispatcher, purgeScheduler, metrics);
+            Outbox outbox = new Outbox(writer, poller, dispatcher, purgeScheduler, metrics, hotOpen);
+            if (!deferStart) {
+                try {
+                    outbox.start();
+                } catch (RuntimeException e) {
+                    if (purgeScheduler != null) {
+                        purgeScheduler.close();
+                    }
+                    poller.close();
+                    dispatcher.close();
+                    throw e;
+                }
+            }
+            return outbox;
         }
 
         /**
@@ -1146,7 +1147,11 @@ public final class Outbox implements AutoCloseable {
             validateRequired();
             markBuilt();
             OutboxWriter writer = new DefaultOutboxWriter(txContext, outboxStore);
-            return new Outbox(writer, null, null, buildPurgeScheduler(), metrics);
+            Outbox outbox = new Outbox(writer, null, null, buildPurgeScheduler(), metrics, new AtomicBoolean());
+            if (!deferStart) {
+                outbox.start();
+            }
+            return outbox;
         }
     }
 }

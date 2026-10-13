@@ -12,6 +12,7 @@ import io.outbox.spi.ConnectionProvider;
 import io.outbox.spi.MetricsExporter;
 import io.outbox.spi.OutboxStore;
 import io.outbox.util.DaemonThreadFactory;
+import io.outbox.util.IsolatingMetricsExporter;
 
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -111,7 +112,7 @@ public final class OutboxDispatcher implements AutoCloseable {
                 ? builder.inFlightTracker : new DefaultInFlightTracker();
         this.retryPolicy = builder.retryPolicy != null
                 ? builder.retryPolicy : new ExponentialBackoffRetryPolicy(200, 60_000);
-        this.metrics = builder.metrics != null ? builder.metrics : MetricsExporter.NOOP;
+        this.metrics = IsolatingMetricsExporter.of(builder.metrics);
         this.interceptors = Collections.unmodifiableList(new ArrayList<>(builder.interceptors));
         this.drainTimeoutMs = builder.drainTimeoutMs;
 
@@ -130,6 +131,18 @@ public final class OutboxDispatcher implements AutoCloseable {
             throw new IllegalArgumentException(outboxStore.getClass().getName()
                     + " supports claim locking but not claim fencing; override supportsClaimFencing()"
                     + " and the fenced status writes");
+        }
+        if (claimOwner != null && !inFlightTracker.supportsIsRunning()) {
+            throw new IllegalArgumentException(
+                    "claimOwner requires an InFlightTracker that supportsIsRunning(); "
+                            + inFlightTracker.getClass().getName() + " does not");
+        }
+        String stamp = outboxStore.writerOwnerId().orElse(null);
+        if (claimOwner != null && stamp != null && !stamp.equals(claimOwner)) {
+            // Hot writes are fenced on locked_by = claimOwner AND locked_at = created_at; a store
+            // stamping another owner makes every one of them miss.
+            throw new IllegalArgumentException("The store stamps rows for '" + stamp
+                    + "' but claimOwner is '" + claimOwner + "'; they must be the same id");
         }
         if (this.suppressReplays && !this.inFlightTracker.hasTtl()) {
             // Without expiry, a terminal entry is never reclaimed and that event can never be
@@ -269,10 +282,19 @@ public final class OutboxDispatcher implements AutoCloseable {
      *
      * @param event the queued event to enqueue
      * @return {@code true} if the event was accepted
+     * @throws IllegalStateException if the event carries a claim lease and the in-flight tracker
+     *                               does not {@link InFlightTracker#supportsIsRunning() support isRunning}
      */
     public boolean enqueueCold(QueuedEvent event) {
         if (!accepting.get()) {
             return false;
+        }
+        if (event.claimLease() != null && !inFlightTracker.supportsIsRunning()) {
+            // Refused before any reservation, so nothing is retired, released or consumed: the
+            // row keeps its claim and is retaken after the lock timeout. Loud on purpose — this
+            // configuration can never deliver a claimed copy safely.
+            throw new IllegalStateException("A claim-leased copy needs an InFlightTracker that "
+                    + "supportsIsRunning(); " + inFlightTracker.getClass().getName() + " does not");
         }
         String eventId = event.envelope().eventId();
         // A poll can only see a row that is still PENDING, and a row stays PENDING for as long
@@ -512,9 +534,18 @@ public final class OutboxDispatcher implements AutoCloseable {
             return;
         }
         boolean settled = false;
+        boolean interruptedByListener = false;
         try {
             long listenerStartNs = System.nanoTime();
-            DispatchResult result = deliverEvent(event.envelope());
+            DispatchResult result;
+            try {
+                result = deliverEvent(event.envelope());
+            } finally {
+                // A listener can return (or throw) with its thread still interrupted — the
+                // re-interrupt idiom after catching InterruptedException. Cleared before the status
+                // write: an interrupt-sensitive pool refuses the connection, and the outcome is lost.
+                interruptedByListener = Thread.interrupted();
+            }
             long listenerDurationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - listenerStartNs);
             metrics.recordListenerDurationMs(listenerDurationMs);
 
@@ -551,11 +582,10 @@ public final class OutboxDispatcher implements AutoCloseable {
             } else {
                 inFlightTracker.release(eventId, token);
             }
-            // A listener can return with its thread still interrupted (the re-interrupt idiom
-            // after catching InterruptedException), and workerLoop would then end for good: the
-            // pool never resubmits it. Clear first, then restore if shutdown has begun — close()
-            // sets running=false before shutdownNow interrupts, so a forced stop is never lost.
-            if (Thread.interrupted() && !running.get()) {
+            // A leftover interrupt would end workerLoop for good: the pool never resubmits it.
+            // Restore it only if shutdown has begun — close() sets running=false before
+            // shutdownNow interrupts, so a forced stop is never lost.
+            if ((Thread.interrupted() || interruptedByListener) && !running.get()) {
                 Thread.currentThread().interrupt();
             }
         }
@@ -697,18 +727,24 @@ public final class OutboxDispatcher implements AutoCloseable {
     /** @return {@code true} only if the row was updated; see {@link #landed}. */
     private boolean markDone(String eventId, ClaimHandoff handoff) {
         return fencedWrite("mark DONE", eventId, handoff,
-                (conn, owner, claimedAt) -> outboxStore.markDone(conn, eventId, owner, claimedAt));
+                (conn, owner, claimedAt) -> owner == null
+                        ? outboxStore.markDone(conn, eventId)
+                        : outboxStore.markDone(conn, eventId, owner, claimedAt));
     }
 
     private boolean markDeferred(String eventId, ClaimHandoff handoff, Instant nextAt) {
         return fencedWrite("mark DEFERRED", eventId, handoff,
-                (conn, owner, claimedAt) -> outboxStore.markDeferred(conn, eventId, nextAt, owner, claimedAt));
+                (conn, owner, claimedAt) -> owner == null
+                        ? outboxStore.markDeferred(conn, eventId, nextAt)
+                        : outboxStore.markDeferred(conn, eventId, nextAt, owner, claimedAt));
     }
 
     private boolean markRetry(String eventId, ClaimHandoff handoff, Instant nextAt, Exception failure) {
         String error = failure == null ? null : failure.getMessage();
         return fencedWrite("mark RETRY", eventId, handoff,
-                (conn, owner, claimedAt) -> outboxStore.markRetry(conn, eventId, nextAt, error, owner, claimedAt));
+                (conn, owner, claimedAt) -> owner == null
+                        ? outboxStore.markRetry(conn, eventId, nextAt, error)
+                        : outboxStore.markRetry(conn, eventId, nextAt, error, owner, claimedAt));
     }
 
     private boolean markDead(String eventId, ClaimHandoff handoff, Exception failure) {
@@ -717,13 +753,16 @@ public final class OutboxDispatcher implements AutoCloseable {
 
     private boolean markDead(String eventId, ClaimHandoff handoff, String reason) {
         return fencedWrite("mark DEAD", eventId, handoff,
-                (conn, owner, claimedAt) -> outboxStore.markDead(conn, eventId, reason, owner, claimedAt));
+                (conn, owner, claimedAt) -> owner == null
+                        ? outboxStore.markDead(conn, eventId, reason)
+                        : outboxStore.markDead(conn, eventId, reason, owner, claimedAt));
     }
 
     /**
      * Runs a status write fenced on the lease the copy holds when it writes: the exact lease for a
      * claimed copy, else this dispatcher's {@link Builder#claimOwner} with no lease (a hot copy,
-     * fenced on its writer stamp), else unfenced.
+     * fenced on its writer stamp), else unfenced. An unfenced write (owner {@code null}) goes
+     * through the plain overload, so a store that customised the plain write keeps it.
      */
     private boolean fencedWrite(String action, String eventId, ClaimHandoff handoff, FencedWrite op) {
         int rows = handoff.write(lease -> {
@@ -882,8 +921,10 @@ public final class OutboxDispatcher implements AutoCloseable {
          * {@link OutboxStore#supportsClaimFencing() supporting fencing} refuses that write.
          *
          * <p>Requires a store that {@link OutboxStore#supportsClaimFencing() supports fencing} if
-         * it {@link OutboxStore#supportsClaimLocking() locks}; {@link #build()} rejects one that
-         * does not.
+         * it {@link OutboxStore#supportsClaimLocking() locks}, a store whose
+         * {@link OutboxStore#writerOwnerId() stamp owner}, if any, equals this id, and an
+         * {@link InFlightTracker#supportsIsRunning() InFlightTracker that reports running entries};
+         * {@link #build()} rejects anything else.
          *
          * @param claimOwner the owner id used for claim locking, or {@code null}
          * @return this builder
@@ -935,7 +976,9 @@ public final class OutboxDispatcher implements AutoCloseable {
         /**
          * Sets a custom in-flight tracker for deduplicating concurrent event processing.
          *
-         * <p>Optional. Defaults to {@link DefaultInFlightTracker}.
+         * <p>Optional. Defaults to {@link DefaultInFlightTracker}. Claim-leased copies (from a
+         * claiming poller) and a {@link #claimOwner} need one that
+         * {@link InFlightTracker#supportsIsRunning() supports isRunning}.
          *
          * @param inFlightTracker the tracker implementation
          * @return this builder

@@ -360,6 +360,18 @@ class OutboxTest {
         assertEquals(1, metricsClosed.get(), "components are closed once");
     }
 
+    /** Not restartable, and quietly so: an auto-started outbox must treat start() after close() as a no-op. */
+    @Test
+    void startAfterCloseIsANoOpForAnAutoStartedOutbox() {
+        Outbox outbox = Outbox.singleNode()
+                .connectionProvider(STUB_CP).txContext(STUB_TX)
+                .outboxStore(STUB_STORE).listenerRegistry(STUB_REG)
+                .intervalMs(60_000)
+                .build();
+        outbox.close();
+        assertDoesNotThrow(outbox::start);
+    }
+
     @Test
     void multiNode_buildsAndClosesCleanly() {
         assertDoesNotThrow(() -> {

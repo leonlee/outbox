@@ -316,6 +316,18 @@ CREATE TABLE outbox_event (
 CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_at);
 ```
 
+**Timestamp columns.** Claim fencing and the writer stamp compare timestamps for equality, which puts two requirements
+on any schema, not just the shipped ones:
+
+1. `locked_at` holds at least millisecond precision. A claim's lease is `leaseTimestamp(now)` (milliseconds), and the
+   fenced status writes and `releaseClaim` match `locked_at = ?` exactly; a coarser column rounds the lease so that no
+   write matches, and a claimed event is redelivered after every lock timeout.
+2. `created_at` and `locked_at` have the same type and fractional precision. A writer stamp stores one instant in both
+   and is recognised by `locked_at = created_at`; columns that round differently never compare equal.
+
+The shipped schemas (`DATETIME(6)` on MySQL, `TIMESTAMPTZ` on PostgreSQL, `TIMESTAMP` on H2) satisfy both. TUTORIAL §1
+has a check query and a migration for tables that do not.
+
 ### 4.2 Status Values
 
 | Value | Name  | Description                           |

@@ -180,6 +180,9 @@ outbox-jdbc/src/main/java/
   dispatcher each reservation has a `ClaimHandoff`: a cold copy turned away because its event is queued/running hands
   its newer lease to that copy (or releases it if refused); a newer reservation retires the old handoff first. A
   0-row write is not settled.
+- **Timestamp columns**: fencing matches `locked_at` to a millisecond lease exactly and the stamp needs
+  `locked_at = created_at`, so any schema needs `locked_at` at ≥ ms precision and the same type/precision for
+  `created_at` and `locked_at` (SPEC §4.1, TUTORIAL §1). A bare MySQL `DATETIME` (seconds) silently breaks multi-node.
 - **Writer-stamped ownership**: JDBC stores take an optional `writerOwnerId` constructor arg. When set, inserts write
   `locked_by = owner, locked_at = created_at`; `claimPending` treats that equality as an unclaimed stamp the owner may
   claim once immediately while other nodes wait for the lock timeout. Rows older than

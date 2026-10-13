@@ -129,7 +129,12 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
      */
     public abstract List<String> jdbcUrlPrefixes();
 
-    protected String tableName() {
+    /**
+     * The outbox table this store reads and writes.
+     *
+     * @return the validated table name
+     */
+    public String tableName() {
         return tableName;
     }
 

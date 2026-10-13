@@ -182,13 +182,13 @@ public class OutboxAutoConfiguration {
      * never match its own rows and every write would sit unclaimed until the lock timeout. So it
      * is resolved once, here, and injected into both rather than derived twice.
      *
-     * <p>{@code owner-id} is normally {@code ${HOSTNAME}}, which Kubernetes always sets to the pod
-     * name. Where it is not set — local runs, the test context — the property resolves to the
-     * empty string, and an empty owner is worse than no owner: every instance would stamp and
-     * match {@code ""}, so partitioning would be silently off AND {@code locked_by IS NULL} would
-     * never hold again. Rather than fail startup for that (which breaks every environment without
-     * a HOSTNAME), fall back to a per-JVM random id, which satisfies the only real requirement:
-     * unique per running instance.
+     * <p>{@code owner-id} is typically set to {@code ${HOSTNAME:}}, which Kubernetes fills with the
+     * pod name; nothing here reads HOSTNAME itself. Where it is not set — local runs, the test
+     * context — the property resolves to the empty string, and an empty owner is worse than no
+     * owner: every instance would stamp and match {@code ""}, so partitioning would be silently
+     * off AND {@code locked_by IS NULL} would never hold again. Rather than fail startup for that,
+     * fall back to a per-JVM random id, which satisfies the only real requirement: unique per
+     * running instance. Only multi-node uses the id, so only multi-node warns about the fallback.
      *
      * <p>The cost of the fallback is the same as a pod restart under the normal configuration —
      * the previous identity's un-dispatched rows wait out the lock timeout before anyone reclaims
@@ -202,9 +202,12 @@ public class OutboxAutoConfiguration {
             return new OutboxOwnerId(configured);
         }
         String generated = "outbox-" + UUID.randomUUID();
-        LOGGER.warning("outbox.claim-locking.owner-id is not set (HOSTNAME missing?); using a "
-                + "generated per-JVM id " + generated + ". Set HOSTNAME in any environment where "
-                + "instances must keep a stable identity across restarts.");
+        if (props.getMode() == OutboxProperties.Mode.MULTI_NODE) {
+            LOGGER.warning("outbox.claim-locking.owner-id is not set; using a generated per-JVM id "
+                    + generated + ". Set it to a stable id unique per instance (e.g. "
+                    + "outbox.claim-locking.owner-id=${HOSTNAME:} on Kubernetes) so rows this "
+                    + "instance owned are not left for the lock timeout after a restart.");
+        }
         return new OutboxOwnerId(generated);
     }
 
@@ -227,7 +230,9 @@ public class OutboxAutoConfiguration {
         if (!props.getPurge().isEnabled()) {
             return;
         }
-        String tableName = props.getTableName();
+        // The store's own table, not outbox.table-name: a user-supplied store bean may use another
+        // table, and the purger must delete from the table events are actually written to.
+        String tableName = outboxStore.tableName();
         EventPurger purger = writerOnly
                 ? createAgeBasedPurger(outboxStore.name(), tableName)
                 : createEventPurger(outboxStore.name(), tableName);
@@ -245,7 +250,7 @@ public class OutboxAutoConfiguration {
             case "postgresql" -> new PostgresEventPurger(tableName);
             default -> throw new IllegalStateException(
                     "No status-filtered purger for store '" + dbName + "'; "
-                            + "set outbox.purge.enabled=false or supply an EventPurger bean");
+                            + "set outbox.purge.enabled=false");
         };
     }
 

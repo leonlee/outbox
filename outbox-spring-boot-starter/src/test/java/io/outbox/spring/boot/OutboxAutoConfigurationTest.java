@@ -29,7 +29,10 @@ import tools.jackson.databind.json.JsonMapper;
 import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -565,6 +568,61 @@ class OutboxAutoConfigurationTest {
                     assertNull(ctx.getStartupFailure());
                     assertNotNull(ctx.getBean(Outbox.class));
                 });
+    }
+
+    /**
+     * The purger must delete from the table the store writes to. It used to be built from
+     * outbox.table-name, so a user store on another table left its own table growing while the
+     * purger failed against (or emptied) the default one.
+     */
+    @Test
+    void purgeTargetsTheStoresTableNotTheTableNameProperty() {
+        runner.withUserConfiguration(ListenerConfig.class, CustomTableStoreConfig.class)
+                .withPropertyValues(
+                        "outbox.mode=writer-only",
+                        "outbox.purge.enabled=true",
+                        "outbox.purge.retention=P1D",
+                        "outbox.purge.interval-seconds=1")
+                .run(ctx -> {
+                    assertNull(ctx.getStartupFailure());
+                    DataSource dataSource = ctx.getBean(DataSource.class);
+                    String eventId;
+                    try (Connection conn = dataSource.getConnection()) {
+                        conn.setAutoCommit(true);
+                        try (var st = conn.createStatement()) {
+                            st.execute(new String(getClass().getResourceAsStream("/schema-custom.sql")
+                                    .readAllBytes(), StandardCharsets.UTF_8));
+                        }
+                        EventEnvelope old = EventEnvelope.builder("Old").payloadJson("{}")
+                                .occurredAt(Instant.now().minus(Duration.ofDays(2))).build();
+                        ctx.getBean(AbstractJdbcOutboxStore.class).insertNew(conn, old);
+                        eventId = old.eventId();
+                    }
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                    while (rowExists(dataSource, "custom_outbox", eventId) && System.nanoTime() < deadline) {
+                        Thread.sleep(100);
+                    }
+                    assertFalse(rowExists(dataSource, "custom_outbox", eventId),
+                            "the purger must delete from the store's own table");
+                });
+    }
+
+    private static boolean rowExists(DataSource dataSource, String table, String eventId) throws Exception {
+        try (Connection conn = dataSource.getConnection();
+             var ps = conn.prepareStatement("SELECT 1 FROM " + table + " WHERE event_id=?")) {
+            ps.setString(1, eventId);
+            try (var rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomTableStoreConfig {
+        @Bean
+        AbstractJdbcOutboxStore outboxStore() {
+            return new H2OutboxStore("custom_outbox");
+        }
     }
 
     @Test

@@ -491,7 +491,8 @@ outbox.poller.batch-size=50
 outbox.poller.skip-recent-ms=0
 # Multi-node claim locking (requires outbox.mode=multi-node)
 outbox.claim-locking.enabled=false
-outbox.claim-locking.owner-id=# auto-generated if empty
+# Unique per instance, e.g. ${HOSTNAME:} on Kubernetes; empty = generated per JVM
+outbox.claim-locking.owner-id=
 outbox.claim-locking.lock-timeout=PT5M
 # Purge: status-based (DONE + DEAD) in dispatcher modes, age-based in writer-only (CDC) mode
 outbox.purge.enabled=false
@@ -530,13 +531,17 @@ All beans are `@ConditionalOnMissingBean`. Define your own to override:
 ```java
 
 @Bean
-public AbstractJdbcOutboxStore outboxStore(DataSource dataSource) {
+public AbstractJdbcOutboxStore outboxStore(OutboxAutoConfiguration.OutboxOwnerId ownerId) {
     // Custom store with custom table name
     // Set the codec globally before using stores:
     // JsonCodec.setDefault(new JacksonJsonCodec(objectMapper));
-    return new MySqlOutboxStore("my_outbox");
+    // Multi-node with the hot path: the store must stamp rows with the claim owner.
+    // Every other mode: new MySqlOutboxStore("my_outbox").
+    return new MySqlOutboxStore("my_outbox", ownerId.value());
 }
 ```
+
+The purger (`outbox.purge.enabled`) deletes from the store's own table.
 
 ### Multi-Node Mode
 
@@ -544,14 +549,16 @@ public AbstractJdbcOutboxStore outboxStore(DataSource dataSource) {
 outbox.mode=multi-node
 outbox.claim-locking.enabled=true
 outbox.claim-locking.lock-timeout=PT5M
-outbox.claim-locking.owner-id=node-1    # optional, auto-generated if empty
+# Unique per instance (Kubernetes sets HOSTNAME to the pod name); generated per JVM if empty
+outbox.claim-locking.owner-id=${HOSTNAME:}
 ```
 
 ### Writer-Only Mode (CDC)
 
 ```properties
 outbox.mode=writer-only
-outbox.purge.enabled=true               # optional age-based purge
+# Optional age-based purge
+outbox.purge.enabled=true
 outbox.purge.retention=P1D
 ```
 

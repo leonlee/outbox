@@ -101,6 +101,52 @@ CREATE INDEX idx_status_available ON outbox_event(status, available_at, created_
 
 </details>
 
+### Timestamp columns
+
+If you write your own DDL (a migration tool, a renamed table), keep the timestamp columns as the shipped files have
+them. Claim locking compares timestamps for equality, so two rules are load-bearing:
+
+- **`locked_at` must hold at least milliseconds.** A claim records its lease as a millisecond timestamp and every
+  status write, and every release, matches `locked_at` to it exactly. A whole-second column (MySQL's default for a
+  bare `DATETIME`/`TIMESTAMP`, PostgreSQL `TIMESTAMP(0)`) rounds the lease, nothing matches, and in multi-node mode a
+  delivered event is never marked DONE: it is claimed again after every lock timeout.
+- **`created_at` and `locked_at` must have the same type and fractional precision.** The writer stamp stores the
+  same instant in both and is recognised by `locked_at = created_at`; columns that round differently (say
+  `DATETIME(6)` and `DATETIME(3)`) break that equality for any instant they do not both hold exactly, so hot-path
+  writes miss.
+
+Use `DATETIME(6)` on MySQL and `TIMESTAMPTZ` on PostgreSQL for all four timestamp columns. To check an existing table:
+
+```sql
+-- Both rows must show the same type and the same precision, and that precision must be at least 3.
+-- MySQL
+SELECT COLUMN_NAME, DATA_TYPE, DATETIME_PRECISION FROM information_schema.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'outbox_event' AND COLUMN_NAME IN ('created_at', 'locked_at');
+-- PostgreSQL (the schema your application connects to)
+SELECT table_schema, column_name, data_type, datetime_precision FROM information_schema.columns
+ WHERE table_schema = current_schema() AND table_name = 'outbox_event' AND column_name IN ('created_at', 'locked_at');
+```
+
+To fix one, raise the precision of all four columns together and keep each column's type: converting between
+`TIMESTAMP` and `DATETIME` (MySQL) or `TIMESTAMP` and `TIMESTAMPTZ` (PostgreSQL) reinterprets existing values in
+the session time zone. Prefer doing it while no instance is running; a lease taken before the change was stored
+rounded, so its copy's write misses once and the event is redelivered after the lock timeout.
+
+```sql
+-- MySQL, DATETIME columns (use TIMESTAMP(6) if they are TIMESTAMP)
+ALTER TABLE outbox_event
+  MODIFY available_at DATETIME(6) NOT NULL,
+  MODIFY created_at   DATETIME(6) NOT NULL,
+  MODIFY done_at      DATETIME(6),
+  MODIFY locked_at    DATETIME(6);
+-- PostgreSQL, TIMESTAMPTZ columns (use TIMESTAMP(6) if they are TIMESTAMP)
+ALTER TABLE outbox_event
+  ALTER COLUMN available_at TYPE TIMESTAMPTZ(6),
+  ALTER COLUMN created_at   TYPE TIMESTAMPTZ(6),
+  ALTER COLUMN done_at      TYPE TIMESTAMPTZ(6),
+  ALTER COLUMN locked_at    TYPE TIMESTAMPTZ(6);
+```
+
 ---
 
 ## 2. Quick Start (Composite Builder)

@@ -811,6 +811,12 @@ public final class Outbox implements AutoCloseable {
 
     /**
      * Builder for multi-node deployments: hot path + claim-based poller locking.
+     *
+     * <p>With the hot path on and a store that {@link OutboxStore#supportsClaimLocking() locks},
+     * the store must stamp rows with the claim owner ({@link OutboxStore#writerOwnerId()}): the
+     * stamp is the hot copy's lease, without which a stale hot write could overwrite a newer
+     * claim's outcome. A stamping store also needs a lock timeout of at least twice
+     * {@link OutboxStore#WRITER_STAMP_MAX_AGE}.
      */
     public static final class MultiNodeBuilder extends AbstractBuilder<MultiNodeBuilder> {
         private int workerCount = 4;
@@ -907,7 +913,8 @@ public final class Outbox implements AutoCloseable {
         }
 
         /**
-         * Enables claim-based locking with an auto-generated owner ID.
+         * Enables claim-based locking with the store's stamp owner, or an auto-generated owner ID
+         * if the store does not stamp.
          *
          * <p><b>Required.</b>
          *
@@ -915,7 +922,9 @@ public final class Outbox implements AutoCloseable {
          * @return this builder
          */
         public MultiNodeBuilder claimLocking(Duration lockTimeout) {
-            return claimLocking("poller-" + UUID.randomUUID().toString().substring(0, 8), lockTimeout);
+            this.ownerId = null;
+            this.lockTimeout = Objects.requireNonNull(lockTimeout, "lockTimeout");
+            return this;
         }
 
         /**
@@ -923,7 +932,8 @@ public final class Outbox implements AutoCloseable {
          *
          * <p><b>Required.</b>
          *
-         * @param ownerId     unique identifier for this instance
+         * @param ownerId     unique identifier for this instance; must equal the store's
+         *                    {@link OutboxStore#writerOwnerId() stamp owner} if it stamps
          * @param lockTimeout how long a claimed event stays locked
          * @return this builder
          */
@@ -949,10 +959,40 @@ public final class Outbox implements AutoCloseable {
                                 + "and " + outboxStore.getClass().getName() + " does not report "
                                 + "supportsClaimLocking(). Override it, or leave the hot path on.");
             }
+            String stamp = outboxStore.writerOwnerId().orElse(null);
+            String owner = ownerId != null ? ownerId
+                    : stamp != null ? stamp
+                    : "poller-" + UUID.randomUUID().toString().substring(0, 8);
+            requireStampFits(stamp, owner);
             return buildComposite(
                     workerCount, hotQueueCapacity, coldQueueCapacity,
                     maxAttempts, retryPolicy,
-                    ownerId, lockTimeout, hotPathEnabled);
+                    owner, lockTimeout, hotPathEnabled);
+        }
+
+        private void requireStampFits(String stamp, String owner) {
+            if (stamp != null && !stamp.equals(owner)) {
+                // The claim recognises only its own owner's stamp, so this instance would never
+                // claim the rows it wrote: each would wait out the lock timeout.
+                throw new IllegalStateException("The store stamps rows for '" + stamp
+                        + "' but claimLocking() owner is '" + owner + "'; they must be the same id.");
+            }
+            if (!hotPathEnabled) {
+                return;
+            }
+            if (stamp == null && outboxStore.supportsClaimLocking()) {
+                throw new IllegalStateException("multiNode() with the hot path needs a store that "
+                        + "stamps rows with the claim owner, and " + outboxStore.getClass().getName()
+                        + " does not report writerOwnerId(). Construct it with the owner id (e.g. "
+                        + "new MySqlOutboxStore(table, ownerId)), or set hotPathEnabled(false).");
+            }
+            if (stamp != null && lockTimeout.compareTo(OutboxStore.WRITER_STAMP_MAX_AGE.multipliedBy(2)) < 0) {
+                // A stamp aged up to WRITER_STAMP_MAX_AGE must still be a live lease; 2x is margin
+                // for the commit delay the insert-time check cannot see.
+                throw new IllegalStateException("A stamping store needs a claimLocking() lockTimeout of "
+                        + "at least twice " + OutboxStore.WRITER_STAMP_MAX_AGE + " (got " + lockTimeout
+                        + "); a shorter one lets other nodes claim a row this node is delivering.");
+            }
         }
     }
 

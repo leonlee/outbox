@@ -16,6 +16,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -101,6 +102,11 @@ class HotPathDisabledTest {
         @Override
         public boolean supportsClaimFencing() {
             return true;
+        }
+
+        @Override
+        public Optional<String> writerOwnerId() {
+            return Optional.of("owner");
         }
 
         @Override

@@ -13,11 +13,13 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class OutboxTest {
 
@@ -165,8 +167,114 @@ class OutboxTest {
                 Outbox.multiNode()
                         .connectionProvider(STUB_CP).txContext(STUB_TX)
                         .outboxStore(legacyLocking).listenerRegistry(STUB_REG)
+                        // poller-only: with the hot path the missing stamp is refused first
+                        .hotPathEnabled(false)
                         .claimLocking(Duration.ofMinutes(5))
                         .build());
+    }
+
+    /** A store that locks and fences, stamping rows for {@code stamp} (or not at all if null). */
+    private static OutboxStore lockingStore(String stamp) {
+        return new OutboxStore() {
+            @Override
+            public void insertNew(Connection conn, EventEnvelope event) {
+            }
+
+            @Override
+            public int markDone(Connection conn, String eventId) {
+                return 0;
+            }
+
+            @Override
+            public int markRetry(Connection conn, String eventId, Instant nextAt, String error) {
+                return 0;
+            }
+
+            @Override
+            public int markDead(Connection conn, String eventId, String error) {
+                return 0;
+            }
+
+            @Override
+            public List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit) {
+                return List.of();
+            }
+
+            @Override
+            public boolean supportsClaimLocking() {
+                return true;
+            }
+
+            @Override
+            public boolean supportsClaimFencing() {
+                return true;
+            }
+
+            @Override
+            public Optional<String> writerOwnerId() {
+                return Optional.ofNullable(stamp);
+            }
+        };
+    }
+
+    private static Outbox.MultiNodeBuilder multiNodeOn(OutboxStore store) {
+        return Outbox.multiNode()
+                .connectionProvider(STUB_CP).txContext(STUB_TX)
+                .outboxStore(store).listenerRegistry(STUB_REG)
+                .intervalMs(60_000).deferStart(true);
+    }
+
+    /** Without a stamp a hot copy has no lease, so its write can only be fenced on an unclaimed row. */
+    @Test
+    void multiNode_hotPathOnALockingStoreThatDoesNotStamp_throwsISE() {
+        var e = assertThrows(IllegalStateException.class, () ->
+                multiNodeOn(lockingStore(null)).claimLocking("node-1", Duration.ofMinutes(5)).build());
+        assertTrue(e.getMessage().contains("writerOwnerId"), e.getMessage());
+    }
+
+    /** Poller-only has no hot copy to fence, so it needs no stamp. */
+    @Test
+    void multiNode_pollerOnlyOnALockingStoreThatDoesNotStamp_builds() {
+        assertDoesNotThrow(() -> {
+            try (Outbox outbox = multiNodeOn(lockingStore(null)).hotPathEnabled(false)
+                    .claimLocking("node-1", Duration.ofMinutes(5)).build()) {
+                assertNotNull(outbox.writer());
+            }
+        });
+    }
+
+    /** The claim only recognises its own owner's stamp; a mismatch strands every row it writes. */
+    @Test
+    void multiNode_stampOwnerDiffersFromClaimOwner_throwsISE() {
+        assertThrows(IllegalStateException.class, () ->
+                multiNodeOn(lockingStore("node-1")).claimLocking("node-2", Duration.ofMinutes(5)).build());
+        assertThrows(IllegalStateException.class, () ->
+                multiNodeOn(lockingStore("node-1")).hotPathEnabled(false)
+                        .claimLocking("node-2", Duration.ofMinutes(5)).build());
+    }
+
+    /** An auto-generated owner would never match the stamp, so the stamp's owner is used. */
+    @Test
+    void multiNode_autoOwnerTakesTheStampOwner() {
+        assertDoesNotThrow(() -> {
+            try (Outbox outbox = multiNodeOn(lockingStore("node-1")).claimLocking(Duration.ofMinutes(5)).build()) {
+                assertNotNull(outbox.writer());
+            }
+        });
+    }
+
+    /** A stamp must still be a live lease at WRITER_STAMP_MAX_AGE, with margin for commit delay. */
+    @Test
+    void multiNode_stampingStoreWithAShortLockTimeout_throwsISE() {
+        var e = assertThrows(IllegalStateException.class, () ->
+                multiNodeOn(lockingStore("node-1")).claimLocking("node-1", Duration.ofSeconds(59)).build());
+        assertTrue(e.getMessage().contains("lockTimeout"), e.getMessage());
+        assertDoesNotThrow(() -> {
+            try (Outbox outbox = multiNodeOn(lockingStore("node-1"))
+                    .claimLocking("node-1", Duration.ofSeconds(60)).build()) {
+                assertNotNull(outbox.writer());
+            }
+        });
     }
 
     // ── Validation: ordered ──────────────────────────────────────────

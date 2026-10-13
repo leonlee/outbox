@@ -1,6 +1,7 @@
 package io.outbox.spring.boot;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.DeprecatedConfigurationProperty;
 
 import java.time.Duration;
 
@@ -85,7 +86,7 @@ public class OutboxProperties {
         private long hotTripMs = 0;
         private long inFlightTtlMs = 0;
         private boolean suppressReplays = false;
-        private boolean stampWriterOwner = false;
+        private Boolean stampWriterOwner;
         private boolean hotPathEnabled = true;
 
         public int getWorkerCount() {
@@ -159,9 +160,9 @@ public class OutboxProperties {
          * than the poll interval. That combination is rejected at startup. {@code ordered} is
          * poller-only by construction and {@code writer-only} dispatches nothing.
          *
-         * <p>With it off, {@code stamp-writer-owner} is redundant (and ignored), and
-         * {@code skip-recent-ms} can go to 0 — both exist only to keep the poller off a row the
-         * hot path is delivering.
+         * <p>With it off, rows are written unstamped and {@code skip-recent-ms} can go to 0 — both
+         * the stamp and the skip exist only to keep the poller off a row the hot path is
+         * delivering.
          */
         public boolean isHotPathEnabled() {
             return hotPathEnabled;
@@ -171,11 +172,20 @@ public class OutboxProperties {
             this.hotPathEnabled = hotPathEnabled;
         }
 
-        public boolean isStampWriterOwner() {
+        /**
+         * No longer has any effect: {@code multi-node} with the hot path always stamps, and no
+         * other mode does. Kept so an existing setting is reported instead of silently dropped.
+         *
+         * @deprecated the stamp now follows the mode
+         */
+        @Deprecated
+        @DeprecatedConfigurationProperty(reason = "multi-node with the hot path always stamps the writer owner")
+        public Boolean getStampWriterOwner() {
             return stampWriterOwner;
         }
 
-        public void setStampWriterOwner(boolean stampWriterOwner) {
+        @Deprecated
+        public void setStampWriterOwner(Boolean stampWriterOwner) {
             this.stampWriterOwner = stampWriterOwner;
         }
 

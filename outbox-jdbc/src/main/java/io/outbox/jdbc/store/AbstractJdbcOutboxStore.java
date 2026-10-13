@@ -16,6 +16,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Base JDBC outbox store with standard SQL implementations.
@@ -112,6 +113,11 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
         this.writerOwnerId = writerOwnerId;
     }
 
+
+    @Override
+    public Optional<String> writerOwnerId() {
+        return Optional.ofNullable(writerOwnerId);
+    }
 
     /**
      * Unique identifier for this outbox store (e.g., "mysql", "postgresql", "h2").

@@ -198,6 +198,7 @@ OutboxWriter writer = outbox.writer();
 }
 
 // Multi-node: hot path + claim-based locking
+// A locking store must stamp rows with the claim owner: new MySqlOutboxStore(table, "pod-a")
         try(
 Outbox outbox = Outbox.multiNode()
         .connectionProvider(connProvider).txContext(txContext)
@@ -278,7 +279,7 @@ the hot/cold race are no longer needed:
 
 | Setting              | With the hot path                                       | Poller-only                         |
 |----------------------|---------------------------------------------------------|-------------------------------------|
-| `stamp-writer-owner` | keeps other nodes off the row being delivered from memory | redundant — ignored, with a warning |
+| writer stamp         | always on: keeps other nodes off the row being delivered from memory, and fences its write | off: rows insert unowned |
 | `skip-recent-ms`     | holds the poller back so it cannot race that delivery   | can be `0`                          |
 | `suppress-replays`   | dedupes a hot copy against the poller's copy            | no second copy exists to dedupe     |
 | `hot-trip-ms`        | sheds hot work when the queue backs up                  | nothing is enqueued hot             |

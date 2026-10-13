@@ -482,9 +482,6 @@ outbox.dispatcher.suppress-replays=false
 # In-flight tracker entry TTL (ms); 0 = no TTL. With suppress-replays on and this left at 0,
 # the starter uses 60000 and logs a warning. Must exceed your slowest listener.
 outbox.dispatcher.in-flight-ttl-ms=0
-# Stamp locked_by at INSERT so other nodes leave the hot copy alone (multi-node);
-# requires claim-locking.lock-timeout of at least 60s
-outbox.dispatcher.stamp-writer-owner=false
 # Retry backoff
 outbox.retry.base-delay-ms=200
 outbox.retry.max-delay-ms=60000

@@ -65,8 +65,7 @@ class OutboxAutoConfigurationTest {
                 .withPropertyValues(
                         "outbox.mode=multi-node",
                         "outbox.claim-locking.enabled=true",
-                        "outbox.claim-locking.owner-id=",
-                        "outbox.dispatcher.stamp-writer-owner=true")
+                        "outbox.claim-locking.owner-id=")
                 .run(ctx -> {
                     assertFalse(ctx.getStartupFailure() != null,
                             "a missing HOSTNAME must not stop the context loading");
@@ -99,8 +98,7 @@ class OutboxAutoConfigurationTest {
                 .withPropertyValues(
                         "outbox.mode=multi-node",
                         "outbox.claim-locking.enabled=true",
-                        "outbox.claim-locking.owner-id=",
-                        "outbox.dispatcher.stamp-writer-owner=true")
+                        "outbox.claim-locking.owner-id=")
                 .run(ctx -> {
                     assertNotNull(ctx.getBean(Outbox.class));
                     assertEquals(1, ctx.getBeanNamesForType(
@@ -140,7 +138,8 @@ class OutboxAutoConfigurationTest {
     }
 
     /**
-     * A writer stamp under a short lock timeout is a lease other nodes already consider dead.
+     * multi-node with the hot path always stamps, and a stamp under a short lock timeout is a
+     * lease other nodes already consider dead.
      *
      * <p>The stamp is skipped for events older than WRITER_STAMP_MAX_AGE on the grounds that such
      * a lease would be born expired — reasoning that inverts when the lock timeout is smaller than
@@ -149,93 +148,78 @@ class OutboxAutoConfigurationTest {
      * exists to prevent. The pairing is refused at startup, with margin for commit delay.
      */
     @Test
-    void aLockTimeoutInsideTheStampWindowIsRejectedWhenStampingIsOn() {
+    void aLockTimeoutInsideTheStampWindowIsRejectedInMultiNode() {
         runner.withUserConfiguration(ListenerConfig.class)
                 .withPropertyValues(
                         "outbox.mode=multi-node",
                         "outbox.claim-locking.enabled=true",
-                        "outbox.claim-locking.lock-timeout=PT30S",
-                        "outbox.dispatcher.stamp-writer-owner=true")
+                        "outbox.claim-locking.lock-timeout=PT30S")
                 .run(ctx -> {
                     assertNotNull(ctx.getStartupFailure(),
                             "a stamp the poller already considers expired must not boot");
-                    assertTrue(rootCauseMessage(ctx.getStartupFailure()).contains("lock-timeout"),
+                    assertTrue(rootCauseMessage(ctx.getStartupFailure()).contains("lockTimeout"),
                             "the failure has to name the knob");
                 });
     }
 
     /**
-     * Poller-only ignores the stamp, so the stamp's lock-timeout requirement must not apply.
-     *
-     * <p>writerOwnerId() drops stamp-writer-owner with a warning when the hot path is off — every
-     * row inserts unowned, so there is no lease that a short timeout could render born-dead.
-     * Rejecting the timeout anyway would fail startup over a setting the same class documents as a
-     * harmless leftover.
+     * Poller-only writes no stamp, so the stamp's lock-timeout requirement must not apply.
      *
      * <p>The context may still fail here — H2's claim is not exclusive, and poller-only refuses
      * that separately — so the assertion is precisely that the failure, if any, is not the
      * lock-timeout rejection.
      */
     @Test
-    void pollerOnlyDoesNotRejectAShortLockTimeoutForAStampItIgnores() {
+    void pollerOnlyDoesNotRejectAShortLockTimeout() {
         runner.withUserConfiguration(ListenerConfig.class)
                 .withPropertyValues(
                         "outbox.mode=multi-node",
                         "outbox.claim-locking.enabled=true",
                         "outbox.claim-locking.lock-timeout=PT30S",
-                        "outbox.dispatcher.stamp-writer-owner=true",
                         "outbox.dispatcher.hot-path-enabled=false")
                 .run(ctx -> {
                     if (ctx.getStartupFailure() != null) {
                         String message = rootCauseMessage(ctx.getStartupFailure());
-                        assertFalse(message.contains("lock-timeout"),
+                        assertFalse(message.contains("lockTimeout"),
                                 "no stamp is written, so the stamp's timeout rule must not fire: "
                                         + message);
                     }
                 });
     }
 
-    /** The same short timeout is fine when nothing stamps — there is no lease to be born dead. */
-    @Test
-    void aShortLockTimeoutAloneIsAccepted() {
-        runner.withUserConfiguration(ListenerConfig.class)
-                .withPropertyValues(
-                        "outbox.mode=multi-node",
-                        "outbox.claim-locking.enabled=true",
-                        "outbox.claim-locking.lock-timeout=PT30S")
-                .run(ctx -> assertNull(ctx.getStartupFailure(),
-                        "without the stamp the short timeout is a legitimate choice"));
-    }
-
     /**
-     * The writer stamp only exists to keep other nodes off a row this instance is delivering from
-     * its hot queue. With poller-only delivery there is no such row, so the stamp is redundant —
-     * and not free: it would make every insert write a lease that only the claim query's
-     * {@code locked_at = created_at} branch can see past, and strand any row whose owner dies
-     * before claiming it for a full lock timeout.
-     *
-     * <p>Asserted against a control run so the null is known to come from the mode and not from
-     * the stamp being broken generally.
+     * The stamp is the hot copy's lease, so it exists exactly where a hot copy races a claim:
+     * multi-node with the hot path. Elsewhere it would only make a row whose owner dies wait out
+     * the lock timeout for nothing. The deprecated property no longer changes that.
      */
     @Test
-    void theWriterStampIsDroppedWhenThereIsNoHotPathToProtect() {
-        assertNotNull(stampedOwnerOnInsert(true), "control: the hot path does stamp");
-        assertNull(stampedOwnerOnInsert(false),
+    void onlyMultiNodeWithTheHotPathStamps() {
+        assertNotNull(stampedOwnerOnInsert("outbox.mode=multi-node", "outbox.claim-locking.enabled=true",
+                        "outbox.dispatcher.stamp-writer-owner=false"),
+                "multi-node with the hot path stamps, whatever the deprecated property says");
+        assertNull(stampedOwnerOnInsert("outbox.mode=single-node",
+                        "outbox.dispatcher.stamp-writer-owner=true"),
+                "single-node has no claim for the stamp to fence");
+        assertNull(stampedOwnerOnInsert("outbox.mode=writer-only"), "writer-only has no hot copy");
+    }
+
+    /** Poller-only multi-node refuses H2 at startup, so its decision is checked on the method itself. */
+    @Test
+    void pollerOnlyMultiNodeDoesNotStamp() {
+        var props = new OutboxProperties();
+        props.setMode(OutboxProperties.Mode.MULTI_NODE);
+        var owner = new OutboxAutoConfiguration.OutboxOwnerId("pod-a");
+        assertEquals("pod-a", OutboxAutoConfiguration.writerOwnerId(props, owner), "control");
+        props.getDispatcher().setHotPathEnabled(false);
+        assertNull(OutboxAutoConfiguration.writerOwnerId(props, owner),
                 "poller-only inserts must be unowned — every delivery goes through a claim");
     }
 
     /** Inserts one event through the context's own store and reports what landed in locked_by. */
-    private String stampedOwnerOnInsert(boolean hotPathEnabled) {
+    private String stampedOwnerOnInsert(String... properties) {
         AtomicReference<String> owner = new AtomicReference<>();
         runner.withUserConfiguration(ListenerConfig.class)
-                .withPropertyValues(
-                        // writer-only, because the decision under test lives in how the store bean
-                        // is built and has nothing to do with the dispatcher. multi-node would drag
-                        // in the poller-only gate, which refuses H2 for the good reason that its
-                        // claim is not atomic — a different subject.
-                        "outbox.mode=writer-only",
-                        "outbox.dispatcher.stamp-writer-owner=true",
-                        "outbox.dispatcher.hot-path-enabled=" + hotPathEnabled)
+                .withPropertyValues(properties)
                 .run(ctx -> {
                     assertNull(ctx.getStartupFailure());
                     var store = ctx.getBean(AbstractJdbcOutboxStore.class);

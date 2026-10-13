@@ -642,7 +642,12 @@ rows locked. `MySqlOutboxStore` and `PostgresOutboxStore` return `true`; `H2Outb
 nodes, and the hot copy and any cold copy land in the same JVM. `claimPending` treats `locked_at = created_at` as an
 *unclaimed writer stamp*: the owner may claim it once immediately, while other nodes wait for the lock timeout. A
 poller claim overwrites `locked_at`, ending the exemption. Events older than `WRITER_STAMP_MAX_AGE` at insert
-(backfills) are written unowned and skip hot delivery.
+(backfills) are written unowned and skip hot delivery. The store reports its stamp owner through
+`OutboxStore.writerOwnerId()` (empty by default). `Outbox.multiNode()` with the hot path requires a stamp from a store
+that `supportsClaimLocking()`, and in every case requires it to equal the claim owner (`claimLocking(Duration)` takes
+the stamp's owner); a stamping store also needs a lock timeout of at least twice `WRITER_STAMP_MAX_AGE`. The Spring Boot
+starter stamps exactly in `multi-node` with the hot path (`outbox.dispatcher.stamp-writer-owner` is deprecated and
+ignored).
 
 A poller claim writes `locked_at = leaseTimestamp(now)`, which the JDBC stores define as `now` truncated to
 milliseconds plus 1ms. A row is only claimable once `created_at <= now`, so a lease can never equal `created_at` and be
@@ -948,7 +953,8 @@ When `claimLocking` is configured, the poller uses claim-based locking:
   - A hot copy was never claimed. With a writer-stamping store it writes only while the row still carries its stamp
     (`locked_by = writer owner AND locked_at = created_at`); losing the stamp to a claim loses write authority. With a
     store that does not stamp it writes only while the row is unclaimed. Such a row records nothing about a claim that
-    has since been released, so that case is not fenced against it (a known residual).
+    has since been released, so that case is not fenced against it. `Outbox.multiNode()` refuses that combination for
+    a locking store, so the residual remains only for a non-locking store (H2) or manual wiring.
   - This node's own poller can claim a row while a copy of it is queued or running here (its writer stamp, or after a
     lease expired). That poll's copy is turned away and hands its newer lease to the copy that will write; the
     hand-over, the status write and a newer reservation's takeover are serialised per copy, so a superseded attempt

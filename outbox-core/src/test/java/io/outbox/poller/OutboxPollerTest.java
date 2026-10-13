@@ -480,6 +480,37 @@ class OutboxPollerTest {
         }
     }
 
+    /**
+     * PostgreSQL's UPDATE … RETURNING does not return rows in the subquery's ORDER BY. The poller
+     * hands rows over oldest first anyway, so the lag gauge reads the oldest row and back-pressure
+     * leaves the newest ones claimed.
+     */
+    @Test
+    void claimedRowsAreHandedOverOldestFirstWhateverOrderTheStoreReturns() {
+        Instant t = Instant.parse("2026-10-13T00:00:00Z");
+        List<OutboxEvent> unordered = List.of(
+                new OutboxEvent("b", "test.event", "Agg", "agg-1", null, "{}", "{}", 0, t.plusSeconds(2), null),
+                new OutboxEvent("c", "test.event", "Agg", "agg-1", null, "{}", "{}", 0, t.plusSeconds(3), null),
+                new OutboxEvent("a", "test.event", "Agg", "agg-1", null, "{}", "{}", 0, t.plusSeconds(1), null));
+        OutboxStore store = new StubStore() {
+            @Override
+            public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
+                                                  Instant lockExpiry, Duration skipRecent, int limit) {
+                return unordered;
+            }
+        };
+        List<String> handed = new CopyOnWriteArrayList<>();
+        try (OutboxPoller poller = OutboxPoller.builder()
+                .connectionProvider(CP)
+                .outboxStore(store)
+                .handler((event, attempts) -> handed.add(event.eventId()))
+                .claimLocking("owner-1", Duration.ofMinutes(5))
+                .build()) {
+            poller.poll();
+        }
+        assertEquals(List.of("a", "b", "c"), handed);
+    }
+
     /** A locking store that predates fencing is refused up front rather than failing every fenced write. */
     @Test
     void claimLockingRejectsALockingStoreWithoutFencing() {

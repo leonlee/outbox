@@ -128,7 +128,7 @@ Classes by package:
 
 - `AbstractJdbcOutboxStore` - Base outbox store with shared SQL, row mapper, and H2-compatible default claim
 - `H2OutboxStore` - H2 (inherits default subquery-based claim)
-- `MySqlOutboxStore` - MySQL/TiDB (UPDATE...ORDER BY...LIMIT claim)
+- `MySqlOutboxStore` - MySQL/TiDB (`SELECT … FOR UPDATE SKIP LOCKED` + `UPDATE` claim)
 - `PostgresOutboxStore` - PostgreSQL (FOR UPDATE SKIP LOCKED + RETURNING claim)
 - `JdbcOutboxStores` - Static utility with ServiceLoader registry (
   `META-INF/services/io.outbox.jdbc.store.AbstractJdbcOutboxStore`) and `detect(DataSource)` auto-detection
@@ -137,7 +137,7 @@ Classes by package:
 
 - `AbstractJdbcEventPurger` - Base event purger with subquery-based DELETE (H2/PostgreSQL default)
 - `H2EventPurger` - H2 (inherits default)
-- `MySqlEventPurger` - MySQL/TiDB (DELETE...ORDER BY...LIMIT)
+- `MySqlEventPurger` - MySQL/TiDB (`DELETE … LIMIT`)
 - `PostgresEventPurger` - PostgreSQL (inherits default)
 
 **`io.outbox.jdbc.tx`**
@@ -669,61 +669,78 @@ mistaken for an unclaimed writer stamp.
 
 ### 8.2 SQL Semantics
 
-**Insert New:**
+Status codes: 0 NEW, 1 DONE, 2 RETRY, 3 DEAD. Pending = `(0, 2)`; terminal = `(1, 3)`.
+
+**Insert New** (`insertBatch` writes the same columns as one multi-row `INSERT … VALUES (…), (…)`, chunked at 500
+rows):
 
 ```sql
-INSERT INTO outbox_event (event_id, event_type, aggregate_type, aggregate_id,
-  tenant_id, payload, headers, status, attempts, available_at, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+INSERT INTO outbox_event (event_id, event_type, aggregate_type, aggregate_id, tenant_id,
+  payload, headers, status, attempts, available_at, created_at, done_at, last_error, locked_by, locked_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, NULL, NULL, ?, ?)
+-- created_at = occurredAt; available_at = availableAt, else occurredAt.
+-- With a writer stamp: locked_by = writerOwnerId, locked_at = created_at; otherwise both NULL
+-- (also for events older than WRITER_STAMP_MAX_AGE).
 ```
 
-**Mark Done (idempotent):**
+**Status writes.** All four never touch a terminal row, and clear the claim:
 
 ```sql
-UPDATE outbox_event
-SET status = 1, done_at = ?, locked_by = NULL, locked_at = NULL
-WHERE event_id = ? AND status <> 1
+-- Mark Done
+UPDATE outbox_event SET status = 1, done_at = ?, locked_by = NULL, locked_at = NULL <fence>
+-- Mark Retry
+UPDATE outbox_event SET status = 2, attempts = attempts + 1, available_at = ?, last_error = ?,
+  locked_by = NULL, locked_at = NULL <fence>
+-- Mark Dead
+UPDATE outbox_event SET status = 3, done_at = ?, last_error = ?, locked_by = NULL, locked_at = NULL <fence>
+-- Mark Deferred (DispatchResult.RetryAfter: attempts unchanged)
+UPDATE outbox_event SET status = 0, available_at = ?, locked_by = NULL, locked_at = NULL <fence>
 ```
 
-**Mark Retry:**
+`<fence>` is `WHERE event_id = ? AND status NOT IN (1, 3)` plus, by the caller's claim (see §10.4):
 
-```sql
-UPDATE outbox_event
-SET status = 2, attempts = attempts + 1, available_at = ?, last_error = ?,
-    locked_by = NULL, locked_at = NULL
-WHERE event_id = ? AND status <> 1
-```
+| Call                                   | Extra predicate                                            |
+|----------------------------------------|------------------------------------------------------------|
+| unfenced (owner `null`)                | none                                                       |
+| claimed copy `(owner, claimedAt)`      | `AND locked_by = ? AND locked_at = ?`                      |
+| hot copy `(owner, null)`, stamping store | `AND locked_by = ? AND locked_at = created_at`           |
+| hot copy `(owner, null)`, no stamp     | `AND locked_by IS NULL`                                    |
 
-**Mark Dead:**
+The SPI default of `markDeferred` falls back to `markRetry` (which increments attempts); JDBC stores override it.
 
-```sql
-UPDATE outbox_event
-SET status = 3, last_error = ?, locked_by = NULL, locked_at = NULL
-WHERE event_id = ? AND status <> 1
-```
-
-**Mark Deferred** (handler-controlled retry without incrementing attempts):
-
-```sql
-UPDATE outbox_event
-SET status = 0, available_at = ?, locked_by = NULL, locked_at = NULL
-WHERE event_id = ? AND status NOT IN (1, 3)
-```
-
-Default implementation falls back to `markRetry` (which increments attempts). JDBC implementations override with
-the above SQL to preserve the attempt count.
-
-**Poll Pending:**
+**Poll Pending** (single-node, no locking):
 
 ```sql
 SELECT event_id, event_type, aggregate_type, aggregate_id, tenant_id,
-       payload, headers, attempts, created_at
+       payload, headers, attempts, created_at, available_at
 FROM outbox_event
-WHERE status IN (0, 2)
-  AND available_at <= ?
-  AND created_at <= ?
-ORDER BY created_at
+WHERE status IN (0, 2) AND available_at <= ? AND created_at <= ?   -- now, now - skipRecent
+ORDER BY created_at, event_id
 LIMIT ?
+```
+
+**Claim Pending** (multi-node) takes a row that is pending, due, older than `skipRecent`, and either unclaimed, carrying
+this owner's own unclaimed writer stamp, or holding an expired lease; it writes `locked_by = owner,
+locked_at = leaseTimestamp(now)`:
+
+```sql
+-- eligibility, shared by all stores
+status IN (0, 2) AND available_at <= ? AND created_at <= ?
+  AND (locked_by IS NULL OR (locked_by = ? AND locked_at = created_at) OR locked_at < ?)   -- owner, now - lockTimeout
+ORDER BY created_at, event_id LIMIT ?
+```
+
+- **H2** (default): `UPDATE … SET locked_by = ?, locked_at = ? WHERE event_id IN (SELECT … <eligibility>)`, then
+  `SELECT … WHERE locked_by = ? AND locked_at = ?`. Not atomic across pollers (`supportsClaimLocking() = false`).
+- **MySQL**: `SELECT <row columns> … <eligibility> FOR UPDATE SKIP LOCKED`, then `UPDATE … SET locked_by = ?,
+  locked_at = ? WHERE event_id IN (…)` (chunked), in the poller's claim transaction.
+- **PostgreSQL**: `UPDATE … WHERE event_id IN (SELECT event_id … <eligibility> FOR UPDATE SKIP LOCKED) RETURNING …`.
+
+**Release Claim** (drops exactly one lease, only while the row is still pending):
+
+```sql
+UPDATE outbox_event SET locked_by = NULL, locked_at = NULL
+WHERE event_id = ? AND locked_by = ? AND locked_at = ? AND status IN (0, 2)
 ```
 
 ### 8.3 Rules
@@ -990,8 +1007,8 @@ When `claimLocking` is configured, the poller uses claim-based locking:
     throws), never downgraded to an unfenced write.
   - A write that matches no row is logged (WARNING), is not counted as DONE/DEAD, and leaves no replay-suppression
     marker. Fencing cannot undo listener side effects that already ran.
-- **Database-specific**: PostgreSQL uses `FOR UPDATE SKIP LOCKED` + `RETURNING`; MySQL uses `UPDATE...ORDER BY...LIMIT`;
-  H2 uses subquery-based two-phase claim
+- **Database-specific**: PostgreSQL uses `FOR UPDATE SKIP LOCKED` + `RETURNING`; MySQL uses `SELECT … FOR UPDATE SKIP
+  LOCKED` followed by `UPDATE … WHERE event_id IN (…)`; H2 uses a subquery-based two-phase claim (see §8.2)
 
 ### 10.5 OutboxPollerHandler
 
@@ -1435,7 +1452,7 @@ public interface EventPurger {
 |---------------------------|------------|---------------------------------|
 | `AbstractJdbcEventPurger` | Base       | Subquery-based DELETE (default) |
 | `H2EventPurger`           | H2         | Inherits default                |
-| `MySqlEventPurger`        | MySQL/TiDB | `DELETE...ORDER BY...LIMIT`     |
+| `MySqlEventPurger`        | MySQL/TiDB | `DELETE … LIMIT`                |
 | `PostgresEventPurger`     | PostgreSQL | Inherits default                |
 
 **Default purge SQL (H2, PostgreSQL):**
@@ -1624,7 +1641,7 @@ single `AutoCloseable` unit.
 | Builder               | Hot Path | Poller Mode    | workerCount          | maxAttempts           | WriterHook             |
 |-----------------------|----------|----------------|----------------------|-----------------------|------------------------|
 | `Outbox.singleNode()` | Yes      | `pollPending`  | user-set (default 4) | user-set (default 10) | `DispatcherWriterHook` |
-| `Outbox.multiNode()`  | Yes      | `claimPending` | user-set (default 4) | user-set (default 10) | `DispatcherWriterHook` |
+| `Outbox.multiNode()`  | Yes (`hotPathEnabled(false)` = poller-only) | `claimPending` | user-set (default 4) | user-set (default 10) | `DispatcherWriterHook` (none when poller-only) |
 | `Outbox.ordered()`    | No       | `pollPending`  | 1 (forced)           | 1 (forced)            | `NOOP` (forced)        |
 | `Outbox.writerOnly()` | No       | None           | N/A                  | N/A                   | `NOOP` (forced)        |
 
@@ -1639,33 +1656,43 @@ Outbox (final, AutoCloseable)
 │
 └── AbstractBuilder<B> (sealed, permits 4 concrete builders)
     Required: connectionProvider, txContext, outboxStore, listenerRegistry
-    Optional: metrics, interceptor(s), intervalMs, batchSize,
-              skipRecent, drainTimeoutMs
+    Optional: metrics, interceptor(s), intervalMs, batchSize, skipRecent, drainTimeoutMs,
+              hotTripMs, inFlightTtlMs, suppressReplays,
+              purger, purgeRetention, purgeBatchSize, purgeIntervalSeconds, deferStart
 ```
 
 `SingleNodeBuilder` and `MultiNodeBuilder` add: `workerCount`, `hotQueueCapacity`, `coldQueueCapacity`, `maxAttempts`,
-`retryPolicy`. `MultiNodeBuilder` additionally requires `claimLocking(Duration)` or `claimLocking(String, Duration)`.
+`retryPolicy`, `hotPathEnabled` (`false` is rejected by `singleNode()`). `MultiNodeBuilder` additionally requires
+`claimLocking(Duration)` or `claimLocking(String, Duration)`; with the hot path on, a store that
+`supportsClaimLocking()` must stamp rows with the claim owner (`writerOwnerId()`), the stamp owner must equal the claim
+owner in every case (`claimLocking(Duration)` adopts it), and a stamping store needs `lockTimeout >= 2 *
+WRITER_STAMP_MAX_AGE`.
 
 `OrderedBuilder` exposes no additional parameters.
 
-`WriterOnlyBuilder` only requires `txContext` and `outboxStore`. Optionally accepts `purger`, `purgeRetention`,
-`purgeBatchSize`, `purgeIntervalSeconds` for age-based cleanup; if `purger` is set, `connectionProvider` is also
-required. Inherited dispatcher/poller settings are ignored.
+`WriterOnlyBuilder` only requires `txContext` and `outboxStore`. Purge settings (age-based purgers) work as in the other
+modes; if `purger` is set, `connectionProvider` is also required. `listenerRegistry`, `interceptor(s)`, `intervalMs`,
+`batchSize`, `skipRecent` and `drainTimeoutMs` throw `UnsupportedOperationException`; `hotTripMs`, `inFlightTtlMs`
+and `suppressReplays` are accepted and have no effect.
 
 ### 20.3 Build Lifecycle
 
 Each `build()`:
 
-1. Validates required fields (`NullPointerException` if missing).
-2. `MultiNodeBuilder` checks `claimLocking()` was called (`IllegalStateException` if not).
-3. Builds `OutboxDispatcher` (workers start immediately). Skipped for `WriterOnlyBuilder`.
-4. Builds `OutboxPoller` — wrapped in try-catch: if fails, dispatcher is closed before rethrowing. Skipped for
-   `WriterOnlyBuilder`.
-5. Starts poller. Skipped for `WriterOnlyBuilder`.
-6. Creates `OutboxWriter` (with `DispatcherWriterHook` for single/multi-node, `NOOP` for ordered and writer-only).
-7. `WriterOnlyBuilder` optionally builds and starts `OutboxPurgeScheduler` if a purger is configured — wrapped in
-   try-catch: if `start()` fails, the scheduler is closed before rethrowing.
-8. Returns `Outbox`.
+1. Validates required fields (`NullPointerException` if missing) and the builder's own rules
+   (`IllegalStateException` / `IllegalArgumentException`, e.g. `claimLocking()` missing, the stamp rules above).
+2. Builds `OutboxDispatcher` (workers start immediately, but receive nothing yet). Skipped for `WriterOnlyBuilder`.
+3. Builds `OutboxPoller`; if that fails, the dispatcher is closed before rethrowing. Skipped for `WriterOnlyBuilder`.
+4. Creates `OutboxWriter`: with a `DispatcherWriterHook` whose hot path stays closed until `Outbox.start()` in
+   single/multi-node mode, without a hook in ordered, poller-only and writer-only mode.
+5. Builds (does not start) the `OutboxPurgeScheduler` if a purger is set; if that fails, the poller and dispatcher are
+   closed before rethrowing.
+6. Unless `deferStart(true)`, calls `Outbox.start()`: starts the poller, opens the hot path, then starts the purge
+   scheduler (a purge start failure is logged, not thrown). If the poller fails to start, the purge scheduler, poller
+   and dispatcher are closed before rethrowing.
+7. Returns `Outbox`. Under `deferStart(true)` the caller calls `start()` once listeners are registered; until then
+   committed events stay in the table for the poller. `start()` is idempotent and a no-op after `close()` for an
+   outbox that had started.
 
 ### 20.4 Shutdown
 
@@ -1674,6 +1701,10 @@ Each `build()`:
 1. `purgeScheduler.close()` — stop purge schedule.
 2. `poller.close()` — stop feeding cold queue.
 3. `dispatcher.close()` — drain remaining events within `drainTimeoutMs`.
+4. `metrics.close()` if the exporter is `AutoCloseable`.
+
+Every step runs even if an earlier one throws; the first failure is rethrown with the rest suppressed. `close()` is
+idempotent and `synchronized`.
 
 ### 20.5 API
 
@@ -1686,11 +1717,12 @@ try(Outbox outbox = Outbox.singleNode()
 OutboxWriter writer = outbox.writer();
 }
 
-// Multi-node (hot + poller + claim locking)
+// Multi-node (hot + poller + claim locking); the store stamps rows with the claim owner,
+// e.g. store = new MySqlOutboxStore("outbox_event", "pod-a")
         try(
 Outbox outbox = Outbox.multiNode()
         .connectionProvider(cp).txContext(tx).outboxStore(store).listenerRegistry(reg)
-        .claimLocking(Duration.ofMinutes(5))
+        .claimLocking(Duration.ofMinutes(5))     // owner taken from the store's stamp
         .workerCount(8)
         .build()){
 OutboxWriter writer = outbox.writer();

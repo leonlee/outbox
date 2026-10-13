@@ -36,6 +36,8 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
   poller, dispatcher from `application.properties`. `@OutboxListener` annotation and `BoundEventListener` bean
   discovery for declarative listener registration. `JacksonJsonCodec` auto-configured with Spring Boot's Jackson 3 `JsonMapper`.
   `OutboxLifecycle` (`SmartLifecycle`) starts the poller after all listeners are registered, eliminating the startup race.
+  Its phase (`DEFAULT_PHASE - 4096`) is below the web server's graceful-shutdown and stop phases, so the outbox stops
+  after requests and consumers drain. Purge targets the store bean's own `tableName()`.
   `outbox.purge.enabled` applies in every mode (status-based purger in dispatcher modes, age-based in writer-only).
   Dispatcher duplicate controls: `outbox.dispatcher.{hot-path-enabled,hot-trip-ms,suppress-replays,in-flight-ttl-ms}`.
   The writer stamp is on exactly in `multi-node` with the hot path (`stamp-writer-owner` is deprecated and ignored).

@@ -14,8 +14,20 @@ import org.springframework.context.SmartLifecycle;
  *
  * <p>{@link #stop()} delegates to {@link Outbox#close()}, which drains in-flight events
  * and shuts down the poller and dispatcher threads.
+ *
+ * <p>Runs in {@link #PHASE}, below the web server's graceful-shutdown phase
+ * ({@code DEFAULT_PHASE - 1024}) and its stop phase ({@code DEFAULT_PHASE - 2048}), and below
+ * the default phase of message listener containers. Spring stops the highest phase first, so the
+ * outbox keeps dispatching while requests and consumers drain and stops after they have. Left at
+ * the default it would stop first: events committed during the drain would miss the hot path,
+ * and in multi-node — where every insert is stamped with this instance's owner — other nodes
+ * would leave them for the full lock timeout. A custom producer that writes events while
+ * stopping needs a phase above this one.
  */
 public class OutboxLifecycle implements SmartLifecycle {
+
+    /** Below every phase in which application traffic may still commit events. */
+    public static final int PHASE = SmartLifecycle.DEFAULT_PHASE - 4096;
 
     private final Outbox outbox;
     private volatile boolean running;
@@ -39,5 +51,10 @@ public class OutboxLifecycle implements SmartLifecycle {
     @Override
     public boolean isRunning() {
         return running;
+    }
+
+    @Override
+    public int getPhase() {
+        return PHASE;
     }
 }

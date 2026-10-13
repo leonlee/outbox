@@ -658,7 +658,8 @@ mistaken for an unclaimed writer stamp.
 
 Status codes: 0 NEW, 1 DONE, 2 RETRY, 3 DEAD. Pending = `(0, 2)`; terminal = `(1, 3)`.
 
-**Insert New** (`insertBatch` uses the same statement in JDBC batches):
+**Insert New** (`insertBatch` writes the same columns as one multi-row `INSERT … VALUES (…), (…)`, chunked at 500
+rows):
 
 ```sql
 INSERT INTO outbox_event (event_id, event_type, aggregate_type, aggregate_id, tenant_id,

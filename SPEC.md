@@ -602,6 +602,16 @@ public interface OutboxStore {
     // Handler-controlled deferred retry (default falls back to markRetry)
     default int markDeferred(Connection conn, String eventId, Instant nextAt);
 
+    // Claim-fenced variants (see §10.4 Fencing). claimOwner null = unfenced; claimedAt non-null = that
+    // exact lease; claimedAt null = a hot copy. Defaults delegate when claimOwner is null or the store
+    // does not lock, and throw UnsupportedOperationException otherwise. JDBC stores implement them.
+    default int markDone(Connection conn, String eventId, String claimOwner, Instant claimedAt);
+    default int markRetry(Connection conn, String eventId, Instant nextAt, String error,
+                          String claimOwner, Instant claimedAt);
+    default int markDead(Connection conn, String eventId, String error, String claimOwner, Instant claimedAt);
+    default int markDeferred(Connection conn, String eventId, Instant nextAt, String claimOwner, Instant claimedAt);
+    default boolean supportsClaimFencing();   // false; JDBC stores true
+
     List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit);
 
     // Claim-based locking (default falls back to pollPending)
@@ -928,7 +938,30 @@ When `claimLocking` is configured, the poller uses claim-based locking:
 
 - **Claim**: Sets `locked_by` and `locked_at` on pending events atomically
 - **Expiry**: Locks older than the configured timeout are considered expired and can be reclaimed
-- **Release**: `markDone`/`markRetry`/`markDead` clear `locked_by` and `locked_at`
+- **Release**: `markDone`/`markRetry`/`markDead`/`markDeferred` clear `locked_by` and `locked_at`
+- **Fencing**: those status writes apply only while the writing copy still has authority over the row. A copy that
+  outlived its lease (the listener ran past the lock timeout and the row was claimed again) then matches no row,
+  instead of clearing the newer claim or overwriting the new holder's outcome.
+  - A claimed copy, and the poller's decode-failure DEAD write, are fenced on the exact lease:
+    `locked_by = owner AND locked_at = claimedAt`. A newer claim by the same owner, or the new holder's RETRY/DEFERRED
+    that left the row unclaimed, both make the old lease's write a no-op.
+  - A hot copy was never claimed. With a writer-stamping store it writes only while the row still carries its stamp
+    (`locked_by = writer owner AND locked_at = created_at`); losing the stamp to a claim loses write authority. With a
+    store that does not stamp it writes only while the row is unclaimed. Such a row records nothing about a claim that
+    has since been released, so that case is not fenced against it (a known residual).
+  - This node's own poller can claim a row while a copy of it is queued or running here (its writer stamp, or after a
+    lease expired). That poll's copy is turned away and hands its newer lease to the copy that will write; the
+    hand-over, the status write and a newer reservation's takeover are serialised per copy, so a superseded attempt
+    never writes under a newer lease. A duplicate of the claim that copy already holds is accepted as held. A claim the
+    current copy refuses (it has already written) is released exactly, so the next poll delivers the event without
+    waiting for the lock timeout; a refusal by a superseded copy is retried against its successor instead.
+  - `Outbox.multiNode()` sets the dispatcher's `claimOwner` from `claimLocking`, which fences hot copies. Without an
+    owner, hot writes are unfenced; a claimed copy is always fenced on its own lease. A store that locks but does not
+    support fencing is rejected by `multiNode()`, by `OutboxDispatcher.Builder` with a `claimOwner`, and by
+    `OutboxPoller.Builder` with `claimLocking`; a leased write that still reaches it is refused (the SPI default
+    throws), never downgraded to an unfenced write.
+  - A write that matches no row is logged (WARNING), is not counted as DONE/DEAD, and leaves no replay-suppression
+    marker. Fencing cannot undo listener side effects that already ran.
 - **Database-specific**: PostgreSQL uses `FOR UPDATE SKIP LOCKED` + `RETURNING`; MySQL uses `UPDATE...ORDER BY...LIMIT`;
   H2 uses subquery-based two-phase claim
 
@@ -1296,9 +1329,9 @@ MicrometerMetricsExporter(MeterRegistry registry, String namePrefix) // custom p
 | `{prefix}.enqueue.hot`                 | Events enqueued via hot path            |
 | `{prefix}.enqueue.hot.dropped`         | Events dropped (hot queue full)         |
 | `{prefix}.enqueue.cold`                | Events enqueued via cold (poller) path  |
-| `{prefix}.dispatch.success`            | Events marked DONE (write succeeded)    |
+| `{prefix}.dispatch.success`            | Events marked DONE (row updated)        |
 | `{prefix}.dispatch.failure`            | Events failed (will retry)              |
-| `{prefix}.dispatch.dead`               | Events marked DEAD (write succeeded)    |
+| `{prefix}.dispatch.dead`               | Events marked DEAD (row updated)        |
 | `{prefix}.dispatch.deferred`           | Events deferred by handler (RetryAfter) |
 | `{prefix}.enqueue.hot.skipped.delayed` | Delayed events skipped on hot path      |
 

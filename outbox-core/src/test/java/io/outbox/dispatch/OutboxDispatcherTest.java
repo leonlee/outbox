@@ -11,10 +11,13 @@ import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -2478,5 +2481,573 @@ class OutboxDispatcherTest {
     private static QueuedEvent hotWithId(String type, String eventId) {
         return new QueuedEvent(EventEnvelope.builder(type).eventId(eventId).payloadJson("{}").build(),
                 QueuedEvent.Source.HOT, 0);
+    }
+
+    // ── Claim fencing ───────────────────────────────────────────────
+
+    /**
+     * Every status write names the authority it runs under: a claimed copy its exact lease, a hot
+     * copy the dispatcher's claim owner with no lease (its writer stamp). That is what lets the
+     * store refuse a write from a copy whose lease has since been taken over.
+     */
+    @Test
+    void statusWritesCarryTheCopysClaim() throws Exception {
+        Map<String, String> ownerByEvent = new ConcurrentHashMap<>();
+        CountDownLatch writes = new CountDownLatch(5);
+        var store = new StubOutboxStore() {
+            @Override
+            public int markDone(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+                return record(eventId, claimOwner, claimedAt);
+            }
+
+            @Override
+            public int markRetry(Connection conn, String eventId, Instant nextAt, String error,
+                                 String claimOwner, Instant claimedAt) {
+                return record(eventId, claimOwner, claimedAt);
+            }
+
+            @Override
+            public int markDead(Connection conn, String eventId, String error, String claimOwner, Instant claimedAt) {
+                return record(eventId, claimOwner, claimedAt);
+            }
+
+            @Override
+            public int markDeferred(Connection conn, String eventId, Instant nextAt, String claimOwner,
+                                    Instant claimedAt) {
+                return record(eventId, claimOwner, claimedAt);
+            }
+
+            private int record(String eventId, String claimOwner, Instant claimedAt) {
+                ownerByEvent.put(eventId, claimOwner + "@" + claimedAt);
+                writes.countDown();
+                return 1;
+            }
+        };
+        var registry = new DefaultListenerRegistry()
+                .register("Done", event -> DispatchResult.done())
+                .register("Deferred", event -> DispatchResult.retryAfter(Duration.ofSeconds(1)))
+                .register("Dead", event -> DispatchResult.dead("no"))
+                .register("Flaky", event -> {
+                    throw new IllegalStateException("boom");
+                });
+        QueuedEvent.ClaimLease otherLease = new QueuedEvent.ClaimLease("pod-z", LEASE.claimedAt());
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp())
+                .outboxStore(store)
+                .listenerRegistry(registry)
+                .workerCount(1)
+                .maxAttempts(3)
+                .claimOwner("pod-a")
+                .drainTimeoutMs(1000)
+                .build()) {
+            d.enqueueHot(hotWithId("Done", "hot-done"));
+            d.enqueueHot(hotWithId("Deferred", "hot-deferred"));
+            d.enqueueHot(hotWithId("Dead", "hot-dead"));
+            d.enqueueHot(hotWithId("Flaky", "hot-retry"));
+            d.enqueueCold(new QueuedEvent(EventEnvelope.builder("Done").eventId("cold-done").payloadJson("{}").build(),
+                    QueuedEvent.Source.COLD, 0, System.nanoTime(), otherLease));
+            assertTrue(writes.await(3, TimeUnit.SECONDS));
+        }
+
+        assertEquals(Map.of(
+                "hot-done", "pod-a@null",
+                "hot-deferred", "pod-a@null",
+                "hot-dead", "pod-a@null",
+                "hot-retry", "pod-a@null",
+                "cold-done", "pod-z@" + LEASE.claimedAt()), ownerByEvent);
+    }
+
+    /**
+     * A write that matched no row — already terminal, or fenced out because another instance holds
+     * the row now — was not settled here. It must not leave a replay-suppression marker (that would
+     * suppress this instance's next copy of an event it never settled) or count as DONE.
+     */
+    @Test
+    void aWriteThatMatchesNoRowIsNotTreatedAsSettled() throws Exception {
+        AtomicInteger deliveries = new AtomicInteger();
+        CountDownLatch first = new CountDownLatch(1);
+        CountDownLatch second = new CountDownLatch(2);
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            deliveries.incrementAndGet();
+            first.countDown();
+            second.countDown();
+            return DispatchResult.done();
+        });
+        var store = new StubOutboxStore() {
+            @Override
+            public int markDone(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+                return 0;
+            }
+        };
+        CountingMetrics metrics = new CountingMetrics();
+        EventEnvelope envelope = EventEnvelope.ofJson(ONCE, "{}");
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp())
+                .outboxStore(store)
+                .listenerRegistry(registry)
+                .workerCount(1)
+                .metrics(metrics)
+                .drainTimeoutMs(1000)
+                .inFlightTracker(new DefaultInFlightTracker(60_000))
+                .suppressReplays(true)
+                .build()) {
+            d.enqueueHot(new QueuedEvent(envelope, QueuedEvent.Source.HOT, 0));
+            assertTrue(first.await(3, TimeUnit.SECONDS));
+            Thread.sleep(300); // let the first copy finish its write and leave the tracker
+
+            d.enqueueCold(new QueuedEvent(envelope, QueuedEvent.Source.COLD, 0, System.nanoTime(), LEASE));
+            assertTrue(second.await(3, TimeUnit.SECONDS), "the event was never settled, so it must run again");
+        }
+        assertEquals(0, metrics.success.get());
+    }
+
+    // ── Claim hand-over ─────────────────────────────────────────────
+
+    private static final QueuedEvent.ClaimLease L1 = LEASE;
+    private static final QueuedEvent.ClaimLease L2 =
+            new QueuedEvent.ClaimLease("pod-a", LEASE.claimedAt().plusSeconds(600));
+    private static final QueuedEvent.ClaimLease L3 =
+            new QueuedEvent.ClaimLease("pod-a", LEASE.claimedAt().plusSeconds(1200));
+
+    /** Records each fenced status write as "eventId:owner@claimedAt" and each release as "owner@claimedAt". */
+    private static class FencingStore extends StubOutboxStore {
+        final List<String> writes = new CopyOnWriteArrayList<>();
+        final List<String> releases = new CopyOnWriteArrayList<>();
+
+        @Override
+        public int markDone(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+            writes.add(eventId + ":" + claimOwner + "@" + claimedAt);
+            return 1;
+        }
+
+        @Override
+        public int releaseClaim(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+            releases.add(claimOwner + "@" + claimedAt);
+            return 1;
+        }
+
+        void awaitWrites(int count) throws InterruptedException {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (writes.size() < count) {
+                if (System.nanoTime() > deadline) {
+                    throw new AssertionError("expected " + count + " writes, got " + writes);
+                }
+                Thread.sleep(5);
+            }
+        }
+    }
+
+    private static QueuedEvent cold(EventEnvelope envelope, QueuedEvent.ClaimLease lease) {
+        return new QueuedEvent(envelope, QueuedEvent.Source.COLD, 0, System.nanoTime(), lease);
+    }
+
+    private static String at(QueuedEvent.ClaimLease lease) {
+        return lease.owner() + "@" + lease.claimedAt();
+    }
+
+    private static void awaitNotRunning(InFlightTracker tracker, String eventId) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (tracker.isRunning(eventId)) {
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("tracker entry never expired: " + eventId);
+            }
+            Thread.sleep(5);
+        }
+    }
+
+    /**
+     * Writer stamp, then this node's own poller claims it while the hot copy runs. The poller's copy
+     * is turned away; its claim is handed to the hot copy, which then settles under it. Fenced on
+     * the stamp alone the write would miss, and the row would sit claimed until the lock timeout.
+     */
+    @Test
+    void aHotCopySettlesUnderAClaimHandedOverWhileItRuns() throws Exception {
+        CountDownLatch running = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            running.countDown();
+            awaitQuietly(release);
+            return DispatchResult.done();
+        });
+        var store = new FencingStore();
+        EventEnvelope envelope = EventEnvelope.ofJson(ONCE, "{}");
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(registry)
+                .workerCount(1).claimOwner("pod-a").drainTimeoutMs(1000)
+                .build()) {
+            d.enqueueHot(new QueuedEvent(envelope, QueuedEvent.Source.HOT, 0));
+            assertTrue(running.await(5, TimeUnit.SECONDS));
+
+            assertTrue(d.enqueueCold(cold(envelope, L1)));
+            release.countDown();
+            store.awaitWrites(1);
+        }
+
+        assertEquals(List.of(envelope.eventId() + ":" + at(L1)), store.writes);
+        assertEquals(List.of(), store.releases, "the claim was used, not dropped");
+    }
+
+    /**
+     * The hot write misses (its stamp was claimed), and the poller's copy arrives after that write
+     * but before the hot copy's cleanup. Nothing will write under its claim any more, so instead of
+     * being accepted and dropped it is released, and the next poll settles the event.
+     */
+    @Test
+    void aHandOverThatArrivesAfterTheWriteIsReleased() throws Exception {
+        AtomicReference<OutboxDispatcher> dispatcher = new AtomicReference<>();
+        AtomicReference<Thread> poller = new AtomicReference<>();
+        EventEnvelope envelope = EventEnvelope.ofJson(ONCE, "{}");
+        var store = new FencingStore() {
+            @Override
+            public int markDone(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+                if (claimedAt != null) {
+                    return super.markDone(conn, eventId, claimOwner, claimedAt);
+                }
+                // Hot write: the poller's copy turns up mid-write and must wait for its outcome.
+                Thread t = new Thread(() -> dispatcher.get().enqueueCold(cold(envelope, L1)));
+                poller.set(t);
+                t.start();
+                awaitBlockedOrDone(t);
+                super.markDone(conn, eventId, claimOwner, claimedAt);
+                return 0;
+            }
+        };
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> DispatchResult.done());
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(registry)
+                .workerCount(1).claimOwner("pod-a").drainTimeoutMs(1000)
+                .build()) {
+            dispatcher.set(d);
+            d.enqueueHot(new QueuedEvent(envelope, QueuedEvent.Source.HOT, 0));
+            store.awaitWrites(1);
+            poller.get().join(5000);
+            assertEquals(List.of(at(L1)), store.releases, "released exactly, not left to the lock timeout");
+
+            assertTrue(d.enqueueCold(cold(envelope, L2)), "the next poll's claim");
+            store.awaitWrites(2);
+        }
+
+        assertEquals(List.of(envelope.eventId() + ":pod-a@null", envelope.eventId() + ":" + at(L2)), store.writes);
+    }
+
+    /**
+     * c1 outlives its tracker entry, c2 runs alongside it, and c3's claim is handed to c2. When c1
+     * completes it writes under its own lease and its cleanup leaves c2's hand-over alone.
+     */
+    @Test
+    void aNewerAcquisitionKeepsItsHandOverWhenTheOldOneFinishes() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch firstRunning = new CountDownLatch(1);
+        CountDownLatch secondRunning = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch releaseSecond = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            if (calls.incrementAndGet() == 1) {
+                firstRunning.countDown();
+                awaitQuietly(releaseFirst);
+            } else {
+                secondRunning.countDown();
+                awaitQuietly(releaseSecond);
+            }
+            return DispatchResult.done();
+        });
+        var store = new FencingStore();
+        var tracker = new DefaultInFlightTracker(200);
+        EventEnvelope envelope = EventEnvelope.ofJson(ONCE, "{}");
+        String id = envelope.eventId();
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(registry)
+                .workerCount(2).claimOwner("pod-a").inFlightTracker(tracker).drainTimeoutMs(1000)
+                .build()) {
+            d.enqueueCold(cold(envelope, L1));
+            assertTrue(firstRunning.await(5, TimeUnit.SECONDS));
+            awaitNotRunning(tracker, id);
+
+            d.enqueueCold(cold(envelope, L2));
+            assertTrue(secondRunning.await(5, TimeUnit.SECONDS));
+            d.enqueueCold(cold(envelope, L3));
+
+            releaseFirst.countDown();
+            store.awaitWrites(1);
+            releaseSecond.countDown();
+            store.awaitWrites(2);
+        }
+
+        assertEquals(List.of(id + ":" + at(L1), id + ":" + at(L3)), store.writes);
+        assertEquals(List.of(), store.releases);
+    }
+
+    /**
+     * c3's claim reached c1 before c2 was reserved. Reserving c2 retires c1 and moves the claim to
+     * c2: c2 settles under it, c1 keeps only its own lease, and c1's cleanup does not release it.
+     */
+    @Test
+    void aHandOverMovesToTheNewerReservation() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch firstRunning = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            if (calls.incrementAndGet() == 1) {
+                firstRunning.countDown();
+                awaitQuietly(releaseFirst);
+            }
+            return DispatchResult.done();
+        });
+        var store = new FencingStore();
+        var tracker = new DefaultInFlightTracker(200);
+        EventEnvelope envelope = EventEnvelope.ofJson(ONCE, "{}");
+        String id = envelope.eventId();
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(registry)
+                .workerCount(2).claimOwner("pod-a").inFlightTracker(tracker).drainTimeoutMs(1000)
+                .build()) {
+            d.enqueueCold(cold(envelope, L1));
+            assertTrue(firstRunning.await(5, TimeUnit.SECONDS));
+            d.enqueueCold(cold(envelope, L3));
+            awaitNotRunning(tracker, id);
+
+            d.enqueueHot(new QueuedEvent(envelope, QueuedEvent.Source.HOT, 0));
+            store.awaitWrites(1);
+            releaseFirst.countDown();
+            store.awaitWrites(2);
+        }
+
+        assertEquals(List.of(id + ":" + at(L3), id + ":" + at(L1)), store.writes);
+        assertEquals(List.of(), store.releases);
+    }
+
+    /**
+     * Duplicates of the claim the running copy already holds — its own lease, and one handed to it —
+     * are held, not orphaned. Releasing them would clear the live claim and let another node take
+     * the row while the listener still runs.
+     */
+    @Test
+    void aDuplicateOfAHeldClaimIsNotReleased() throws Exception {
+        CountDownLatch running = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            running.countDown();
+            awaitQuietly(release);
+            return DispatchResult.done();
+        });
+        var store = new FencingStore();
+        EventEnvelope envelope = EventEnvelope.ofJson(ONCE, "{}");
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(registry)
+                .workerCount(1).claimOwner("pod-a").drainTimeoutMs(1000)
+                .build()) {
+            d.enqueueCold(cold(envelope, L1));
+            assertTrue(running.await(5, TimeUnit.SECONDS));
+
+            d.enqueueCold(cold(envelope, new QueuedEvent.ClaimLease("pod-a", L1.claimedAt())));
+            d.enqueueCold(cold(envelope, L3));
+            d.enqueueCold(cold(envelope, new QueuedEvent.ClaimLease("pod-a", L3.claimedAt())));
+            assertEquals(List.of(), store.releases);
+
+            release.countDown();
+            store.awaitWrites(1);
+        }
+
+        assertEquals(List.of(envelope.eventId() + ":" + at(L3)), store.writes);
+        assertEquals(List.of(), store.releases);
+    }
+
+    /**
+     * Concurrent duplicates of the running copy's claim each make a temporary reservation that the
+     * tracker check then undoes. None of those may pass for the current copy refusing: the live
+     * claim must survive every one of them, and the running copy settles under it.
+     */
+    @Test
+    void concurrentDuplicatesNeverReleaseTheRunningCopysClaim() throws Exception {
+        CountDownLatch running = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            running.countDown();
+            awaitQuietly(release);
+            return DispatchResult.done();
+        });
+        var store = new FencingStore();
+        EventEnvelope envelope = EventEnvelope.ofJson(ONCE, "{}");
+        int threads = 8;
+        int copiesPerThread = 2000;
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(registry)
+                .workerCount(1).claimOwner("pod-a").drainTimeoutMs(1000)
+                .build()) {
+            d.enqueueCold(cold(envelope, L1));
+            assertTrue(running.await(5, TimeUnit.SECONDS));
+
+            CountDownLatch start = new CountDownLatch(1);
+            List<Thread> pollers = new ArrayList<>();
+            for (int i = 0; i < threads; i++) {
+                Thread t = new Thread(() -> {
+                    awaitQuietly(start);
+                    for (int n = 0; n < copiesPerThread; n++) {
+                        d.enqueueCold(cold(envelope, new QueuedEvent.ClaimLease("pod-a", L1.claimedAt())));
+                    }
+                });
+                pollers.add(t);
+                t.start();
+            }
+            start.countDown();
+            for (Thread t : pollers) {
+                t.join(10_000);
+            }
+            assertEquals(List.of(), store.releases, "a duplicate released the live claim");
+
+            release.countDown();
+            store.awaitWrites(1);
+        }
+
+        assertEquals(List.of(envelope.eventId() + ":" + at(L1)), store.writes);
+    }
+
+    /** A duplicate of a claim that moved to the newer reservation reaches it there, and is not released. */
+    @Test
+    void aDuplicateOfATransferredClaimIsHeldByTheSuccessor() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch firstRunning = new CountDownLatch(1);
+        CountDownLatch secondRunning = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch releaseSecond = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            if (calls.incrementAndGet() == 1) {
+                firstRunning.countDown();
+                awaitQuietly(releaseFirst);
+            } else {
+                secondRunning.countDown();
+                awaitQuietly(releaseSecond);
+            }
+            return DispatchResult.done();
+        });
+        var store = new FencingStore();
+        var tracker = new DefaultInFlightTracker(200);
+        EventEnvelope envelope = EventEnvelope.ofJson(ONCE, "{}");
+        String id = envelope.eventId();
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(registry)
+                .workerCount(2).claimOwner("pod-a").inFlightTracker(tracker).drainTimeoutMs(1000)
+                .build()) {
+            d.enqueueCold(cold(envelope, L1));
+            assertTrue(firstRunning.await(5, TimeUnit.SECONDS));
+            d.enqueueCold(cold(envelope, L3));
+            awaitNotRunning(tracker, id);
+            d.enqueueHot(new QueuedEvent(envelope, QueuedEvent.Source.HOT, 0));
+            assertTrue(secondRunning.await(5, TimeUnit.SECONDS));
+
+            d.enqueueCold(cold(envelope, new QueuedEvent.ClaimLease("pod-a", L3.claimedAt())));
+            assertEquals(List.of(), store.releases);
+
+            releaseSecond.countDown();
+            store.awaitWrites(1);
+            releaseFirst.countDown();
+            store.awaitWrites(2);
+        }
+
+        assertEquals(List.of(id + ":" + at(L3), id + ":" + at(L1)), store.writes);
+        assertEquals(List.of(), store.releases);
+    }
+
+    // ── Stores that predate claim fencing ───────────────────────────
+
+    private static class LegacyLockingStore extends StubOutboxStore {
+        @Override
+        public boolean supportsClaimLocking() {
+            return true;
+        }
+    }
+
+    @Test
+    void aClaimOwnerIsRejectedForALockingStoreWithoutFencing() {
+        OutboxDispatcher.Builder builder = OutboxDispatcher.builder()
+                .connectionProvider(stubCp())
+                .outboxStore(new LegacyLockingStore())
+                .listenerRegistry(new DefaultListenerRegistry())
+                .workerCount(0)
+                .claimOwner("pod-a");
+
+        assertThrows(IllegalArgumentException.class, builder::build);
+    }
+
+    /** An unleased copy without a claim owner requests no fence, so an existing locking store keeps working. */
+    @Test
+    void aLockingStoreWithoutFencingStillServesUnfencedWrites() throws Exception {
+        CountDownLatch delivered = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            delivered.countDown();
+            return DispatchResult.done();
+        });
+        var store = new LegacyLockingStore();
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(registry)
+                .workerCount(1).drainTimeoutMs(1000)
+                .build()) {
+            d.enqueueCold(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.COLD, 0));
+            assertTrue(delivered.await(5, TimeUnit.SECONDS));
+        }
+
+        assertEquals(1, store.markDoneCount.get());
+    }
+
+    /**
+     * A leased copy names its authority even without a claim owner. A store that cannot honour the
+     * fence refuses the write; downgrading it to a plain write could clear a newer holder's claim.
+     */
+    @Test
+    void aLeasedCopyIsNeverWrittenUnfencedOnALockingStoreWithoutFencing() throws Exception {
+        CountDownLatch delivered = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            delivered.countDown();
+            return DispatchResult.done();
+        });
+        var store = new LegacyLockingStore();
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(registry)
+                .workerCount(1).drainTimeoutMs(1000)
+                .build()) {
+            d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), LEASE));
+            assertTrue(delivered.await(5, TimeUnit.SECONDS));
+        }
+
+        assertEquals(0, store.markDoneCount.get(), "no plain write, so no claim was cleared");
+    }
+
+    @Test
+    void fencedDefaultsDelegateOnlyWhenThereIsNoFenceToLose() {
+        var legacy = new LegacyLockingStore();
+        assertEquals(1, legacy.markDone(null, "e", null, null), "no owner: unfenced, as before");
+        assertThrows(UnsupportedOperationException.class,
+                () -> legacy.markDone(null, "e", "pod-a", LEASE.claimedAt()));
+        assertThrows(UnsupportedOperationException.class,
+                () -> legacy.markRetry(null, "e", Instant.now(), "x", "pod-a", null));
+        assertThrows(UnsupportedOperationException.class,
+                () -> legacy.markDead(null, "e", "x", "pod-a", null));
+        assertThrows(UnsupportedOperationException.class,
+                () -> legacy.markDeferred(null, "e", Instant.now(), "pod-a", null));
+
+        var nonLocking = new StubOutboxStore();
+        assertEquals(1, nonLocking.markDone(null, "e", "pod-a", LEASE.claimedAt()),
+                "a store that never claims has nothing to fence against");
+    }
+
+    private static void awaitBlockedOrDone(Thread t) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (t.getState() != Thread.State.BLOCKED && t.getState() != Thread.State.TERMINATED) {
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("hand-over thread neither blocked nor finished: " + t.getState());
+            }
+            Thread.onSpinWait();
+        }
     }
 }

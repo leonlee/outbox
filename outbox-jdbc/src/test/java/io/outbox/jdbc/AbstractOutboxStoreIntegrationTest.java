@@ -406,6 +406,36 @@ abstract class AbstractOutboxStoreIntegrationTest {
         }
     }
 
+    /**
+     * Claim fencing in the real SQL: an old lease's writes miss once the row was taken over, even
+     * after the new holder's nonterminal write left it unclaimed; the exact current lease lands.
+     */
+    @Test
+    void fencedWritesNeedTheExactCurrentLease() throws Exception {
+        EventEnvelope event = EventEnvelope.ofJson("FenceEvent", "{}");
+        try (Connection conn = dataSource().getConnection()) {
+            conn.setAutoCommit(true);
+            store().insertNew(conn, event);
+            Instant now = Instant.now();
+            assertEquals(1, store().claimPending(conn, "owner-1", now, now.minusSeconds(60), Duration.ZERO, 10).size());
+            Instant leaseA = store().leaseTimestamp(now);
+            Instant later = now.plusSeconds(120);
+            assertEquals(1, store().claimPending(conn, "owner-2", later, now.plusSeconds(1), Duration.ZERO, 10).size());
+            Instant leaseB = store().leaseTimestamp(later);
+
+            String id = event.eventId();
+            assertEquals(0, store().markDone(conn, id, "owner-1", leaseA));
+            assertEquals(0, store().markRetry(conn, id, later, "late", "owner-1", leaseA));
+            assertEquals(0, store().markDead(conn, id, "late", "owner-1", leaseA));
+            assertEquals(0, store().markDeferred(conn, id, later, "owner-1", leaseA));
+            assertEquals(EventStatus.NEW.code(), statusOf(conn, id));
+
+            assertEquals(1, store().markRetry(conn, id, later, "boom", "owner-2", leaseB));
+            assertEquals(0, store().markDead(conn, id, "late", "owner-1", leaseA), "unclaimed is not authority");
+            assertEquals(EventStatus.RETRY.code(), statusOf(conn, id));
+        }
+    }
+
     @Test
     void autoDetectFromDataSource() {
         AbstractJdbcOutboxStore detected = JdbcOutboxStores.detect(dataSource());

@@ -1048,6 +1048,156 @@ class JdbcOutboxStoreTest {
         }
     }
 
+    // ── Claim fencing on status writes ──────────────────────────────
+
+    /**
+     * pod-a's lease lapsed and pod-b took the row over. None of pod-a's late writes may touch it:
+     * a RETRY would clear pod-b's lease and let a third instance claim the row mid-delivery.
+     */
+    @Test
+    void fencedWritesSkipARowHeldByAnotherOwner() throws SQLException {
+        String eventId = insertTestEvent();
+        Instant now = Instant.now();
+        try (Connection conn = dataSource.getConnection()) {
+            Instant leaseA = claimAs(conn, POD_A, now);
+            Instant later = now.plusSeconds(600);
+            Instant leaseB = claimAs(conn, "pod-b", later);
+
+            assertEquals(0, outboxStore.markDone(conn, eventId, POD_A, leaseA));
+            assertEquals(0, outboxStore.markRetry(conn, eventId, later, "late", POD_A, leaseA));
+            assertEquals(0, outboxStore.markDead(conn, eventId, "late", POD_A, leaseA));
+            assertEquals(0, outboxStore.markDeferred(conn, eventId, later, POD_A, leaseA));
+            assertEquals("pod-b", lockedByOf(conn), "the current holder keeps the row");
+            assertEquals(EventStatus.NEW.code(), statusOf(conn, eventId));
+
+            assertEquals(1, outboxStore.markDone(conn, eventId, "pod-b", leaseB));
+        }
+    }
+
+    /** The fence is the exact lease: an older generation of the same owner cannot clear a newer one. */
+    @Test
+    void fencedWriteMissesUnderAnOlderLeaseOfTheSameOwner() throws SQLException {
+        String eventId = insertTestEvent();
+        Instant now = Instant.now();
+        try (Connection conn = dataSource.getConnection()) {
+            Instant first = claimAs(conn, POD_A, now);
+            Instant second = claimAs(conn, POD_A, now.plusSeconds(600));
+
+            assertEquals(0, outboxStore.markRetry(conn, eventId, now, "late", POD_A, first));
+            assertEquals(POD_A, lockedByOf(conn));
+            assertEquals(1, outboxStore.markDone(conn, eventId, POD_A, second));
+        }
+    }
+
+    /**
+     * The new holder wrote a nonterminal result, which clears its claim. The row being unclaimed
+     * again is not authority for the old lease: its late DEAD must not discard the scheduled retry.
+     */
+    @Test
+    void staleWriteCannotOverwriteTheNewHoldersRetry() throws SQLException {
+        String eventId = insertTestEvent();
+        Instant now = Instant.now();
+        try (Connection conn = dataSource.getConnection()) {
+            Instant leaseA = claimAs(conn, POD_A, now);
+            Instant leaseB = claimAs(conn, "pod-b", now.plusSeconds(600));
+            assertEquals(1, outboxStore.markRetry(conn, eventId, now.plusSeconds(3600), "boom", "pod-b", leaseB));
+
+            assertEquals(0, outboxStore.markDead(conn, eventId, "late", POD_A, leaseA));
+            assertEquals(EventStatus.RETRY.code(), statusOf(conn, eventId));
+        }
+    }
+
+    /** No owner means unfenced: the single-node behaviour, and that of the old signatures. */
+    @Test
+    void writesWithoutAnOwnerAreNotFenced() throws SQLException {
+        String eventId = insertTestEvent();
+        try (Connection conn = dataSource.getConnection()) {
+            claimAs(conn, "pod-b", Instant.now());
+            assertEquals(1, outboxStore.markDone(conn, eventId, null, null));
+        }
+    }
+
+    /**
+     * A hot copy (no lease) from a stamping store settles only while its writer stamp is in place.
+     * Once a claim replaces the stamp, only that claim's exact lease can write.
+     */
+    @Test
+    void hotWriteOnAStampingStoreNeedsTheStamp() throws SQLException {
+        H2OutboxStore podA = new H2OutboxStore(TABLE, POD_A);
+        EventEnvelope stamped = EventEnvelope.builder("TestEvent").payloadJson("{}").build();
+        EventEnvelope claimed = EventEnvelope.builder("TestEvent").payloadJson("{}").build();
+        try (Connection conn = dataSource.getConnection()) {
+            podA.insertNew(conn, stamped);
+            assertEquals(1, podA.markDone(conn, stamped.eventId(), POD_A, null));
+
+            podA.insertNew(conn, claimed);
+            Instant now = Instant.now();
+            assertEquals(1, podA.claimPending(conn, POD_A, now, now.minusSeconds(300), Duration.ZERO, 10).size());
+            assertEquals(0, podA.markDone(conn, claimed.eventId(), POD_A, null), "the stamp is gone");
+            assertEquals(1, podA.markDone(conn, claimed.eventId(), POD_A, podA.leaseTimestamp(now)));
+        }
+    }
+
+    /** The stamp authorises only its own owner: another owner's hot write must not clear it. */
+    @Test
+    void hotWriteOnAStampingStoreNeedsTheStampsOwner() throws SQLException {
+        H2OutboxStore podA = new H2OutboxStore(TABLE, POD_A);
+        EventEnvelope event = EventEnvelope.builder("TestEvent").payloadJson("{}").build();
+        try (Connection conn = dataSource.getConnection()) {
+            podA.insertNew(conn, event);
+            String id = event.eventId();
+            Instant later = Instant.now().plusSeconds(60);
+
+            assertEquals(0, podA.markDone(conn, id, "pod-b", null));
+            assertEquals(0, podA.markRetry(conn, id, later, "x", "pod-b", null));
+            assertEquals(0, podA.markDead(conn, id, "x", "pod-b", null));
+            assertEquals(0, podA.markDeferred(conn, id, later, "pod-b", null));
+            assertEquals(POD_A, lockedByOf(conn), "the stamp is untouched");
+
+            assertEquals(1, podA.markDone(conn, id, POD_A, null));
+        }
+    }
+
+    /** A hot copy from a store without stamping writes only while the row is unclaimed. */
+    @Test
+    void hotWriteOnANonStampingStoreNeedsAnUnclaimedRow() throws SQLException {
+        String unclaimed = insertTestEvent();
+        try (Connection conn = dataSource.getConnection()) {
+            assertEquals(1, outboxStore.markDone(conn, unclaimed, POD_A, null));
+
+            String claimed = insertTestEvent();
+            claimAs(conn, "pod-b", Instant.now());
+            assertEquals(0, outboxStore.markDone(conn, claimed, POD_A, null));
+            assertEquals(EventStatus.NEW.code(), statusOf(conn, claimed));
+        }
+    }
+
+    /** Claims the one pending row and returns the lease timestamp the claim wrote. */
+    private Instant claimAs(Connection conn, String owner, Instant now) {
+        assertEquals(1, outboxStore.claimPending(
+                conn, owner, now, now.minus(Duration.ofMinutes(5)), Duration.ZERO, 10).size());
+        return outboxStore.leaseTimestamp(now);
+    }
+
+    private String lockedByOf(Connection conn) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT locked_by FROM outbox_event WHERE status <> "
+                + EventStatus.DONE.code());
+             ResultSet rs = ps.executeQuery()) {
+            assertTrue(rs.next());
+            return rs.getString(1);
+        }
+    }
+
+    private int statusOf(Connection conn, String eventId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT status FROM outbox_event WHERE event_id = ?")) {
+            ps.setString(1, eventId);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next());
+                return rs.getInt(1);
+            }
+        }
+    }
+
     private String insertTestEvent() throws SQLException {
         EventEnvelope event = EventEnvelope.builder("TestEvent")
                 .payloadJson("{}")

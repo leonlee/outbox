@@ -76,6 +76,33 @@ class PollerOnlyClaimTest {
         }
 
         @Override
+        public boolean supportsClaimFencing() {
+            return store.supportsClaimFencing();
+        }
+
+        @Override
+        public int markDone(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+            return store.markDone(conn, eventId, claimOwner, claimedAt);
+        }
+
+        @Override
+        public int markRetry(Connection conn, String eventId, Instant nextAt, String error,
+                             String claimOwner, Instant claimedAt) {
+            return store.markRetry(conn, eventId, nextAt, error, claimOwner, claimedAt);
+        }
+
+        @Override
+        public int markDead(Connection conn, String eventId, String error, String claimOwner, Instant claimedAt) {
+            return store.markDead(conn, eventId, error, claimOwner, claimedAt);
+        }
+
+        @Override
+        public int markDeferred(Connection conn, String eventId, Instant nextAt, String claimOwner,
+                                Instant claimedAt) {
+            return store.markDeferred(conn, eventId, nextAt, claimOwner, claimedAt);
+        }
+
+        @Override
         public List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skip, int limit) {
             return store.pollPending(conn, now, skip, limit);
         }

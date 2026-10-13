@@ -76,6 +76,47 @@ public interface OutboxStore {
     int markDone(Connection conn, String eventId);
 
     /**
+     * {@link #markDone(Connection, String)} under claim fencing: applied only while this write
+     * still has authority over the row.
+     *
+     * <p>A dispatch can outlive its lease: the listener runs past the lock timeout, and another
+     * claim takes the row over. Unfenced, the late write would clear that newer claim (a RETRY
+     * makes the row claimable by a third copy while the second is still running) or overwrite
+     * the newer holder's outcome. The four status writes that take a {@code claimOwner} share
+     * these modes:
+     * <ul>
+     *   <li>{@code claimOwner == null}: unfenced, exactly the plain write.
+     *   <li>{@code claimedAt != null}: the exact lease. Applies only while {@code locked_by} and
+     *       {@code locked_at} still equal {@code claimOwner} and {@code claimedAt}, the
+     *       {@link #leaseTimestamp} value the claim wrote. A newer claim, even by the same owner,
+     *       or a newer holder's nonterminal write that cleared it, makes this a no-op.
+     *   <li>{@code claimedAt == null}: a hot copy, which was never claimed. A store that stamps
+     *       its writer owner applies the write only while the row still carries that stamp
+     *       ({@code locked_at = created_at}); losing the stamp to a claim loses write authority.
+     *       A store without stamping applies it only while the row is unclaimed. Nothing in such
+     *       a row records a claim that has since been released, so that last case is not fenced
+     *       against it.
+     * </ul>
+     *
+     * <p>The defaults delegate to the plain write when {@code claimOwner} is {@code null}, or
+     * when this store does not {@link #supportsClaimLocking() lock} (nothing to fence against).
+     * A locking store that has not implemented fencing throws
+     * {@link UnsupportedOperationException} for a fenced write rather than silently ignoring the
+     * fence; see {@link #supportsClaimFencing()}.
+     *
+     * @param conn       the JDBC connection
+     * @param eventId    the event ID to update
+     * @param claimOwner the owner this write runs under, or {@code null} for an unfenced write
+     * @param claimedAt  the exact lease timestamp, or {@code null} for a hot copy
+     * @return the number of rows updated: 0 if the event is already terminal or the write no
+     *         longer has authority over it
+     */
+    default int markDone(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+        requireFencingIfLocking(claimOwner);
+        return markDone(conn, eventId);
+    }
+
+    /**
      * Marks an event for retry with a scheduled next-attempt time.
      *
      * <p>Implementations <strong>must</strong> increment the event's {@code attempts} column
@@ -91,6 +132,18 @@ public interface OutboxStore {
     int markRetry(Connection conn, String eventId, Instant nextAt, String error);
 
     /**
+     * {@link #markRetry(Connection, String, Instant, String)} under claim fencing; see
+     * {@link #markDone(Connection, String, String, Instant)}.
+     *
+     * @return the number of rows updated (0 if terminal or no longer under this write's authority)
+     */
+    default int markRetry(Connection conn, String eventId, Instant nextAt, String error,
+                          String claimOwner, Instant claimedAt) {
+        requireFencingIfLocking(claimOwner);
+        return markRetry(conn, eventId, nextAt, error);
+    }
+
+    /**
      * Marks an event as DEAD (permanently failed, no more retries).
      *
      * @param conn    the JDBC connection
@@ -99,6 +152,17 @@ public interface OutboxStore {
      * @return the number of rows updated (0 or 1)
      */
     int markDead(Connection conn, String eventId, String error);
+
+    /**
+     * {@link #markDead(Connection, String, String)} under claim fencing; see
+     * {@link #markDone(Connection, String, String, Instant)}.
+     *
+     * @return the number of rows updated (0 if terminal or no longer under this write's authority)
+     */
+    default int markDead(Connection conn, String eventId, String error, String claimOwner, Instant claimedAt) {
+        requireFencingIfLocking(claimOwner);
+        return markDead(conn, eventId, error);
+    }
 
     /**
      * Marks an event as deferred (handler requested retry-after) without incrementing
@@ -118,6 +182,39 @@ public interface OutboxStore {
      */
     default int markDeferred(Connection conn, String eventId, Instant nextAt) {
         return markRetry(conn, eventId, nextAt, null);
+    }
+
+    /**
+     * {@link #markDeferred(Connection, String, Instant)} under claim fencing; see
+     * {@link #markDone(Connection, String, String, Instant)}.
+     *
+     * @return the number of rows updated (0 if terminal or no longer under this write's authority)
+     */
+    default int markDeferred(Connection conn, String eventId, Instant nextAt, String claimOwner, Instant claimedAt) {
+        requireFencingIfLocking(claimOwner);
+        return markDeferred(conn, eventId, nextAt);
+    }
+
+    /**
+     * Whether this store implements the claim-fenced status writes
+     * ({@link #markDone(Connection, String, String, Instant)} and the other three).
+     *
+     * <p>Defaults to {@code false}. Builders that would issue fenced writes against a store that
+     * {@link #supportsClaimLocking() locks} reject one that returns {@code false}, so an existing
+     * custom store fails at startup instead of losing the fence silently.
+     *
+     * @return {@code true} if the fenced overloads honour their fence
+     */
+    default boolean supportsClaimFencing() {
+        return false;
+    }
+
+    private void requireFencingIfLocking(String claimOwner) {
+        if (claimOwner != null && supportsClaimLocking()) {
+            throw new UnsupportedOperationException(getClass().getName()
+                    + " supports claim locking but does not implement the claim-fenced status writes;"
+                    + " override them and supportsClaimFencing()");
+        }
     }
 
     /**

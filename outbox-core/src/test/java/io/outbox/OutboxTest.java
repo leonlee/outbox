@@ -128,6 +128,47 @@ class OutboxTest {
                         .build());
     }
 
+    /** A locking store that predates claim fencing would throw on every fenced write: refuse it up front. */
+    @Test
+    void multiNode_lockingStoreWithoutFencing_throwsIAE() {
+        OutboxStore legacyLocking = new OutboxStore() {
+            @Override
+            public void insertNew(Connection conn, EventEnvelope event) {
+            }
+
+            @Override
+            public int markDone(Connection conn, String eventId) {
+                return 0;
+            }
+
+            @Override
+            public int markRetry(Connection conn, String eventId, Instant nextAt, String error) {
+                return 0;
+            }
+
+            @Override
+            public int markDead(Connection conn, String eventId, String error) {
+                return 0;
+            }
+
+            @Override
+            public List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit) {
+                return List.of();
+            }
+
+            @Override
+            public boolean supportsClaimLocking() {
+                return true;
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () ->
+                Outbox.multiNode()
+                        .connectionProvider(STUB_CP).txContext(STUB_TX)
+                        .outboxStore(legacyLocking).listenerRegistry(STUB_REG)
+                        .claimLocking(Duration.ofMinutes(5))
+                        .build());
+    }
+
     // ── Validation: ordered ──────────────────────────────────────────
 
     @Test

@@ -6,6 +6,7 @@ import io.outbox.EventListener;
 import io.outbox.RecoverableException;
 import io.outbox.RetryAfterException;
 import io.outbox.UnrecoverableException;
+import io.outbox.dispatch.QueuedEvent.ClaimLease;
 import io.outbox.registry.ListenerRegistry;
 import io.outbox.spi.ConnectionProvider;
 import io.outbox.spi.MetricsExporter;
@@ -18,8 +19,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -50,6 +51,8 @@ public final class OutboxDispatcher implements AutoCloseable {
     private static final Logger logger = Logger.getLogger(OutboxDispatcher.class.getName());
 
     private static final long QUEUE_POLL_TIMEOUT_MS = 50;
+    /** {@link #withConnection} result for a status write that threw. */
+    private static final int WRITE_FAILED = -1;
 
     private final BlockingQueue<QueuedEvent> hotQueue;
     private final BlockingQueue<QueuedEvent> coldQueue;
@@ -66,8 +69,16 @@ public final class OutboxDispatcher implements AutoCloseable {
      * a queued copy has not acquired anything yet, so a poll arriving while a backlog drains would
      * re-queue every row still waiting. Measured on a 4-row backlog in ordered mode before this
      * existed: 1, 3, 6 and 9 deliveries of the four rows.
+     *
+     * <p>Each holds the copy's {@link ClaimHandoff}, so a copy turned away while this one waits can
+     * hand its newer claim over.
      */
-    private final Set<String> queued = ConcurrentHashMap.newKeySet();
+    private final Map<String, ClaimHandoff> queued = new ConcurrentHashMap<>();
+    /**
+     * The current reservation's {@link ClaimHandoff} per event, from reserve until its worker is
+     * done. Replaced only by a newer reservation, which retires the old entry first.
+     */
+    private final Map<String, ClaimHandoff> handoffs = new ConcurrentHashMap<>();
 
     private final ConnectionProvider connectionProvider;
     private final OutboxStore outboxStore;
@@ -89,6 +100,8 @@ public final class OutboxDispatcher implements AutoCloseable {
     private final boolean suppressReplays;
     /** When false the hot queue is never fed, so the workers do not look at it. */
     private final boolean hotPathEnabled;
+    /** Fences status writes for copies that carry no lease of their own (hot copies); may be null. */
+    private final String claimOwner;
 
     private OutboxDispatcher(Builder builder) {
         this.connectionProvider = Objects.requireNonNull(builder.connectionProvider, "connectionProvider");
@@ -110,6 +123,14 @@ public final class OutboxDispatcher implements AutoCloseable {
 
         this.suppressReplays = builder.suppressReplays;
         this.hotPathEnabled = builder.hotPathEnabled;
+        this.claimOwner = builder.claimOwner;
+        if (claimOwner != null && outboxStore.supportsClaimLocking() && !outboxStore.supportsClaimFencing()) {
+            // The SPI default refuses a fenced write on a locking store rather than drop the fence,
+            // so every status write would fail. Say so now instead.
+            throw new IllegalArgumentException(outboxStore.getClass().getName()
+                    + " supports claim locking but not claim fencing; override supportsClaimFencing()"
+                    + " and the fenced status writes");
+        }
         if (this.suppressReplays && !this.inFlightTracker.hasTtl()) {
             // Without expiry, a terminal entry is never reclaimed and that event can never be
             // dispatched again — a far worse failure than the duplicate this is meant to prevent.
@@ -187,8 +208,9 @@ public final class OutboxDispatcher implements AutoCloseable {
         //
         // The add IS the reservation. A contains() check first would not be atomic: the poller's
         // thread and this one can both pass it and both offer, and without replay suppression the
-        // second copy redelivers as soon as the first settles. Set.add admits exactly one caller.
-        if (!reserve(eventId)) {
+        // second copy redelivers as soon as the first settles. putIfAbsent admits exactly one caller.
+        ClaimHandoff handoff = new ClaimHandoff(null);
+        if (!reserve(eventId, handoff)) {
             metrics.incrementDispatchSuppressed();
             metrics.recordQueueDepths(hotQueue.size(), coldQueue.size());
             return true;
@@ -196,7 +218,7 @@ public final class OutboxDispatcher implements AutoCloseable {
         // Only this call's own reservation — reserve() returned true, so the id is ours to undo.
         boolean enqueued = hotQueue.offer(event);
         if (!enqueued) {
-            queued.remove(eventId);
+            unreserve(eventId, handoff);
         }
         metrics.recordQueueDepths(hotQueue.size(), coldQueue.size());
         return enqueued;
@@ -266,15 +288,17 @@ public final class OutboxDispatcher implements AutoCloseable {
         //
         // The add IS the reservation — atomic, where contains-then-add lets two concurrent
         // callers both through and, without replay suppression, both copies deliver.
-        if (!reserve(eventId)) {
+        ClaimHandoff handoff = new ClaimHandoff(event.claimLease());
+        if (!reserve(eventId, handoff)) {
             metrics.incrementDispatchSuppressed();
+            handOver(eventId, event.claimLease());
             metrics.recordQueueDepths(hotQueue.size(), coldQueue.size());
             return true;
         }
         // Only this call's own reservation — reserve() returned true, so the id is ours to undo.
         boolean enqueued = coldQueue.offer(event);
         if (!enqueued) {
-            queued.remove(eventId);
+            unreserve(eventId, handoff);
         }
         metrics.recordQueueDepths(hotQueue.size(), coldQueue.size());
         return enqueued;
@@ -285,13 +309,13 @@ public final class OutboxDispatcher implements AutoCloseable {
      * queued or running.
      *
      * <p>Reserve first, then ask the tracker. A worker acquires the tracker before it drops the
-     * queued marker, so once {@code add} succeeds any earlier copy has either finished or is
+     * queued marker, so once {@code putIfAbsent} succeeds any earlier copy has either finished or is
      * visibly running. Asking the tracker first leaves a gap: the read says "not running", the
-     * earlier copy then hands off from the queue to the tracker, and {@code add} succeeds behind a
+     * earlier copy then hands off from the queue to the tracker, and the reservation succeeds behind a
      * listener that is already running.
      */
-    private boolean reserve(String eventId) {
-        if (!queued.add(eventId)) {
+    private boolean reserve(String eventId, ClaimHandoff handoff) {
+        if (queued.putIfAbsent(eventId, handoff) != null) {
             return false;
         }
         // Undo this call's reservation unless it is kept — in a finally, as at the worker handoff,
@@ -300,12 +324,82 @@ public final class OutboxDispatcher implements AutoCloseable {
         boolean reserved = false;
         try {
             reserved = !inFlightTracker.isRunning(eventId);
-            return reserved;
         } finally {
             if (!reserved) {
-                queued.remove(eventId);
+                unreserve(eventId, handoff);
             }
         }
+        if (!reserved) {
+            return false;
+        }
+        // This copy is now the current one. A previous copy can still be running (its tracker
+        // entry expired), so retire it before publishing this one: from here on it writes only
+        // under its own lease, and a claim already handed to it moves to this copy.
+        ClaimHandoff previous = handoffs.get(eventId);
+        if (previous != null) {
+            ClaimLease carried = previous.retire();
+            if (carried != null) {
+                handoff.adopt(carried);
+            }
+        }
+        handoffs.put(eventId, handoff);
+        return true;
+    }
+
+    /**
+     * Undoes this call's own reservation; a claim handed to it meanwhile is passed on.
+     *
+     * <p>Unpublished before it is closed. A closed entry still in {@link #queued} would look like
+     * the current copy refusing, and {@link #handOver} would release a claim that the copy still
+     * running here holds. Closed afterwards instead, a caller that found it a moment earlier is
+     * either refused and retries against the copy that is current now, or lands in it and is
+     * passed on as this reservation's orphan.
+     */
+    private void unreserve(String eventId, ClaimHandoff handoff) {
+        queued.remove(eventId, handoff);
+        handoffs.remove(eventId, handoff);
+        ClaimLease orphan = handoff.abandon();
+        handOver(eventId, orphan);
+    }
+
+    /**
+     * Passes a claim nobody here will write under to the copy of the same event that is current:
+     * the claim of a cold copy turned away by {@link #reserve}, or one handed to a copy that then
+     * stopped without writing.
+     *
+     * <p>Such a claim is usually the one the row carries now, so the copy that will write needs it:
+     * fenced on its own older lease (or its writer stamp) the write would miss, and the row would
+     * sit claimed until the lock timeout. A duplicate of the claim that copy already holds is
+     * simply accepted. Only when the copy that is still current refuses it — it has written, or
+     * there is none — is the claim released, so the next poll delivers the event. A refusal by a
+     * copy that has meanwhile been superseded proves nothing (the claim may have moved to its
+     * successor), so the successor is asked instead.
+     */
+    private void handOver(String eventId, ClaimLease lease) {
+        if (lease == null) {
+            return;
+        }
+        ClaimHandoff current = currentHandoff(eventId);
+        while (current != null) {
+            if (current.adopt(lease)) {
+                return;
+            }
+            ClaimHandoff latest = currentHandoff(eventId);
+            if (latest == current) {
+                break;
+            }
+            current = latest;
+        }
+        releaseLease(eventId, lease);
+    }
+
+    /**
+     * The reservation that will write next for this event. A queued copy is checked first: while
+     * its reservation is in progress it is not published yet, but it is the one that will write.
+     */
+    private ClaimHandoff currentHandoff(String eventId) {
+        ClaimHandoff current = queued.get(eventId);
+        return current != null ? current : handoffs.get(eventId);
     }
 
     public int coldQueueRemainingCapacity() {
@@ -400,13 +494,20 @@ public final class OutboxDispatcher implements AutoCloseable {
         // second acquires cleanly and the event delivers twice, in sequence. Acquire-first has no
         // gap: isRunning becomes true before the marker is dropped.
         long token;
+        ClaimHandoff handoff;
         try {
             token = inFlightTracker.acquire(eventId);
         } finally {
-            queued.remove(eventId);
+            // This copy's own: the marker excludes any other reservation until it is removed.
+            handoff = queued.remove(eventId);
+        }
+        if (handoff == null) {
+            // Never reserved (a direct call): nothing can hand over to it, so it writes on its own.
+            handoff = new ClaimHandoff(event.claimLease());
         }
         if (token == InFlightTracker.NOT_ACQUIRED) {
             metrics.incrementDispatchSuppressed();
+            finishHandoff(eventId, handoff);
             abandonWithoutStranding(event, eventId);
             return;
         }
@@ -419,11 +520,11 @@ public final class OutboxDispatcher implements AutoCloseable {
 
             if (result instanceof DispatchResult.RetryAfter retryAfter) {
                 Instant nextAt = Instant.now().plus(retryAfter.delay());
-                markDeferred(eventId, nextAt);
+                markDeferred(eventId, handoff, nextAt);
                 metrics.incrementDispatchDeferred();
             } else if (result instanceof DispatchResult.Dead dead) {
                 String reason = dead.reason() != null ? dead.reason() : "Listener returned Dead";
-                settled = markDead(eventId, reason);
+                settled = markDead(eventId, handoff, reason);
                 if (settled) {
                     metrics.incrementDispatchDead();
                 }
@@ -432,14 +533,15 @@ public final class OutboxDispatcher implements AutoCloseable {
                 if (latencyMs >= 0) {
                     metrics.recordDispatchLatencyMs(latencyMs);
                 }
-                settled = markDone(eventId);
+                settled = markDone(eventId, handoff);
                 if (settled) {
                     metrics.incrementDispatchSuccess();
                 }
             }
         } catch (Exception e) {
-            settled = handleFailure(event, e);
+            settled = handleFailure(event, handoff, e);
         } finally {
+            finishHandoff(eventId, handoff);
             // Both name the token. After a TTL reclamation this acquisition is no longer the live
             // one, and ending somebody else's would hand the event out a third time.
             if (settled && suppressReplays) {
@@ -492,15 +594,13 @@ public final class OutboxDispatcher implements AutoCloseable {
             // terminal write clears the lease.
             return;
         }
-        QueuedEvent.ClaimLease lease = event.claimLease();
+        ClaimLease lease = event.claimLease();
         if (lease == null) {
             return;
         }
-        int[] freed = {0};
-        withConnection("release claim", eventId,
-                conn -> freed[0] = outboxStore.releaseClaim(
-                        conn, eventId, lease.owner(), lease.claimedAt()));
-        if (freed[0] > 0) {
+        int freed = withConnection("release claim", eventId,
+                conn -> outboxStore.releaseClaim(conn, eventId, lease.owner(), lease.claimedAt()));
+        if (freed > 0) {
             // releaseClaim only matches rows still awaiting delivery, so a hit proves the row came
             // back after this marker was written — a replay, or any other reset. The marker is
             // therefore stale: drop it, and the next poll delivers the event instead of suppressing
@@ -562,10 +662,10 @@ public final class OutboxDispatcher implements AutoCloseable {
     }
 
     /** @return {@code true} if the event reached a terminal state (DEAD); false if it will retry. */
-    private boolean handleFailure(QueuedEvent event, Exception failure) {
+    private boolean handleFailure(QueuedEvent event, ClaimHandoff handoff, Exception failure) {
         String eventId = event.envelope().eventId();
         if (failure instanceof UnrecoverableException) {
-            boolean dead = markDead(eventId, failure);
+            boolean dead = markDead(eventId, handoff, failure);
             if (dead) {
                 metrics.incrementDispatchDead();
             }
@@ -575,7 +675,7 @@ public final class OutboxDispatcher implements AutoCloseable {
 
         int nextAttempt = event.attempts() + 1;
         if (nextAttempt >= maxAttempts) {
-            boolean dead = markDead(eventId, failure);
+            boolean dead = markDead(eventId, handoff, failure);
             if (dead) {
                 metrics.incrementDispatchDead();
             }
@@ -583,64 +683,119 @@ public final class OutboxDispatcher implements AutoCloseable {
             return dead;
         } else if (failure instanceof RetryAfterException retryAfterEx) {
             Instant nextAt = Instant.now().plus(retryAfterEx.retryAfter());
-            markRetry(eventId, nextAt, failure);
+            markRetry(eventId, handoff, nextAt, failure);
             metrics.incrementDispatchFailure();
         } else {
             long delayMs = retryPolicy.computeDelayMs(nextAttempt);
             Instant nextAt = Instant.now().plusMillis(delayMs);
-            markRetry(eventId, nextAt, failure);
+            markRetry(eventId, handoff, nextAt, failure);
             metrics.incrementDispatchFailure();
         }
         return false;
     }
 
-    /** @return {@code false} if the write failed; {@link #withConnection} logs and swallows. */
-    private boolean markDone(String eventId) {
-        return withConnection("mark DONE", eventId,
-                conn -> outboxStore.markDone(conn, eventId));
+    /** @return {@code true} only if the row was updated; see {@link #landed}. */
+    private boolean markDone(String eventId, ClaimHandoff handoff) {
+        return fencedWrite("mark DONE", eventId, handoff,
+                (conn, owner, claimedAt) -> outboxStore.markDone(conn, eventId, owner, claimedAt));
     }
 
-    private boolean markDeferred(String eventId, Instant nextAt) {
-        return withConnection("mark DEFERRED", eventId,
-                conn -> outboxStore.markDeferred(conn, eventId, nextAt));
+    private boolean markDeferred(String eventId, ClaimHandoff handoff, Instant nextAt) {
+        return fencedWrite("mark DEFERRED", eventId, handoff,
+                (conn, owner, claimedAt) -> outboxStore.markDeferred(conn, eventId, nextAt, owner, claimedAt));
     }
 
-    private boolean markRetry(String eventId, Instant nextAt, Exception failure) {
-        return withConnection("mark RETRY", eventId,
-                conn -> outboxStore.markRetry(conn, eventId, nextAt, failure == null ? null : failure.getMessage()));
+    private boolean markRetry(String eventId, ClaimHandoff handoff, Instant nextAt, Exception failure) {
+        String error = failure == null ? null : failure.getMessage();
+        return fencedWrite("mark RETRY", eventId, handoff,
+                (conn, owner, claimedAt) -> outboxStore.markRetry(conn, eventId, nextAt, error, owner, claimedAt));
     }
 
-    private boolean markDead(String eventId, Exception failure) {
-        return withConnection("mark DEAD", eventId,
-                conn -> outboxStore.markDead(conn, eventId, failure == null ? null : failure.getMessage()));
+    private boolean markDead(String eventId, ClaimHandoff handoff, Exception failure) {
+        return markDead(eventId, handoff, failure == null ? null : failure.getMessage());
     }
 
-    private boolean markDead(String eventId, String reason) {
-        return withConnection("mark DEAD", eventId,
-                conn -> outboxStore.markDead(conn, eventId, reason));
+    private boolean markDead(String eventId, ClaimHandoff handoff, String reason) {
+        return fencedWrite("mark DEAD", eventId, handoff,
+                (conn, owner, claimedAt) -> outboxStore.markDead(conn, eventId, reason, owner, claimedAt));
+    }
+
+    /**
+     * Runs a status write fenced on the lease the copy holds when it writes: the exact lease for a
+     * claimed copy, else this dispatcher's {@link Builder#claimOwner} with no lease (a hot copy,
+     * fenced on its writer stamp), else unfenced.
+     */
+    private boolean fencedWrite(String action, String eventId, ClaimHandoff handoff, FencedWrite op) {
+        int rows = handoff.write(lease -> {
+            // A lease is never dropped: a store that locks but cannot fence refuses the write (the
+            // SPI default throws) rather than let a stale copy clear a newer holder's claim.
+            String owner = lease != null ? lease.owner() : claimOwner;
+            Instant claimedAt = lease != null ? lease.claimedAt() : null;
+            return withConnection(action, eventId, conn -> op.execute(conn, owner, claimedAt));
+        });
+        return landed(action, eventId, rows);
+    }
+
+    /**
+     * Ends a copy's write authority once its worker is done with it. A claim handed to it that it
+     * never wrote under is passed on, so the row does not sit claimed until the lock timeout.
+     */
+    private void finishHandoff(String eventId, ClaimHandoff handoff) {
+        ClaimLease orphan = handoff.abandon();
+        handoffs.remove(eventId, handoff);
+        handOver(eventId, orphan);
+    }
+
+    /** Drops exactly {@code lease}; a no-op for {@code null} or a lease the row no longer carries. */
+    private void releaseLease(String eventId, ClaimLease lease) {
+        if (lease == null) {
+            return;
+        }
+        withConnection("release claim", eventId,
+                conn -> outboxStore.releaseClaim(conn, eventId, lease.owner(), lease.claimedAt()));
+    }
+
+    /**
+     * Whether a status write actually updated the row.
+     *
+     * <p>Zero rows is not a failure to retry: the event is already terminal, or — under claim
+     * fencing — the row was claimed again after this copy's lease expired (or its writer stamp was
+     * claimed), and the outcome is now the newer claim's to write. Either way it was not settled
+     * <em>here</em>, so it must not leave a replay-suppression marker or count as DONE/DEAD.
+     */
+    private boolean landed(String action, String eventId, int rows) {
+        if (rows == 0) {
+            logger.log(Level.WARNING, () -> "Could not " + action + " for eventId=" + eventId
+                    + ": the event is already settled or is now held under a newer claim");
+        }
+        return rows > 0;
     }
 
     /**
      * Runs a status write, logging and swallowing any failure.
      *
-     * @return {@code true} if it completed. Callers that suppress later replays MUST gate on this:
-     *         a swallowed failure leaves the row PENDING in the database, so treating it as settled
-     *         in memory would block redelivery until the tracker TTL expires.
+     * @return the rows affected, or {@link #WRITE_FAILED} if it threw. A swallowed failure leaves
+     *         the row PENDING in the database, so callers that suppress later replays must not
+     *         treat it as settled in memory — that would block redelivery until the tracker TTL.
      */
-    private boolean withConnection(String action, String eventId, SqlAction op) {
+    private int withConnection(String action, String eventId, SqlAction op) {
         try (Connection conn = connectionProvider.getConnection()) {
             conn.setAutoCommit(true);
-            op.execute(conn);
-            return true;
+            return op.execute(conn);
         } catch (SQLException | RuntimeException e) {
             logger.log(Level.SEVERE, "Failed to " + action + " for eventId=" + eventId, e);
-            return false;
+            return WRITE_FAILED;
         }
     }
 
     @FunctionalInterface
     private interface SqlAction {
-        void execute(Connection conn) throws SQLException;
+        int execute(Connection conn) throws SQLException;
+    }
+
+    @FunctionalInterface
+    private interface FencedWrite {
+        int execute(Connection conn, String claimOwner, Instant claimedAt) throws SQLException;
     }
 
     /**
@@ -709,8 +864,33 @@ public final class OutboxDispatcher implements AutoCloseable {
         private long hotTripMs = 0;
         private boolean suppressReplays = false;
         private boolean hotPathEnabled = true;
+        private String claimOwner;
 
         private Builder() {
+        }
+
+        /**
+         * Fences this dispatcher's status writes on claim ownership.
+         *
+         * <p>Set it to the poller's claim-locking owner id. A copy the poller claimed writes only
+         * while the row still carries that exact lease, so a copy that outlived its lease cannot
+         * clear or overwrite the claim of whoever took the row over. A hot copy writes only while
+         * the row still carries this instance's writer stamp (or, for a store without stamping,
+         * while it is unclaimed), unless this instance's poller claimed the row meanwhile and the
+         * claim was handed to it. {@code null} (the default) leaves hot copies unfenced; a claimed
+         * copy is always fenced on its own lease, and a store that locks without
+         * {@link OutboxStore#supportsClaimFencing() supporting fencing} refuses that write.
+         *
+         * <p>Requires a store that {@link OutboxStore#supportsClaimFencing() supports fencing} if
+         * it {@link OutboxStore#supportsClaimLocking() locks}; {@link #build()} rejects one that
+         * does not.
+         *
+         * @param claimOwner the owner id used for claim locking, or {@code null}
+         * @return this builder
+         */
+        public Builder claimOwner(String claimOwner) {
+            this.claimOwner = claimOwner;
+            return this;
         }
 
         /**

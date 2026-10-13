@@ -87,6 +87,13 @@ public final class OutboxPoller implements AutoCloseable {
         this.metrics = builder.metrics != null ? builder.metrics : MetricsExporter.NOOP;
         this.ownerId = builder.ownerId;
         this.lockTimeout = builder.lockTimeout;
+        if (ownerId != null && outboxStore.supportsClaimLocking() && !outboxStore.supportsClaimFencing()) {
+            // Its decode-failure DEAD write is fenced on the claim, and the SPI default for a
+            // locking store refuses that rather than drop the fence. Fail here, not per row.
+            throw new IllegalArgumentException(outboxStore.getClass().getName()
+                    + " supports claim locking but not claim fencing; override supportsClaimFencing()"
+                    + " and the fenced status writes");
+        }
     }
 
     public static Builder builder() {
@@ -216,7 +223,7 @@ public final class OutboxPoller implements AutoCloseable {
             envelope = convertToEnvelope(row, codec);
         } catch (RuntimeException e) {
             logger.log(Level.SEVERE, "Failed to decode outbox row eventId=" + row.eventId(), e);
-            markDead(row.eventId(), e);
+            markDead(row.eventId(), lease, e);
             return true; // continue processing other rows
         }
 
@@ -248,10 +255,17 @@ public final class OutboxPoller implements AutoCloseable {
         return builder.build();
     }
 
-    private void markDead(String eventId, Exception failure) {
+    private void markDead(String eventId, ClaimLease lease, Exception failure) {
         try (Connection conn = connectionProvider.getConnection()) {
             conn.setAutoCommit(true);
-            outboxStore.markDead(conn, eventId, failure == null ? null : failure.getMessage());
+            // Fenced on this batch's exact lease, like the dispatcher's writes: decoding happens
+            // after the claim, and the lease may have expired and been taken over since.
+            String error = failure == null ? null : failure.getMessage();
+            if (lease == null) {
+                outboxStore.markDead(conn, eventId, error);
+            } else {
+                outboxStore.markDead(conn, eventId, error, lease.owner(), lease.claimedAt());
+            }
         } catch (SQLException | RuntimeException e) {
             logger.log(Level.SEVERE, "Failed to mark DEAD for eventId=" + eventId, e);
         }

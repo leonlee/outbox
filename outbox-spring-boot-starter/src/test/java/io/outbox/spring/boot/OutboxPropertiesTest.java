@@ -34,6 +34,7 @@ class OutboxPropertiesTest {
             assertEquals(0, props.getPoller().getSkipRecentMs());
             assertFalse(props.getClaimLocking().isEnabled());
             assertEquals(Duration.ofMinutes(5), props.getClaimLocking().getLockTimeout());
+            assertTrue(props.getClaimLocking().isVerifySchema(), "the schema check is on unless turned off");
             assertFalse(props.getPurge().isEnabled());
             assertEquals(Duration.ofDays(7), props.getPurge().getRetention());
             assertEquals(500, props.getPurge().getBatchSize());

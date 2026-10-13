@@ -327,7 +327,8 @@ on any schema, not just the shipped ones:
    they do not both hold exactly.
 
 The shipped schemas (`DATETIME(6)` on MySQL, `TIMESTAMPTZ` on PostgreSQL, `TIMESTAMP` on H2) satisfy both. TUTORIAL §1
-has a check query and a migration for tables that do not.
+has a check query and a migration for tables that do not. `Outbox.multiNode()` checks both rules from column metadata
+at startup and refuses a definite violation (§8.1, "Schema verification").
 
 ### 4.2 Status Values
 
@@ -624,6 +625,8 @@ public interface OutboxStore {
     default int markDead(Connection conn, String eventId, String error, String claimOwner, Instant claimedAt);
     default int markDeferred(Connection conn, String eventId, Instant nextAt, String claimOwner, Instant claimedAt);
     default boolean supportsClaimFencing();   // false; JDBC stores true
+    default Optional<String> writerOwnerId(); // the stamp owner, empty if rows are written unowned
+    default void verifySchema(Connection conn); // no-op; JDBC: read-only timestamp-column check
 
     List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit);
 
@@ -662,6 +665,14 @@ the stamp's owner); with the hot path on, a stamping store also needs a lock tim
 `WRITER_STAMP_MAX_AGE`. A store built with an owner keeps stamping in poller-only mode; the Spring Boot starter builds
 its store to stamp exactly in `multi-node` with the hot path (`outbox.dispatcher.stamp-writer-owner` is deprecated and
 ignored).
+
+**Schema verification.** `Outbox.multiNode()` calls `verifySchema(conn)` before anything starts (opt out with
+`verifySchema(false)`, or `outbox.claim-locking.verify-schema=false` in the starter). The JDBC stores read the metadata
+of `created_at` and `locked_at` and refuse, with `IllegalStateException`, a `locked_at` with fewer than 3
+fractional-second digits or two columns that differ in type, size or precision — the cases in which claimed status
+writes or the writer stamp can never match (§4.1). It reads only metadata, and logs and continues when the table or
+its metadata cannot be found or the database cannot be reached. Precision comes from `DECIMAL_DIGITS`, except on MySQL,
+whose driver reports it through `COLUMN_SIZE` (19 = whole seconds, 20 + digits otherwise).
 
 A poller claim writes `locked_at = leaseTimestamp(now)`, which the JDBC stores define as `now` truncated to
 milliseconds plus 1ms. A row is only claimable once `created_at <= now`, so a lease can never equal `created_at` and be

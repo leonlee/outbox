@@ -249,6 +249,7 @@ public class OutboxProperties {
         private boolean enabled = false;
         private String ownerId = "";
         private Duration lockTimeout = Duration.ofMinutes(5);
+        private boolean verifySchema = true;
 
         public boolean isEnabled() {
             return enabled;
@@ -272,6 +273,21 @@ public class OutboxProperties {
 
         public void setLockTimeout(Duration lockTimeout) {
             this.lockTimeout = lockTimeout;
+        }
+
+        /**
+         * Whether startup checks the outbox table's {@code created_at}/{@code locked_at} columns.
+         * {@code true} by default: claim fencing compares {@code locked_at} for equality, and a
+         * whole-second column, or the two columns at different precisions, would leave every
+         * claimed event redelivered after each lock timeout. Read-only; only a definite mismatch
+         * fails startup. Turn off if a driver misreports column metadata.
+         */
+        public boolean isVerifySchema() {
+            return verifySchema;
+        }
+
+        public void setVerifySchema(boolean verifySchema) {
+            this.verifySchema = verifySchema;
         }
     }
 

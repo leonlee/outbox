@@ -4,12 +4,15 @@ import io.outbox.jdbc.JdbcTemplate;
 import io.outbox.model.OutboxEvent;
 
 import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.OptionalInt;
 
 /**
  * MySQL outbox store. Also compatible with TiDB 3.0+.
@@ -19,6 +22,9 @@ import java.util.Objects;
  * Safe for multi-instance deployments. Requires MySQL 8.0+ (or TiDB 3.0+).
  */
 public final class MySqlOutboxStore extends AbstractJdbcOutboxStore {
+    /** {@code COLUMN_SIZE} of a whole-second {@code DATETIME}: {@code yyyy-MM-dd HH:mm:ss}. */
+    private static final int WHOLE_SECONDS_SIZE = 19;
+
 
     public MySqlOutboxStore() {
         super();
@@ -43,6 +49,22 @@ public final class MySqlOutboxStore extends AbstractJdbcOutboxStore {
     }
 
     /** {@code FOR UPDATE SKIP LOCKED} makes this claim genuinely exclusive. */
+    /**
+     * Connector/J leaves {@code DECIMAL_DIGITS} null for {@code DATETIME}/{@code TIMESTAMP} and
+     * encodes the precision in {@code COLUMN_SIZE}: 19 for whole seconds, 20 + digits otherwise
+     * ({@code DATETIME(3)} is 23, {@code DATETIME(6)} is 26). Read from the size, which is defined
+     * for these types, rather than trust a {@code DECIMAL_DIGITS} another driver version might fill
+     * with 0.
+     */
+    @Override
+    protected OptionalInt fractionalSecondsDigits(ResultSet column) throws SQLException {
+        int size = column.getInt("COLUMN_SIZE");
+        if (column.wasNull() || size < WHOLE_SECONDS_SIZE) {
+            return super.fractionalSecondsDigits(column);
+        }
+        return OptionalInt.of(size == WHOLE_SECONDS_SIZE ? 0 : size - WHOLE_SECONDS_SIZE - 1);
+    }
+
     @Override
     public boolean supportsClaimLocking() {
         return true;

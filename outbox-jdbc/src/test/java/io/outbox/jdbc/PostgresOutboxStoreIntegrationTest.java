@@ -56,6 +56,16 @@ class PostgresOutboxStoreIntegrationTest extends AbstractOutboxStoreIntegrationT
         return STORE;
     }
 
+    @Override
+    AbstractJdbcOutboxStore storeFor(String table) {
+        return new PostgresOutboxStore(table);
+    }
+
+    @Override
+    String timestampType(int digits) {
+        return "TIMESTAMPTZ(" + digits + ")";
+    }
+
     private static String loadResource(String path) throws IOException {
         try (InputStream is = PostgresOutboxStoreIntegrationTest.class.getResourceAsStream(path)) {
             if (is == null) throw new IOException("Resource not found: " + path);

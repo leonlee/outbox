@@ -393,7 +393,8 @@ public class OutboxAutoConfiguration {
                 applyPurge(builder, props, outboxStore, false);
                 var cl = props.getClaimLocking();
                 // Same identity the writer stamps with — see outboxOwnerId().
-                builder.claimLocking(ownerId.value(), cl.getLockTimeout());
+                builder.claimLocking(ownerId.value(), cl.getLockTimeout())
+                        .verifySchema(cl.isVerifySchema());
                 yield builder.build();
             }
             case ORDERED -> {

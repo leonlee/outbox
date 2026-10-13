@@ -9,14 +9,24 @@ import io.outbox.spi.JsonCodec;
 import io.outbox.spi.OutboxStore;
 
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Base JDBC outbox store with standard SQL implementations.
@@ -29,6 +39,11 @@ import java.util.Optional;
  */
 public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     protected static final String DEFAULT_TABLE = TableNames.DEFAULT_TABLE;
+    private static final Logger LOGGER = Logger.getLogger(AbstractJdbcOutboxStore.class.getName());
+    private static final String CREATED_AT = "created_at";
+    private static final String LOCKED_AT = "locked_at";
+    /** A lease is {@link #leaseTimestamp} — milliseconds — and must round-trip exactly. */
+    private static final int MIN_LEASE_DIGITS = 3;
     protected static final int MAX_BATCH_ROWS = 500;
     protected static final String PENDING_STATUS_IN =
             "(" + EventStatus.NEW.code() + "," + EventStatus.RETRY.code() + ")";
@@ -117,6 +132,124 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     @Override
     public Optional<String> writerOwnerId() {
         return Optional.ofNullable(writerOwnerId);
+    }
+
+    /**
+     * Reads the column metadata of {@code created_at} and {@code locked_at} (no writes, no DDL) and
+     * refuses a definite mismatch: {@code locked_at} with fewer than 3 fractional-second digits,
+     * or the two columns differing in type, size or precision. Logs and returns when the table or
+     * its metadata cannot be found — another schema, a table created after startup.
+     */
+    @Override
+    public void verifySchema(Connection conn) {
+        Map<String, TimestampColumn> columns;
+        try {
+            columns = timestampColumns(conn);
+        } catch (SQLException e) {
+            LOGGER.log(Level.WARNING, "Could not read the metadata of " + tableName
+                    + "; skipping the timestamp-column check", e);
+            return;
+        }
+        TimestampColumn created = columns.get(CREATED_AT);
+        TimestampColumn locked = columns.get(LOCKED_AT);
+        if (created == null || locked == null) {
+            LOGGER.warning("Columns created_at/locked_at of " + tableName + " not found in the "
+                    + "connection's catalog and schema; skipping the timestamp-column check");
+            return;
+        }
+        if (locked.digits() != TimestampColumn.UNKNOWN && locked.digits() < MIN_LEASE_DIGITS) {
+            throw new IllegalStateException(tableName + ".locked_at keeps " + locked.digits()
+                    + " fractional-second digit(s); claim fencing needs at least " + MIN_LEASE_DIGITS
+                    + ". Every claimed status write would match no row. Widen the timestamp columns "
+                    + "(see TUTORIAL \"Timestamp columns\"), or disable this check if the driver misreports.");
+        }
+        if (!created.sameAs(locked)) {
+            throw new IllegalStateException(tableName + ".created_at (" + created + ") and locked_at ("
+                    + locked + ") differ; the writer stamp is recognised by locked_at = created_at, which "
+                    + "columns of different precision never satisfy. Give both the same type and precision "
+                    + "(see TUTORIAL \"Timestamp columns\").");
+        }
+    }
+
+    /**
+     * The columns of the one table the store's unquoted SQL names. Catalog, schema and table are
+     * matched literally (getColumns takes LIKE patterns, so an {@code _} would match neighbours),
+     * and the name is folded as the database folds unquoted identifiers — a quoted look-alike is
+     * a different table. If the connection's scope still matches more than one table, there is
+     * no telling which the SQL uses, so nothing is returned.
+     */
+    private Map<String, TimestampColumn> timestampColumns(Connection conn) throws SQLException {
+        DatabaseMetaData metaData = conn.getMetaData();
+        String escape = metaData.getSearchStringEscape();
+        String schema = conn.getSchema();
+        String table = foldUnquoted(metaData, tableName);
+        Map<String, Map<String, TimestampColumn>> byTable = new LinkedHashMap<>();
+        try (ResultSet rs = metaData.getColumns(conn.getCatalog(),
+                schema == null ? null : likeLiteral(schema, escape), likeLiteral(table, escape), "%")) {
+            while (rs.next()) {
+                String column = rs.getString("COLUMN_NAME").toLowerCase(Locale.ROOT);
+                if (CREATED_AT.equals(column) || LOCKED_AT.equals(column)) {
+                    String relation = rs.getString("TABLE_CAT") + "." + rs.getString("TABLE_SCHEM") + "."
+                            + rs.getString("TABLE_NAME");
+                    byTable.computeIfAbsent(relation, k -> new HashMap<>()).put(column, new TimestampColumn(
+                            rs.getString("TYPE_NAME"), rs.getInt("COLUMN_SIZE"),
+                            fractionalSecondsDigits(rs).orElse(TimestampColumn.UNKNOWN)));
+                }
+            }
+        }
+        if (byTable.size() > 1) {
+            LOGGER.warning(tableName + " matches " + byTable.keySet() + " in the connection's catalog and "
+                    + "schema; cannot tell which one the store uses, skipping the timestamp-column check");
+            return Map.of();
+        }
+        return byTable.isEmpty() ? Map.of() : byTable.values().iterator().next();
+    }
+
+    /** TableNames admits only unquoted identifiers, which the database stores folded. */
+    private static String foldUnquoted(DatabaseMetaData metaData, String name) throws SQLException {
+        if (metaData.storesUpperCaseIdentifiers()) {
+            return name.toUpperCase(Locale.ROOT);
+        }
+        if (metaData.storesLowerCaseIdentifiers()) {
+            return name.toLowerCase(Locale.ROOT);
+        }
+        return name;
+    }
+
+    /** {@code getColumns} takes a LIKE pattern; the {@code _} in {@code outbox_event} must match only itself. */
+    private static String likeLiteral(String name, String escape) {
+        if (escape == null || escape.isEmpty()) {
+            return name;
+        }
+        return name.replace(escape, escape + escape).replace("_", escape + "_").replace("%", escape + "%");
+    }
+
+    /**
+     * Fractional-second digits of a timestamp column, from one {@code DatabaseMetaData.getColumns}
+     * row, or empty if the driver does not say. Most drivers report it as {@code DECIMAL_DIGITS};
+     * a store whose driver encodes it differently overrides this.
+     *
+     * @param column the current row of a {@code getColumns} result
+     * @return the digits, or empty if unknown
+     * @throws SQLException if the row cannot be read
+     */
+    protected OptionalInt fractionalSecondsDigits(ResultSet column) throws SQLException {
+        int digits = column.getInt("DECIMAL_DIGITS");
+        return column.wasNull() ? OptionalInt.empty() : OptionalInt.of(digits);
+    }
+
+    /** One timestamp column's declared shape, as the driver reports it. */
+    private record TimestampColumn(String type, int size, int digits) {
+        static final int UNKNOWN = -1;
+
+        boolean sameAs(TimestampColumn other) {
+            return type.equalsIgnoreCase(other.type) && size == other.size && digits == other.digits;
+        }
+
+        @Override
+        public String toString() {
+            return type + ", size " + size + ", " + (digits == UNKNOWN ? "precision unknown" : digits + " fractional digits");
+        }
     }
 
     /**

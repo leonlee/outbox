@@ -60,6 +60,16 @@ class MySqlOutboxStoreIntegrationTest extends AbstractOutboxStoreIntegrationTest
         return STORE;
     }
 
+    @Override
+    AbstractJdbcOutboxStore storeFor(String table) {
+        return new MySqlOutboxStore(table);
+    }
+
+    @Override
+    String timestampType(int digits) {
+        return digits == 0 ? "DATETIME" : "DATETIME(" + digits + ")";
+    }
+
     private static String loadResource(String path) throws IOException {
         try (InputStream is = MySqlOutboxStoreIntegrationTest.class.getResourceAsStream(path)) {
             if (is == null) throw new IOException("Resource not found: " + path);

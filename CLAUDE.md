@@ -184,7 +184,9 @@ outbox-jdbc/src/main/java/
   `locked_by = owner, locked_at = created_at`; `claimPending` treats that equality as an unclaimed stamp the owner may
   claim once immediately while other nodes wait for the lock timeout. Rows older than
   `OutboxStore.WRITER_STAMP_MAX_AGE` (30s) insert unowned and skip the hot path. `OutboxStore.writerOwnerId()` reports
-  the stamp; `multiNode()` with the hot path requires it on a locking store, requires it to equal the claim owner
+  the stamp; `verifySchema(conn)` (JDBC: read-only metadata check of `created_at`/`locked_at`, MySQL reads precision
+  from `COLUMN_SIZE`) runs in `multiNode().build()` unless `verifySchema(false)` / `outbox.claim-locking.verify-schema=false`,
+  refusing only a definite mismatch; `multiNode()` with the hot path requires the stamp on a locking store, requires it to equal the claim owner
   (`claimLocking(Duration)` adopts it), and requires `lockTimeout >= 2 * WRITER_STAMP_MAX_AGE` when stamping with the
   hot path on.
 - **AbstractJdbcOutboxStore** (`io.outbox.jdbc.store`): Base JDBC outbox store with shared SQL, row mapper, and

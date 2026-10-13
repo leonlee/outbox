@@ -8,6 +8,7 @@ import io.outbox.spi.OutboxStore;
 import io.outbox.spi.TxContext;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -262,6 +263,90 @@ class OutboxTest {
                 assertNotNull(outbox.writer());
             }
         });
+    }
+
+    /** Non-locking store whose schema check either fails or records that it ran. */
+    private static final class SchemaCheckingStore implements OutboxStore {
+        private final boolean mismatch;
+        private int checks;
+
+        SchemaCheckingStore(boolean mismatch) {
+            this.mismatch = mismatch;
+        }
+
+        @Override
+        public void verifySchema(Connection conn) {
+            checks++;
+            if (mismatch) {
+                throw new IllegalStateException("locked_at keeps 0 fractional-second digit(s)");
+            }
+        }
+
+        @Override
+        public void insertNew(Connection conn, EventEnvelope event) {
+        }
+
+        @Override
+        public int markDone(Connection conn, String eventId) {
+            return 0;
+        }
+
+        @Override
+        public int markRetry(Connection conn, String eventId, Instant nextAt, String error) {
+            return 0;
+        }
+
+        @Override
+        public int markDead(Connection conn, String eventId, String error) {
+            return 0;
+        }
+
+        @Override
+        public List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit) {
+            return List.of();
+        }
+    }
+
+    private static final ConnectionProvider PROXY_CP = () -> (Connection) Proxy.newProxyInstance(
+            Connection.class.getClassLoader(), new Class<?>[]{Connection.class}, (proxy, method, args) -> null);
+
+    private static Outbox.MultiNodeBuilder multiNodeWith(OutboxStore store, ConnectionProvider cp) {
+        return Outbox.multiNode()
+                .connectionProvider(cp).txContext(STUB_TX)
+                .outboxStore(store).listenerRegistry(STUB_REG)
+                .intervalMs(60_000).deferStart(true)
+                .claimLocking("node-1", Duration.ofMinutes(5));
+    }
+
+    /** A schema claim fencing cannot work with is refused before any thread starts. */
+    @Test
+    void multiNode_refusesASchemaTheStoreRejects() {
+        var e = assertThrows(IllegalStateException.class,
+                () -> multiNodeWith(new SchemaCheckingStore(true), PROXY_CP).build());
+        assertTrue(e.getMessage().contains("locked_at"), e.getMessage());
+    }
+
+    @Test
+    void multiNode_schemaCheckRunsOnceAndCanBeTurnedOff() {
+        var checked = new SchemaCheckingStore(false);
+        assertDoesNotThrow(() -> multiNodeWith(checked, PROXY_CP).build().close());
+        assertEquals(1, checked.checks);
+
+        var skipped = new SchemaCheckingStore(true);
+        assertDoesNotThrow(() -> multiNodeWith(skipped, PROXY_CP).verifySchema(false).build().close());
+        assertEquals(0, skipped.checks);
+    }
+
+    /** build() never needed the database before; a database it cannot reach now must not fail it. */
+    @Test
+    void multiNode_anUnreachableDatabaseSkipsTheSchemaCheck() {
+        var store = new SchemaCheckingStore(true);
+        assertDoesNotThrow(() -> multiNodeWith(store, STUB_CP).build().close());
+        ConnectionProvider throwsRuntime = () -> {
+            throw new IllegalStateException("CannotGetJdbcConnectionException");
+        };
+        assertDoesNotThrow(() -> multiNodeWith(store, throwsRuntime).build().close());
+        assertEquals(0, store.checks);
     }
 
     /** A stamp must still be a live lease at WRITER_STAMP_MAX_AGE, with margin for commit delay. */

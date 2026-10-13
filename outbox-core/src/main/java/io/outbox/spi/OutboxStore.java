@@ -226,6 +226,23 @@ public interface OutboxStore {
         return Optional.empty();
     }
 
+    /**
+     * Checks, without modifying anything, that the table can hold what claim fencing compares:
+     * {@code locked_at} keeps at least milliseconds, and {@code created_at} and {@code locked_at}
+     * share type and precision (the writer stamp is recognised by their equality).
+     *
+     * <p>{@code Outbox.multiNode()} calls this before anything starts. An implementation should
+     * return quietly when it cannot tell — table not found, metadata not reported — and refuse only
+     * a definite mismatch: an unverifiable schema is no reason to stop an application starting.
+     *
+     * <p>Defaults to doing nothing.
+     *
+     * @param conn a connection to the database holding the table
+     * @throws IllegalStateException if the columns cannot support claim fencing
+     */
+    default void verifySchema(Connection conn) {
+    }
+
     private void requireFencingIfLocking(String claimOwner) {
         if (claimOwner != null && supportsClaimLocking()) {
             throw new UnsupportedOperationException(getClass().getName()

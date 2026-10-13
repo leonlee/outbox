@@ -494,6 +494,8 @@ outbox.claim-locking.enabled=false
 # Unique per instance, e.g. ${HOSTNAME:} on Kubernetes; empty = generated per JVM
 outbox.claim-locking.owner-id=
 outbox.claim-locking.lock-timeout=PT5M
+# Check at startup that created_at/locked_at can hold what claim fencing compares (read-only)
+outbox.claim-locking.verify-schema=true
 # Purge: status-based (DONE + DEAD) in dispatcher modes, age-based in writer-only (CDC) mode
 outbox.purge.enabled=false
 outbox.purge.retention=P7D

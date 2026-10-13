@@ -18,6 +18,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -29,6 +30,51 @@ abstract class AbstractOutboxStoreIntegrationTest {
     abstract DataSource dataSource();
 
     abstract AbstractJdbcOutboxStore store();
+
+    /** This store's type on another table. */
+    abstract AbstractJdbcOutboxStore storeFor(String table);
+
+    /** The database's timestamp column type with {@code digits} fractional-second digits. */
+    abstract String timestampType(int digits);
+
+    // ── Schema verification: each driver reports timestamp precision its own way ──
+
+    private void createTimestampTable(String table, int createdDigits, int lockedDigits) throws Exception {
+        try (Connection conn = dataSource().getConnection()) {
+            conn.setAutoCommit(true);
+            conn.createStatement().execute("DROP TABLE IF EXISTS " + table);
+            conn.createStatement().execute("CREATE TABLE " + table + " (event_id VARCHAR(36) PRIMARY KEY, "
+                    + "created_at " + timestampType(createdDigits) + " NOT NULL, "
+                    + "locked_at " + timestampType(lockedDigits) + " NULL)");
+        }
+    }
+
+    private void verify(AbstractJdbcOutboxStore store) throws Exception {
+        try (Connection conn = dataSource().getConnection()) {
+            store.verifySchema(conn);
+        }
+    }
+
+    @Test
+    void verifySchemaAcceptsTheShippedSchemaAndMillisecondColumns() throws Exception {
+        verify(store());
+        createTimestampTable("verify_ms", 3, 3);
+        verify(storeFor("verify_ms"));
+    }
+
+    @Test
+    void verifySchemaRefusesAWholeSecondLockedAt() throws Exception {
+        createTimestampTable("verify_coarse", 0, 0);
+        var e = assertThrows(IllegalStateException.class, () -> verify(storeFor("verify_coarse")));
+        assertTrue(e.getMessage().contains("locked_at"), e.getMessage());
+    }
+
+    @Test
+    void verifySchemaRefusesCreatedAtAndLockedAtAtDifferentPrecisions() throws Exception {
+        createTimestampTable("verify_mixed", 6, 3);
+        var e = assertThrows(IllegalStateException.class, () -> verify(storeFor("verify_mixed")));
+        assertTrue(e.getMessage().contains("differ"), e.getMessage());
+    }
 
     @Test
     void insertNewAndPollPending() throws Exception {

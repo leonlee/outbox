@@ -625,6 +625,28 @@ class OutboxAutoConfigurationTest {
         }
     }
 
+    /**
+     * A whole-second table makes every claimed status write miss, so multi-node refuses to start on
+     * one — and starts when the check is turned off, for a driver that misreports metadata. H2's
+     * INIT runs the DDL on every new connection, so the table exists before any bean asks.
+     */
+    @Test
+    void multiNodeRefusesAWholeSecondSchemaUnlessTheCheckIsOff() {
+        String url = "spring.datasource.url=jdbc:h2:mem:outbox_coarse;DB_CLOSE_DELAY=-1;"
+                + "INIT=RUNSCRIPT FROM 'classpath:schema-coarse.sql'";
+        runner.withUserConfiguration(ListenerConfig.class)
+                .withPropertyValues(url, "outbox.mode=multi-node", "outbox.claim-locking.enabled=true")
+                .run(ctx -> {
+                    assertNotNull(ctx.getStartupFailure(), "a whole-second locked_at must not boot");
+                    assertTrue(rootCauseMessage(ctx.getStartupFailure()).contains("locked_at"),
+                            rootCauseMessage(ctx.getStartupFailure()));
+                });
+        runner.withUserConfiguration(ListenerConfig.class)
+                .withPropertyValues(url, "outbox.mode=multi-node", "outbox.claim-locking.enabled=true",
+                        "outbox.claim-locking.verify-schema=false")
+                .run(ctx -> assertNull(ctx.getStartupFailure()));
+    }
+
     @Test
     void createsAllBeans() {
         runner.withUserConfiguration(ListenerConfig.class).run(ctx -> {

@@ -17,6 +17,8 @@ import io.outbox.spi.TxContext;
 
 import java.util.logging.Logger;
 import java.util.logging.Level;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -828,8 +830,27 @@ public final class Outbox implements AutoCloseable {
         private RetryPolicy retryPolicy;
         private String ownerId;
         private Duration lockTimeout;
+        private boolean verifySchema = true;
 
         MultiNodeBuilder() {
+        }
+
+        /**
+         * Whether {@code build()} asks the store to {@link OutboxStore#verifySchema verify} its
+         * timestamp columns before anything starts. On by default.
+         *
+         * <p>Claim fencing compares {@code locked_at} for equality, so a whole-second column — or
+         * {@code created_at} and {@code locked_at} at different precisions — makes claimed status
+         * writes match no row, and every claimed event is redelivered after each lock timeout. The
+         * check only reads metadata and only refuses a definite mismatch. Turn it off if a driver
+         * misreports column metadata.
+         *
+         * @param verifySchema whether to verify the store's schema at build time
+         * @return this builder
+         */
+        public MultiNodeBuilder verifySchema(boolean verifySchema) {
+            this.verifySchema = verifySchema;
+            return this;
         }
 
         /**
@@ -965,10 +986,30 @@ public final class Outbox implements AutoCloseable {
                     : stamp != null ? stamp
                     : "poller-" + UUID.randomUUID().toString().substring(0, 8);
             requireStampFits(stamp, owner);
+            if (verifySchema) {
+                verifyStoreSchema();
+            }
             return buildComposite(
                     workerCount, hotQueueCapacity, coldQueueCapacity,
                     maxAttempts, retryPolicy,
                     owner, lockTimeout, hotPathEnabled);
+        }
+
+        /** Before any thread starts; a database that cannot be reached here is not a reason to fail. */
+        private void verifyStoreSchema() {
+            Connection conn;
+            try {
+                conn = connectionProvider.getConnection();
+            } catch (SQLException | RuntimeException e) {
+                LOGGER.log(Level.WARNING, "Could not connect to verify the outbox schema; skipping the check", e);
+                return;
+            }
+            // Only the store's verdict may fail the build: an IllegalStateException from it passes through.
+            try (conn) {
+                outboxStore.verifySchema(conn);
+            } catch (SQLException e) {
+                LOGGER.log(Level.WARNING, "Failed to close the schema-check connection", e);
+            }
         }
 
         private void requireStampFits(String stamp, String owner) {

@@ -1209,4 +1209,61 @@ class JdbcOutboxStoreTest {
 
         return event.eventId();
     }
+
+    // ── Schema verification ─────────────────────────────────────────
+
+    private void createTimestampTable(String table, String createdAt, String lockedAt) throws SQLException {
+        try (Connection conn = dataSource.getConnection()) {
+            conn.createStatement().execute("CREATE TABLE " + table + " (event_id VARCHAR(36) PRIMARY KEY, "
+                    + "created_at " + createdAt + " NOT NULL, locked_at " + lockedAt + ")");
+        }
+    }
+
+    private void verify(String table) throws SQLException {
+        try (Connection conn = dataSource.getConnection()) {
+            new H2OutboxStore(table).verifySchema(conn);
+        }
+    }
+
+    @Test
+    void verifySchemaAcceptsTheShippedColumns() throws SQLException {
+        try (Connection conn = dataSource.getConnection()) {
+            outboxStore.verifySchema(conn);
+        }
+    }
+
+    @Test
+    void verifySchemaAcceptsMillisecondColumns() throws SQLException {
+        createTimestampTable("ms_outbox", "TIMESTAMP(3)", "TIMESTAMP(3)");
+        verify("ms_outbox");
+    }
+
+    /** A whole-second locked_at rounds every lease, so no fenced write or release ever matches. */
+    @Test
+    void verifySchemaRefusesAWholeSecondLockedAt() throws SQLException {
+        createTimestampTable("coarse_outbox", "TIMESTAMP(0)", "TIMESTAMP(0)");
+        var e = assertThrows(IllegalStateException.class, () -> verify("coarse_outbox"));
+        assertTrue(e.getMessage().contains("locked_at"), e.getMessage());
+    }
+
+    /** Both hold milliseconds, but a stamp written to both never compares equal across precisions. */
+    @Test
+    void verifySchemaRefusesCreatedAtAndLockedAtAtDifferentPrecisions() throws SQLException {
+        createTimestampTable("mixed_outbox", "TIMESTAMP(6)", "TIMESTAMP(3)");
+        var e = assertThrows(IllegalStateException.class, () -> verify("mixed_outbox"));
+        assertTrue(e.getMessage().contains("differ"), e.getMessage());
+    }
+
+    /** Not found is not a mismatch: the table may live elsewhere or be created after startup. */
+    @Test
+    void verifySchemaSkipsATableItCannotFind() throws SQLException {
+        verify("no_such_outbox");
+    }
+
+    /** The name is a LIKE pattern to getColumns; its underscore must not match another table. */
+    @Test
+    void verifySchemaDoesNotMistakeALookalikeTable() throws SQLException {
+        createTimestampTable("abcXdef", "TIMESTAMP(0)", "TIMESTAMP(0)");
+        verify("abc_def");
+    }
 }

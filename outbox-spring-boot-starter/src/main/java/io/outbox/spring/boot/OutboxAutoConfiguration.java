@@ -156,25 +156,19 @@ public class OutboxAutoConfiguration {
     /**
      * The owner stamped into {@code locked_by} at INSERT, or {@code null} to insert unowned rows.
      *
-     * <p>The stamp exists so that, while this instance delivers an event from its hot queue, no
-     * other node's poller claims the same row. With the hot path off there is no such delivery to
-     * protect: the row is only ever reached by a claim, and every claim is already exclusive. A
-     * stamp would then be pure cost — it makes every insert write a lease that the claim query has
-     * to recognise through its {@code locked_at = created_at} branch, and any row whose owner dies
-     * before it is claimed waits out the lock timeout for nothing.
-     *
-     * <p>Ignored rather than rejected: this is a redundant setting, not a dangerous one, and
-     * failing startup over it would turn a harmless leftover in a yaml into an outage. It is logged
-     * so it does not become the kind of silently-dead flag this codebase has been bitten by.
+     * <p>Stamped only in {@code multi-node} with the hot path: the stamp is the hot copy's lease,
+     * which keeps other nodes' pollers off a row this instance is delivering and fences the hot
+     * copy's status write. Every other mode either has no hot copy or no claim, so a stamp there
+     * would be pure cost — and a row whose owner dies before it is claimed would wait out the lock
+     * timeout for nothing.
      */
-    private static String writerOwnerId(OutboxProperties props, OutboxOwnerId ownerId) {
-        if (!props.getDispatcher().isStampWriterOwner()) {
-            return null;
+    @SuppressWarnings("deprecation")
+    static String writerOwnerId(OutboxProperties props, OutboxOwnerId ownerId) {
+        if (props.getDispatcher().getStampWriterOwner() != null) {
+            LOGGER.warning("outbox.dispatcher.stamp-writer-owner is deprecated and ignored: "
+                    + "multi-node with the hot path always stamps rows, and no other mode does.");
         }
-        if (!props.getDispatcher().isHotPathEnabled()) {
-            LOGGER.warning("outbox.dispatcher.stamp-writer-owner=true is ignored while "
-                    + "hot-path-enabled=false: with poller-only delivery there is no hot copy for "
-                    + "the stamp to protect. Events will be inserted with locked_by=NULL.");
+        if (props.getMode() != OutboxProperties.Mode.MULTI_NODE || !props.getDispatcher().isHotPathEnabled()) {
             return null;
         }
         return ownerId.value();
@@ -365,29 +359,6 @@ public class OutboxAutoConfiguration {
                 if (!props.getClaimLocking().isEnabled()) {
                     throw new IllegalStateException(
                             "outbox.claim-locking.enabled must be true for multi-node mode");
-                }
-                if (props.getDispatcher().isStampWriterOwner()
-                        && props.getDispatcher().isHotPathEnabled()
-                        && props.getClaimLocking().getLockTimeout()
-                                .compareTo(OutboxStore.WRITER_STAMP_MAX_AGE.multipliedBy(2)) < 0) {
-                    // Only when a stamp will actually be written: with the hot path off,
-                    // writerOwnerId() ignores stamp-writer-owner (with a warning) and every row
-                    // inserts unowned — rejecting the timeout then would fail startup over a
-                    // setting that is already documented as a harmless leftover.
-                    //
-                    // The stamp writes locked_at = created_at and skips events older than
-                    // WRITER_STAMP_MAX_AGE, reasoning that such a lease is already expired. That
-                    // reasoning inverts if the lock timeout is not comfortably larger: a stamp on
-                    // an event 20s old is written under a 10s timeout as a lease every other node
-                    // already considers dead, and the hot copy then races their claims — the
-                    // duplicate the stamp exists to prevent. 2x is margin for the commit delay the
-                    // insert-time check cannot see.
-                    throw new IllegalStateException(
-                            "outbox.dispatcher.stamp-writer-owner=true requires "
-                                    + "outbox.claim-locking.lock-timeout of at least twice "
-                                    + OutboxStore.WRITER_STAMP_MAX_AGE + " (got "
-                                    + props.getClaimLocking().getLockTimeout() + "). Raise the "
-                                    + "lock timeout or disable stamp-writer-owner.");
                 }
                 var builder = Outbox.multiNode()
                         .connectionProvider(connectionProvider)

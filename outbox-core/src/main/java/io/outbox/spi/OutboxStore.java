@@ -7,6 +7,7 @@ import java.sql.Connection;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Persistence contract for outbox events, managing status transitions
@@ -34,9 +35,9 @@ public interface OutboxStore {
      * so a hot copy always rides with a stamp; the unprotected combination cannot occur.
      *
      * <p>Must stay well below the claim lock-timeout (default PT5M): a stamp aged anywhere inside
-     * this window is only a reservation if the timeout has not already passed it. The Spring
-     * starter refuses {@code stamp-writer-owner} with a lock-timeout under twice this value;
-     * anyone wiring the store directly owes the same check. A stamp on a fresh event still expires
+     * this window is only a reservation if the timeout has not already passed it.
+     * With the hot path on, {@code Outbox.multiNode()} refuses a stamping store with a
+     * lock-timeout under twice this value; anyone wiring the store directly owes the same check. A stamp on a fresh event still expires
      * if its transaction takes longer than the lock-timeout to commit, and that residual — a
      * multi-minute write transaction racing another node's claim — is the at-least-once tail this
      * design accepts rather than closes.
@@ -207,6 +208,22 @@ public interface OutboxStore {
      */
     default boolean supportsClaimFencing() {
         return false;
+    }
+
+    /**
+     * The owner this store stamps into {@code locked_by} at insert, if it stamps at all.
+     *
+     * <p>A stamp is the hot copy's lease: {@code (owner, created_at)}. Without one a hot copy has
+     * nothing to fence on but an unclaimed row, so {@code Outbox.multiNode()} with the hot path
+     * requires it from a store that {@link #supportsClaimLocking() locks}, and requires it to equal
+     * the claim owner.
+     *
+     * <p>Defaults to empty: the store writes rows unowned.
+     *
+     * @return the stamped owner, or empty if rows are written unowned
+     */
+    default Optional<String> writerOwnerId() {
+        return Optional.empty();
     }
 
     private void requireFencingIfLocking(String claimOwner) {

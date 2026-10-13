@@ -37,8 +37,8 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
   discovery for declarative listener registration. `JacksonJsonCodec` auto-configured with Spring Boot's Jackson 3 `JsonMapper`.
   `OutboxLifecycle` (`SmartLifecycle`) starts the poller after all listeners are registered, eliminating the startup race.
   `outbox.purge.enabled` applies in every mode (status-based purger in dispatcher modes, age-based in writer-only).
-  Dispatcher duplicate controls: `outbox.dispatcher.{hot-path-enabled,hot-trip-ms,suppress-replays,in-flight-ttl-ms,
-  stamp-writer-owner}`.
+  Dispatcher duplicate controls: `outbox.dispatcher.{hot-path-enabled,hot-trip-ms,suppress-replays,in-flight-ttl-ms}`.
+  The writer stamp is on exactly in `multi-node` with the hot path (`stamp-writer-owner` is deprecated and ignored).
 - **outbox-testing**: Test fixtures for unit testing without JDBC: `InMemoryOutboxStore`, `StubTxContext`,
   `RecordingWriterHook`, `NoOpConnectionProvider`, `OutboxTestSupport`.
 - **benchmarks**: JMH benchmarks for write throughput, dispatch latency, and poller throughput (not published).
@@ -179,7 +179,10 @@ outbox-jdbc/src/main/java/
 - **Writer-stamped ownership**: JDBC stores take an optional `writerOwnerId` constructor arg. When set, inserts write
   `locked_by = owner, locked_at = created_at`; `claimPending` treats that equality as an unclaimed stamp the owner may
   claim once immediately while other nodes wait for the lock timeout. Rows older than
-  `OutboxStore.WRITER_STAMP_MAX_AGE` (30s) insert unowned and skip the hot path.
+  `OutboxStore.WRITER_STAMP_MAX_AGE` (30s) insert unowned and skip the hot path. `OutboxStore.writerOwnerId()` reports
+  the stamp; `multiNode()` with the hot path requires it on a locking store, requires it to equal the claim owner
+  (`claimLocking(Duration)` adopts it), and requires `lockTimeout >= 2 * WRITER_STAMP_MAX_AGE` when stamping with the
+  hot path on.
 - **AbstractJdbcOutboxStore** (`io.outbox.jdbc.store`): Base JDBC outbox store with shared SQL, row mapper, and
   H2-compatible default `claimPending`. Subclasses: `H2OutboxStore`, `MySqlOutboxStore` (UPDATE...ORDER BY...LIMIT),
   `PostgresOutboxStore` (FOR UPDATE SKIP LOCKED + RETURNING).

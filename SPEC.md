@@ -327,7 +327,8 @@ on any schema, not just the shipped ones:
    they do not both hold exactly.
 
 The shipped schemas (`DATETIME(6)` on MySQL, `TIMESTAMPTZ` on PostgreSQL, `TIMESTAMP` on H2) satisfy both. TUTORIAL §1
-has a check query and a migration for tables that do not.
+has a check query and a migration for tables that do not. `Outbox.multiNode()` checks both rules from column metadata
+at startup and refuses a definite violation (§8.1, "Schema verification").
 
 ### 4.2 Status Values
 

@@ -115,7 +115,9 @@ them. Claim locking compares timestamps for equality, so two rules are load-bear
   `DATETIME(6)` and `DATETIME(3)`) break that equality for any instant they do not both hold exactly, so hot-path
   writes miss.
 
-Use `DATETIME(6)` on MySQL and `TIMESTAMPTZ` on PostgreSQL for all four timestamp columns. To check an existing table:
+Use `DATETIME(6)` on MySQL and `TIMESTAMPTZ` on PostgreSQL for all four timestamp columns. Multi-node mode checks both
+rules at startup and refuses to start on a table that breaks them (`outbox.claim-locking.verify-schema=false`, or
+`verifySchema(false)` on the builder, turns that off). To check an existing table yourself:
 
 ```sql
 -- Both rows must show the same type and the same precision, and that precision must be at least 3.

@@ -15,6 +15,13 @@ public interface OutboxPollerHandler {
     /**
      * Handles a polled event.
      *
+     * <p>{@code false} means the handler has neither kept the event, nor started or delegated its
+     * processing: the poller stops the batch there and, with an exclusive claim
+     * ({@link io.outbox.spi.OutboxStore#supportsClaimLocking()}), hands back the claims on this row
+     * and the rest of the batch so they are polled again at once. A handler that keeps the event
+     * must return {@code true} — that includes recognising it as a duplicate of one it already
+     * has. Throwing leaves the claims to expire.
+     *
      * @param event    the event envelope reconstructed from the database row
      * @param attempts the number of previous dispatch attempts
      * @return {@code true} if accepted, {@code false} to signal back-pressure (stops the current poll batch)

@@ -511,6 +511,136 @@ class OutboxPollerTest {
         assertEquals(List.of("a", "b", "c"), handed);
     }
 
+    // ── Releasing refused claims ────────────────────────────────────
+
+    private static final Instant LEASE_AT = Instant.parse("2026-10-14T00:00:00.001Z");
+
+    private static OutboxEvent rowAt(String eventId, int second) {
+        return new OutboxEvent(eventId, "test.event", "Agg", "agg-1", null, "{}", "{}", 0,
+                Instant.parse("2026-10-14T00:00:00Z").plusSeconds(second), null);
+    }
+
+    /** Claims a, b, c under a fixed lease and records every release as "eventId:owner@claimedAt". */
+    private static class ClaimingStore extends StubStore {
+        final List<String> releases = new CopyOnWriteArrayList<>();
+        private final boolean exclusive;
+
+        ClaimingStore(boolean exclusive) {
+            this.exclusive = exclusive;
+        }
+
+        @Override
+        public boolean supportsClaimLocking() {
+            return exclusive;
+        }
+
+        @Override
+        public boolean supportsClaimFencing() {
+            return true;
+        }
+
+        @Override
+        public Instant leaseTimestamp(Instant now) {
+            return LEASE_AT;
+        }
+
+        @Override
+        public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
+                                              Instant lockExpiry, Duration skipRecent, int limit) {
+            return List.of(rowAt("c", 3), rowAt("a", 1), rowAt("b", 2));
+        }
+
+        @Override
+        public int releaseClaim(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+            releases.add(eventId + ":" + claimOwner + "@" + claimedAt);
+            return 1;
+        }
+    }
+
+    private static void pollOnce(OutboxStore store, OutboxPollerHandler handler, boolean claimLocking) {
+        OutboxPoller.Builder builder = OutboxPoller.builder()
+                .connectionProvider(CP).outboxStore(store).handler(handler);
+        if (claimLocking) {
+            builder.claimLocking("owner-1", Duration.ofMinutes(5));
+        }
+        try (OutboxPoller poller = builder.build()) {
+            poller.poll();
+        }
+    }
+
+    /**
+     * The handler takes a, refuses b. b and c were claimed but will not be delivered from this
+     * batch; with an exclusive claim their leases go back at once instead of after the lock
+     * timeout. a stays claimed: it is on its way.
+     */
+    @Test
+    void aRefusedRowAndTheRestOfTheBatchAreReleased() {
+        var store = new ClaimingStore(true);
+        List<String> handed = new CopyOnWriteArrayList<>();
+        pollOnce(store, (event, attempts) -> {
+            handed.add(event.eventId());
+            return !event.eventId().equals("b");
+        }, true);
+
+        assertEquals(List.of("a", "b"), handed, "the batch stops at the refusal");
+        assertEquals(List.of("b:owner-1@" + LEASE_AT, "c:owner-1@" + LEASE_AT), store.releases);
+    }
+
+    /**
+     * A non-exclusive claim (H2's) can give the same row the same lease in two overlapping polls,
+     * and the second copy can be refused while the first still runs; releasing would take that
+     * copy's claim. Expiry stays the recovery there.
+     */
+    @Test
+    void aNonExclusiveClaimIsNotReleased() {
+        var store = new ClaimingStore(false);
+        pollOnce(store, (event, attempts) -> false, true);
+        assertEquals(List.of(), store.releases);
+    }
+
+    @Test
+    void anUnclaimedBatchHasNothingToRelease() {
+        var store = new ClaimingStore(true) {
+            @Override
+            public List<OutboxEvent> pollPending(Connection conn, Instant now, Duration skipRecent, int limit) {
+                return List.of(rowAt("a", 1));
+            }
+        };
+        pollOnce(store, (event, attempts) -> false, false);
+        assertEquals(List.of(), store.releases);
+    }
+
+    /** One failed release must not stop the attempts on the rows after it. */
+    @Test
+    void aFailedReleaseDoesNotStopTheRest() {
+        var store = new ClaimingStore(true) {
+            @Override
+            public int releaseClaim(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+                super.releaseClaim(conn, eventId, claimOwner, claimedAt);
+                if (eventId.equals("a")) {
+                    throw new IllegalStateException("connection reset");
+                }
+                return 1;
+            }
+        };
+        pollOnce(store, (event, attempts) -> false, true);
+        assertEquals(List.of("a:owner-1@" + LEASE_AT, "b:owner-1@" + LEASE_AT, "c:owner-1@" + LEASE_AT),
+                store.releases);
+    }
+
+    /**
+     * A handler that throws may have kept the event (#78's refusal of a leased copy for a tracker
+     * without isRunning deliberately leaves its claim): nothing is released.
+     */
+    @Test
+    void aThrowingHandlerLeavesTheClaims() {
+        var store = new ClaimingStore(true);
+        pollOnce(store, (event, attempts) -> {
+            throw new IllegalStateException("claim-leased copy needs a tracker that supportsIsRunning()");
+        }, true);
+        assertEquals(List.of(), store.releases);
+    }
+
     /** A locking store that predates fencing is refused up front rather than failing every fenced write. */
     @Test
     void claimLockingRejectsALockingStoreWithoutFencing() {

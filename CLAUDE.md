@@ -227,7 +227,9 @@ outbox-jdbc/src/main/java/
   stamps. A listener's leftover interrupt is cleared before the status write. Dispatcher, poller and writer hook wrap
   the `MetricsExporter` in `IsolatingMetricsExporter` (`io.outbox.util`), so an exporter exception never affects
   delivery.
-- **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails. Created via `OutboxPoller.builder()`. Uses an
+- **OutboxPoller**: Scheduled DB scanner as fallback when hot path fails. Created via `OutboxPoller.builder()`. When
+  the handler returns `false` mid-batch and the store's claim is exclusive (`supportsClaimLocking()`), the refused row
+  and the rest of the batch are released with the batch's exact lease (H2 / non-exclusive: left to expire). Uses an
   `OutboxPollerHandler` to forward events. Two modes: single-node (default, `pollPending`) and multi-node (
   `claimLocking()` enables `claimPending` with row-level locks).
 - **JsonCodec** (`io.outbox.spi`): SPI interface for JSON serialization (`toJson(Object)`, `fromJson(String, Class)`,

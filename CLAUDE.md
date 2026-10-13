@@ -42,7 +42,8 @@ Minimal, Spring-free outbox framework with JDBC persistence, hot-path enqueue, a
   Dispatcher duplicate controls: `outbox.dispatcher.{hot-path-enabled,hot-trip-ms,suppress-replays,in-flight-ttl-ms}`.
   The writer stamp is on exactly in `multi-node` with the hot path (`stamp-writer-owner` is deprecated and ignored).
 - **outbox-testing**: Test fixtures for unit testing without JDBC: `InMemoryOutboxStore`, `StubTxContext`,
-  `RecordingWriterHook`, `NoOpConnectionProvider`, `OutboxTestSupport`.
+  `RecordingWriterHook`, `NoOpConnectionProvider`, `OutboxTestSupport`. `InMemoryOutboxStore` mirrors the JDBC contract:
+  status writes never touch DONE/DEAD rows (atomic check-and-write, 0 rows), a duplicate `eventId` insert throws.
 - **benchmarks**: JMH benchmarks for write throughput, dispatch latency, and poller throughput (not published).
 - **samples/outbox-demo**: Simple runnable demo with H2 (no Spring).
 - **samples/outbox-spring-demo**: Spring Boot demo with REST API (manual wiring).
@@ -188,7 +189,7 @@ outbox-jdbc/src/main/java/
   (`claimLocking(Duration)` adopts it), and requires `lockTimeout >= 2 * WRITER_STAMP_MAX_AGE` when stamping with the
   hot path on.
 - **AbstractJdbcOutboxStore** (`io.outbox.jdbc.store`): Base JDBC outbox store with shared SQL, row mapper, and
-  H2-compatible default `claimPending`. Subclasses: `H2OutboxStore`, `MySqlOutboxStore` (UPDATE...ORDER BY...LIMIT),
+  H2-compatible default `claimPending`. Subclasses: `H2OutboxStore`, `MySqlOutboxStore` (`SELECT … FOR UPDATE SKIP LOCKED` + `UPDATE`),
   `PostgresOutboxStore` (FOR UPDATE SKIP LOCKED + RETURNING).
 - **JdbcOutboxStores** (`io.outbox.jdbc.store`): Static utility with ServiceLoader registry (
   `META-INF/services/io.outbox.jdbc.store.AbstractJdbcOutboxStore`) and `detect(DataSource)` auto-detection.
@@ -257,8 +258,8 @@ outbox-jdbc/src/main/java/
   registration order; `afterDispatch` in reverse. Replaces the old wildcard `registerAll()` pattern.
 - **EventPurger**: SPI for deleting events older than a cutoff. Two hierarchies in `io.outbox.jdbc.purge`: (1)
   status-based — `AbstractJdbcEventPurger` deletes only terminal events (DONE + DEAD), with `MySqlEventPurger` (
-  `DELETE...ORDER BY...LIMIT`); (2) age-based — `AbstractJdbcAgeBasedPurger` deletes all events regardless of status (
-  for CDC mode), with `MySqlAgeBasedPurger` (`DELETE...ORDER BY...LIMIT`).
+  `DELETE … LIMIT`); (2) age-based — `AbstractJdbcAgeBasedPurger` deletes all events regardless of status (
+  for CDC mode), with `MySqlAgeBasedPurger` (`DELETE … LIMIT`).
 - **OutboxPurgeScheduler**: Scheduled component that purges terminal events on a configurable interval. Builder pattern,
   `AutoCloseable`, daemon threads (same lifecycle as `OutboxPoller`). Loops batches until `count < batchSize`.
 - **DeadEventManager** (`io.outbox.dead`): Connection-managed facade for querying, counting, and replaying DEAD events.

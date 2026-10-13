@@ -27,6 +27,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -3251,18 +3252,133 @@ class OutboxDispatcherTest {
             Thread.currentThread().interrupt();
             return DispatchResult.done();
         });
-        ConnectionProvider interruptSensitive = () -> {
-            if (Thread.currentThread().isInterrupted()) {
-                throw new SQLException("Interrupted during connection acquisition");
-            }
-            return stubCp().getConnection();
-        };
         try (var d = OutboxDispatcher.builder()
-                .connectionProvider(interruptSensitive).outboxStore(store).listenerRegistry(registry)
+                .connectionProvider(interruptSensitive(new AtomicBoolean())).outboxStore(store).listenerRegistry(registry)
                 .workerCount(1).drainTimeoutMs(1000)
                 .build()) {
             assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
             awaitCount(store.markDoneCount, 1);
+        }
+    }
+
+    /** Refuses a connection to an interrupted thread, like HikariCP's borrow. */
+    private static ConnectionProvider interruptSensitive(AtomicBoolean refused) {
+        return () -> {
+            if (Thread.currentThread().isInterrupted()) {
+                refused.set(true);
+                throw new SQLException("Interrupted during connection acquisition");
+            }
+            return stubCp().getConnection();
+        };
+    }
+
+    @Test
+    void aThrowingListenersLeftoverInterruptDoesNotLoseTheRetry() throws Exception {
+        var store = new StubOutboxStore();
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("boom");
+        });
+        AtomicBoolean refused = new AtomicBoolean();
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(interruptSensitive(refused)).outboxStore(store).listenerRegistry(registry)
+                .workerCount(1).drainTimeoutMs(1000)
+                .build()) {
+            assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
+            awaitCount(store.markRetryCount, 1);
+        }
+        assertFalse(refused.get());
+    }
+
+    /**
+     * close() sets running=false before it starts draining, so "not running" does not mean
+     * "forced". A listener's own leftover interrupt during a graceful drain is still a leftover:
+     * its status write must land.
+     */
+    @Test
+    void aLeftoverInterruptDuringAGracefulDrainDoesNotLoseTheStatusWrite() throws Exception {
+        var store = new StubOutboxStore();
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch proceed = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            started.countDown();
+            awaitQuietly(proceed);
+            Thread.currentThread().interrupt();
+            return DispatchResult.done();
+        });
+        AtomicBoolean refused = new AtomicBoolean();
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(interruptSensitive(refused)).outboxStore(store).listenerRegistry(registry)
+                .workerCount(1).drainTimeoutMs(5000)
+                .build();
+        assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
+        assertTrue(started.await(5, TimeUnit.SECONDS));
+
+        Thread closer = new Thread(d::close);
+        closer.start();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(TAIL, "{}"), QueuedEvent.Source.HOT, 0))) {
+            assertTrue(System.nanoTime() < deadline, "close() never began");
+            Thread.sleep(5);
+        }
+        Thread.sleep(50); // running=false is set right after accepting=false
+        proceed.countDown();
+        closer.join(10_000);
+
+        assertEquals(1, store.markDoneCount.get(), "a graceful drain keeps the leftover-interrupt fix");
+        assertFalse(refused.get());
+    }
+
+    /**
+     * Forced shutdown interrupts a listener; it re-interrupts and returns. The status write must
+     * still see that interrupt, so a connection acquisition blocked on an exhausted pool is
+     * cancelled — clearing it there kept the worker alive past close().
+     */
+    @Test
+    void aForcedCloseStillCancelsAStatusWriteBlockedOnThePool() throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch pool = new CountDownLatch(1);
+        AtomicBoolean interruptedAtAcquire = new AtomicBoolean();
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            started.countDown();
+            try {
+                Thread.sleep(30_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return DispatchResult.done();
+        });
+        ConnectionProvider exhausted = () -> {
+            if (Thread.currentThread().isInterrupted()) {
+                interruptedAtAcquire.set(true);
+                throw new SQLException("Interrupted during connection acquisition");
+            }
+            try {
+                if (!pool.await(10, TimeUnit.SECONDS)) {
+                    throw new SQLException("pool exhausted");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new SQLException("Interrupted during connection acquisition", e);
+            }
+            return stubCp().getConnection();
+        };
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(exhausted).outboxStore(new StubOutboxStore()).listenerRegistry(registry)
+                .workerCount(1).drainTimeoutMs(100)
+                .build();
+        try {
+            assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+
+            long startNs = System.nanoTime();
+            d.close();
+            long closeMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs);
+
+            assertTrue(interruptedAtAcquire.get(), "the forced-shutdown interrupt must reach the acquisition");
+            assertTrue(closeMs < 3000, "close() waited " + closeMs + "ms for a worker stuck on the pool");
+        } finally {
+            pool.countDown();
         }
     }
 

@@ -58,6 +58,8 @@ public final class OutboxDispatcher implements AutoCloseable {
     private final BlockingQueue<QueuedEvent> hotQueue;
     private final BlockingQueue<QueuedEvent> coldQueue;
     private final ExecutorService workers;
+    /** Set just before shutdownNow: from then on a worker's interrupt is a cancellation, not a leftover. */
+    private volatile boolean forced;
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final AtomicBoolean accepting = new AtomicBoolean(true);
     private boolean closed; // guarded by this
@@ -544,7 +546,13 @@ public final class OutboxDispatcher implements AutoCloseable {
                 // A listener can return (or throw) with its thread still interrupted — the
                 // re-interrupt idiom after catching InterruptedException. Cleared before the status
                 // write: an interrupt-sensitive pool refuses the connection, and the outcome is lost.
+                // Except a forced shutdown's interrupt: that one must still cancel a write blocked on
+                // the pool, or the worker outlives close(). Read after the flag, so an interrupt
+                // from shutdownNow is never mistaken for a leftover.
                 interruptedByListener = Thread.interrupted();
+                if (interruptedByListener && forced) {
+                    Thread.currentThread().interrupt();
+                }
             }
             long listenerDurationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - listenerStartNs);
             metrics.recordListenerDurationMs(listenerDurationMs);
@@ -858,10 +866,12 @@ public final class OutboxDispatcher implements AutoCloseable {
             if (!workers.awaitTermination(drainTimeoutMs, TimeUnit.MILLISECONDS)) {
                 logger.log(Level.WARNING, "Drain timeout exceeded; forcing shutdown. "
                         + "Hot remaining: " + hotQueue.size() + ", Cold remaining: " + coldQueue.size());
+                forced = true;
                 workers.shutdownNow();
                 workers.awaitTermination(5, TimeUnit.SECONDS);
             }
         } catch (InterruptedException e) {
+            forced = true;
             workers.shutdownNow();
             Thread.currentThread().interrupt();
         }

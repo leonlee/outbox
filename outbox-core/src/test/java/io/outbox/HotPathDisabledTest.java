@@ -93,6 +93,7 @@ class HotPathDisabledTest {
     /** Stands in for a real store, so it claims — see the rejection test for one that does not. */
     private static class RecordingStore implements OutboxStore {
         private final List<String> inserted = new ArrayList<>();
+        private final AtomicInteger dead = new AtomicInteger();
 
         @Override
         public boolean supportsClaimLocking() {
@@ -122,6 +123,7 @@ class HotPathDisabledTest {
 
         @Override
         public int markDead(Connection conn, String eventId, String error, String claimOwner, Instant claimedAt) {
+            dead.incrementAndGet();
             return 1;
         }
 
@@ -148,6 +150,7 @@ class HotPathDisabledTest {
 
         @Override
         public int markDead(Connection conn, String eventId, String error) {
+            dead.incrementAndGet();
             return 1;
         }
 
@@ -225,9 +228,44 @@ class HotPathDisabledTest {
                 .claimLocking("owner", Duration.ofMinutes(5))
                 .hotPathEnabled(hotPathEnabled)
                 .build()) {
+            outbox.start();
             outbox.writer().write(EventEnvelope.ofJson("T", "{}"));
             assertEquals(1, store.inserted.size(), "the row is written either way");
             return latch.await(1, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * Under deferStart(true) the hot path waits for start(), i.e. for listeners. A write committed
+     * before then (a bean writing during initialisation) used to be dispatched at once to an empty
+     * registry and marked DEAD as unroutable; it is now left for the poller.
+     */
+    @Test
+    void aDeferredOutboxDoesNotDispatchHotUntilStarted() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry();
+        var store = new RecordingStore();
+        try (Outbox outbox = Outbox.multiNode()
+                .connectionProvider(CP)
+                .txContext(new ImmediateTxContext())
+                .outboxStore(store)
+                .listenerRegistry(registry)
+                .workerCount(1)
+                .intervalMs(600_000)
+                .deferStart(true)
+                .claimLocking("owner", Duration.ofMinutes(5))
+                .build()) {
+            outbox.writer().write(EventEnvelope.ofJson("T", "{}"));
+            registry.register("T", event -> {
+                latch.countDown();
+                return DispatchResult.done();
+            });
+            assertFalse(latch.await(300, TimeUnit.MILLISECONDS), "nothing is dispatched before start()");
+            assertEquals(0, store.dead.get(), "and nothing is marked DEAD for want of a listener");
+
+            outbox.start();
+            outbox.writer().write(EventEnvelope.ofJson("T", "{}"));
+            assertTrue(latch.await(5, TimeUnit.SECONDS), "after start() the hot path dispatches");
         }
     }
 

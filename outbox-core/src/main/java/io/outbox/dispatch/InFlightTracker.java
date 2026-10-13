@@ -147,6 +147,23 @@ public interface InFlightTracker {
     }
 
     /**
+     * Whether {@link #isRunning} really reports running entries.
+     *
+     * <p>{@link OutboxDispatcher} hands a claimed copy's lease to the copy that will write only if
+     * it can see, when queueing, that another copy is running. Without that, a copy that loses at
+     * acquire would retire the running copy's write authority and drop its own lease, leaving the
+     * row claimed until the lock timeout. So the dispatcher refuses claim-leased copies, and a
+     * {@code claimOwner}, with a tracker that returns {@code false} here.
+     *
+     * <p>Defaults to {@code false}: an implementation that does track running entries must say so.
+     *
+     * @return {@code true} if {@code isRunning} is implemented
+     */
+    default boolean supportsIsRunning() {
+        return false;
+    }
+
+    /**
      * Whether entries acquired from this tracker are eventually reclaimed without an explicit
      * {@link #release(String)}.
      *

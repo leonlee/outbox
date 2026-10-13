@@ -868,9 +868,17 @@ public interface InFlightTracker {
 
     default boolean isSettled(String eventId);
     default boolean isRunning(String eventId);
+    default boolean supportsIsRunning();   // true only if isRunning is implemented
     default boolean hasTtl();
 }
 ```
+
+A tracker that does not report running entries cannot tell, when a copy is queued, that another copy is still running.
+For a claim-leased copy that is unsafe (the new copy would retire the running copy's write authority, then lose at
+acquire and drop its own lease), so `enqueueCold` refuses a copy carrying a `ClaimLease` with `IllegalStateException`
+unless `supportsIsRunning()` is true, and `OutboxDispatcher.Builder` rejects a `claimOwner` with such a tracker. The
+refused claim is left untouched and is retaken after the lock timeout. Hot and unleased cold copies are unaffected.
+`DefaultInFlightTracker` supports it.
 
 Once entries can expire, an id-keyed `release` is unsafe: a listener that outruns the TTL would, on completion, clear
 the entry of the worker that took the event over. The dispatcher therefore uses `acquire`/`release(id, token)`, and

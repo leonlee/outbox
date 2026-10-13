@@ -8,6 +8,7 @@ import io.outbox.spi.JsonCodec;
 import io.outbox.spi.MetricsExporter;
 import io.outbox.spi.OutboxStore;
 import io.outbox.util.DaemonThreadFactory;
+import io.outbox.util.IsolatingMetricsExporter;
 
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -84,7 +85,7 @@ public final class OutboxPoller implements AutoCloseable {
         this.skipRecent = skipRecent == null ? Duration.ZERO : skipRecent;
         this.batchSize = batchSize;
         this.intervalMs = intervalMs;
-        this.metrics = builder.metrics != null ? builder.metrics : MetricsExporter.NOOP;
+        this.metrics = IsolatingMetricsExporter.of(builder.metrics);
         this.ownerId = builder.ownerId;
         this.lockTimeout = builder.lockTimeout;
         if (ownerId != null && outboxStore.supportsClaimLocking() && !outboxStore.supportsClaimFencing()) {
@@ -249,7 +250,11 @@ public final class OutboxPoller implements AutoCloseable {
                 .tenantId(row.tenantId())
                 .headers(headers)
                 .payloadJson(row.payloadJson());
-        if (row.availableAt() != null) {
+        // Only a time after created_at: a retry can schedule next_attempt before it (another
+        // node's clock, a business occurredAt in the future), and EventEnvelope rejects that —
+        // turning a valid retry into a decode-failure DEAD. The claim's SQL already decided the
+        // row is due, so an earlier time carries nothing the listener needs.
+        if (row.availableAt() != null && row.availableAt().isAfter(row.createdAt())) {
             builder.availableAt(row.availableAt());
         }
         return builder.build();

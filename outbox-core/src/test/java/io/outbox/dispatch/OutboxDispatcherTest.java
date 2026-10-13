@@ -7,19 +7,27 @@ import io.outbox.RetryAfterException;
 import io.outbox.UnrecoverableException;
 import io.outbox.registry.DefaultListenerRegistry;
 import io.outbox.spi.ConnectionProvider;
+import io.outbox.spi.MetricsExporter;
+import io.outbox.util.IsolatingMetricsExporter;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.lang.reflect.Proxy;
 import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -1083,6 +1091,11 @@ class OutboxDispatcherTest {
             }
 
             @Override
+            public boolean supportsIsRunning() {
+                return true;
+            }
+
+            @Override
             public boolean isSettled(String eventId) {
                 return delegate.isSettled(eventId);
             }
@@ -1170,6 +1183,11 @@ class OutboxDispatcherTest {
             @Override
             public boolean isRunning(String eventId) {
                 return delegate.isRunning(eventId);
+            }
+
+            @Override
+            public boolean supportsIsRunning() {
+                return true;
             }
 
             @Override
@@ -2576,6 +2594,11 @@ class OutboxDispatcherTest {
         });
         var store = new StubOutboxStore() {
             @Override
+            public int markDone(Connection conn, String eventId) {
+                return 0;
+            }
+
+            @Override
             public int markDone(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
                 return 0;
             }
@@ -3048,6 +3071,347 @@ class OutboxDispatcherTest {
                 throw new AssertionError("hand-over thread neither blocked nor finished: " + t.getState());
             }
             Thread.onSpinWait();
+        }
+    }
+
+    // ── Review follow-ups: tracker capability, metrics isolation, interrupts, plain writes ──
+
+    /** A legal tracker that only does tryAcquire/release: isRunning stays at its default. */
+    private static final class AcquireOnlyTracker implements InFlightTracker {
+        private final Set<String> held = ConcurrentHashMap.newKeySet();
+
+        @Override
+        public boolean tryAcquire(String eventId) {
+            return held.add(eventId);
+        }
+
+        @Override
+        public void release(String eventId) {
+            held.remove(eventId);
+        }
+    }
+
+    @Test
+    void claimOwnerNeedsATrackerThatReportsRunningEntries() {
+        var e = assertThrows(IllegalArgumentException.class, () -> OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(new StubOutboxStore())
+                .listenerRegistry(new DefaultListenerRegistry())
+                .inFlightTracker(new AcquireOnlyTracker())
+                .claimOwner("pod-a")
+                .build());
+        assertTrue(e.getMessage().contains("supportsIsRunning"), e.getMessage());
+    }
+
+    /**
+     * Without isRunning a second leased copy would be reserved behind a running one, retire its
+     * write authority and drop its own lease. So a leased copy is refused outright — before any
+     * reservation, without touching the claim — whether or not claimOwner is set.
+     */
+    @Test
+    void aLeasedCopyIsRefusedByATrackerThatCannotReportRunning() throws Exception {
+        var store = new FencingStore();
+        CountDownLatch delivered = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            delivered.countDown();
+            return DispatchResult.done();
+        });
+        EventEnvelope envelope = EventEnvelope.ofJson(ONCE, "{}");
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(registry)
+                .inFlightTracker(new AcquireOnlyTracker())
+                .workerCount(1).drainTimeoutMs(1000)
+                .build()) {
+            var e = assertThrows(IllegalStateException.class, () -> d.enqueueCold(cold(envelope, L1)));
+            assertTrue(e.getMessage().contains("supportsIsRunning"), e.getMessage());
+            assertThrows(IllegalStateException.class, () -> d.enqueueCold(cold(envelope, L2)));
+            assertEquals(List.of(), store.releases, "a refused lease is left alone, not released");
+
+            // Nothing was reserved: an unleased copy of the same event still goes through.
+            assertTrue(d.enqueueCold(new QueuedEvent(envelope, QueuedEvent.Source.COLD, 0)));
+            assertTrue(delivered.await(5, TimeUnit.SECONDS));
+        }
+        assertEquals(List.of(), store.writes, "no fenced write: the unleased copy wrote unfenced");
+        assertEquals(1, store.markDoneCount.get());
+    }
+
+    @Test
+    void aTrackerWithoutIsRunningStillServesUnleasedCopies() throws Exception {
+        var store = new StubOutboxStore();
+        CountDownLatch delivered = new CountDownLatch(2);
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            delivered.countDown();
+            return DispatchResult.done();
+        });
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(registry)
+                .inFlightTracker(new AcquireOnlyTracker())
+                .workerCount(1).drainTimeoutMs(1000)
+                .build()) {
+            assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
+            assertTrue(d.enqueueCold(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.COLD, 0)));
+            assertTrue(delivered.await(5, TimeUnit.SECONDS));
+        }
+    }
+
+    /** Hot writes are fenced on locked_by = claimOwner; a store stamping someone else makes them all miss. */
+    @Test
+    void claimOwnerMustMatchTheStoresStamp() {
+        var stamping = new StubOutboxStore() {
+            @Override
+            public Optional<String> writerOwnerId() {
+                return Optional.of("pod-a");
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () -> OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(stamping)
+                .listenerRegistry(new DefaultListenerRegistry())
+                .claimOwner("pod-b")
+                .build());
+        assertDoesNotThrow(() -> OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(stamping)
+                .listenerRegistry(new DefaultListenerRegistry())
+                .claimOwner("pod-a").workerCount(0)
+                .build().close());
+    }
+
+    /** Every exporter call throws; delivery decisions and hand-overs must not notice. */
+    private static final MetricsExporter THROWING_METRICS = (MetricsExporter) Proxy.newProxyInstance(
+            MetricsExporter.class.getClassLoader(), new Class<?>[]{MetricsExporter.class},
+            (proxy, method, args) -> {
+                throw new IllegalStateException("metrics backend down: " + method.getName());
+            });
+
+    /**
+     * A listener that returned Done used to become DEAD (maxAttempts=1) because the duration
+     * metric threw inside the listener's try block.
+     */
+    @Test
+    void aThrowingExporterDoesNotTurnASuccessIntoAFailure() throws Exception {
+        var store = new StubOutboxStore();
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> DispatchResult.done());
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(registry)
+                .metrics(THROWING_METRICS).maxAttempts(1)
+                .workerCount(1).drainTimeoutMs(1000)
+                .build()) {
+            assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
+            awaitCount(store.markDoneCount, 1);
+        }
+        assertEquals(0, store.markDeadCount.get());
+        assertEquals(0, store.markRetryCount.get());
+    }
+
+    /** The suppression counter used to throw before the hand-over, stranding the poller's claim. */
+    @Test
+    void aThrowingExporterDoesNotSkipTheHandOver() throws Exception {
+        CountDownLatch running = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            running.countDown();
+            awaitQuietly(release);
+            return DispatchResult.done();
+        });
+        var store = new FencingStore();
+        EventEnvelope envelope = EventEnvelope.ofJson(ONCE, "{}");
+
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(registry)
+                .metrics(THROWING_METRICS)
+                .workerCount(1).claimOwner("pod-a").drainTimeoutMs(1000)
+                .build()) {
+            d.enqueueHot(new QueuedEvent(envelope, QueuedEvent.Source.HOT, 0));
+            assertTrue(running.await(5, TimeUnit.SECONDS));
+            assertTrue(d.enqueueCold(cold(envelope, L1)));
+            release.countDown();
+            store.awaitWrites(1);
+        }
+        assertEquals(List.of(envelope.eventId() + ":" + at(L1)), store.writes);
+    }
+
+    @Test
+    void theIsolatingExporterOverridesEveryExporterMethod() {
+        for (Method m : MetricsExporter.class.getMethods()) {
+            if (Modifier.isStatic(m.getModifiers())) {
+                continue;
+            }
+            assertDoesNotThrow(() -> IsolatingMetricsExporter.class
+                    .getDeclaredMethod(m.getName(), m.getParameterTypes()), "not delegated: " + m);
+        }
+    }
+
+    /**
+     * A listener that re-interrupts its thread and returns Done: the status write must not run on
+     * the interrupted thread, or an interrupt-sensitive pool refuses the connection and the
+     * outcome is lost.
+     */
+    @Test
+    void aListenersLeftoverInterruptDoesNotLoseTheStatusWrite() throws Exception {
+        var store = new StubOutboxStore();
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            Thread.currentThread().interrupt();
+            return DispatchResult.done();
+        });
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(interruptSensitive(new AtomicBoolean())).outboxStore(store).listenerRegistry(registry)
+                .workerCount(1).drainTimeoutMs(1000)
+                .build()) {
+            assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
+            awaitCount(store.markDoneCount, 1);
+        }
+    }
+
+    /** Refuses a connection to an interrupted thread, like HikariCP's borrow. */
+    private static ConnectionProvider interruptSensitive(AtomicBoolean refused) {
+        return () -> {
+            if (Thread.currentThread().isInterrupted()) {
+                refused.set(true);
+                throw new SQLException("Interrupted during connection acquisition");
+            }
+            return stubCp().getConnection();
+        };
+    }
+
+    @Test
+    void aThrowingListenersLeftoverInterruptDoesNotLoseTheRetry() throws Exception {
+        var store = new StubOutboxStore();
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("boom");
+        });
+        AtomicBoolean refused = new AtomicBoolean();
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(interruptSensitive(refused)).outboxStore(store).listenerRegistry(registry)
+                .workerCount(1).drainTimeoutMs(1000)
+                .build()) {
+            assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
+            awaitCount(store.markRetryCount, 1);
+        }
+        assertFalse(refused.get());
+    }
+
+    /**
+     * close() sets running=false before it starts draining, so "not running" does not mean
+     * "forced". A listener's own leftover interrupt during a graceful drain is still a leftover:
+     * its status write must land.
+     */
+    @Test
+    void aLeftoverInterruptDuringAGracefulDrainDoesNotLoseTheStatusWrite() throws Exception {
+        var store = new StubOutboxStore();
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch proceed = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            started.countDown();
+            awaitQuietly(proceed);
+            Thread.currentThread().interrupt();
+            return DispatchResult.done();
+        });
+        AtomicBoolean refused = new AtomicBoolean();
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(interruptSensitive(refused)).outboxStore(store).listenerRegistry(registry)
+                .workerCount(1).drainTimeoutMs(5000)
+                .build();
+        assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
+        assertTrue(started.await(5, TimeUnit.SECONDS));
+
+        Thread closer = new Thread(d::close);
+        closer.start();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(TAIL, "{}"), QueuedEvent.Source.HOT, 0))) {
+            assertTrue(System.nanoTime() < deadline, "close() never began");
+            Thread.sleep(5);
+        }
+        Thread.sleep(50); // running=false is set right after accepting=false
+        proceed.countDown();
+        closer.join(10_000);
+
+        assertEquals(1, store.markDoneCount.get(), "a graceful drain keeps the leftover-interrupt fix");
+        assertFalse(refused.get());
+    }
+
+    /**
+     * Forced shutdown interrupts a listener; it re-interrupts and returns. The status write must
+     * still see that interrupt, so a connection acquisition blocked on an exhausted pool is
+     * cancelled — clearing it there kept the worker alive past close().
+     */
+    @Test
+    void aForcedCloseStillCancelsAStatusWriteBlockedOnThePool() throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch pool = new CountDownLatch(1);
+        AtomicBoolean interruptedAtAcquire = new AtomicBoolean();
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            started.countDown();
+            try {
+                Thread.sleep(30_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return DispatchResult.done();
+        });
+        ConnectionProvider exhausted = () -> {
+            if (Thread.currentThread().isInterrupted()) {
+                interruptedAtAcquire.set(true);
+                throw new SQLException("Interrupted during connection acquisition");
+            }
+            try {
+                if (!pool.await(10, TimeUnit.SECONDS)) {
+                    throw new SQLException("pool exhausted");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new SQLException("Interrupted during connection acquisition", e);
+            }
+            return stubCp().getConnection();
+        };
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(exhausted).outboxStore(new StubOutboxStore()).listenerRegistry(registry)
+                .workerCount(1).drainTimeoutMs(100)
+                .build();
+        try {
+            assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+
+            long startNs = System.nanoTime();
+            d.close();
+            long closeMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs);
+
+            assertTrue(interruptedAtAcquire.get(), "the forced-shutdown interrupt must reach the acquisition");
+            assertTrue(closeMs < 3000, "close() waited " + closeMs + "ms for a worker stuck on the pool");
+        } finally {
+            pool.countDown();
+        }
+    }
+
+    /**
+     * An unfenced write goes through the plain overload, so a store that customised the plain
+     * write (an audit column, a dialect tweak) keeps it. A fenced write still uses the fenced one.
+     */
+    @Test
+    void unfencedWritesUseThePlainOverload() throws Exception {
+        var store = new FencingStore();
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> DispatchResult.done());
+        EventEnvelope hot = EventEnvelope.ofJson(ONCE, "{}");
+        EventEnvelope claimed = EventEnvelope.ofJson(ONCE, "{}");
+        try (var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(registry)
+                .workerCount(1).drainTimeoutMs(1000)
+                .build()) {
+            d.enqueueHot(new QueuedEvent(hot, QueuedEvent.Source.HOT, 0));
+            awaitCount(store.markDoneCount, 1);
+            d.enqueueCold(cold(claimed, L1));
+            store.awaitWrites(1);
+        }
+        assertEquals(1, store.markDoneCount.get(), "the unleased hot copy used the plain markDone");
+        assertEquals(List.of(claimed.eventId() + ":" + at(L1)), store.writes, "the leased copy stayed fenced");
+    }
+
+    private static void awaitCount(AtomicInteger counter, int expected) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (counter.get() < expected) {
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("expected " + expected + ", got " + counter.get());
+            }
+            Thread.sleep(5);
         }
     }
 }

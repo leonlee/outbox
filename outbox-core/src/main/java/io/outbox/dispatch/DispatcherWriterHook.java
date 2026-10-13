@@ -4,11 +4,13 @@ import io.outbox.EventEnvelope;
 import io.outbox.WriterHook;
 import io.outbox.spi.MetricsExporter;
 import io.outbox.spi.OutboxStore;
+import io.outbox.util.IsolatingMetricsExporter;
 
 import java.time.Instant;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -25,18 +27,35 @@ public final class DispatcherWriterHook implements WriterHook {
 
     private final OutboxDispatcher dispatcher;
     private final MetricsExporter metrics;
+    private final BooleanSupplier open;
 
     public DispatcherWriterHook(OutboxDispatcher dispatcher) {
         this(dispatcher, null);
     }
 
     public DispatcherWriterHook(OutboxDispatcher dispatcher, MetricsExporter metrics) {
+        this(dispatcher, metrics, () -> true);
+    }
+
+    /**
+     * @param dispatcher the dispatcher to feed
+     * @param metrics    optional metrics exporter
+     * @param open       whether hot delivery is open yet; while {@code false}, committed events
+     *                   are left for the poller (used to hold the hot path until listeners exist)
+     */
+    public DispatcherWriterHook(OutboxDispatcher dispatcher, MetricsExporter metrics, BooleanSupplier open) {
         this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
-        this.metrics = metrics == null ? MetricsExporter.NOOP : metrics;
+        this.metrics = IsolatingMetricsExporter.of(metrics);
+        this.open = Objects.requireNonNull(open, "open");
     }
 
     @Override
     public void afterCommit(List<EventEnvelope> events) {
+        if (!open.getAsBoolean()) {
+            logger.log(Level.FINE, () -> "Hot path not open yet (outbox not started); poller will deliver "
+                    + events.size() + " event(s)");
+            return;
+        }
         for (EventEnvelope event : events) {
             if (event.isDelayed()) {
                 metrics.incrementHotSkippedDelayed();

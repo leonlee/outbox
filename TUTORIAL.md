@@ -112,17 +112,19 @@ them. Claim locking compares timestamps for equality, so two rules are load-bear
   delivered event is never marked DONE: it is claimed again after every lock timeout.
 - **`created_at` and `locked_at` must have the same type and fractional precision.** The writer stamp stores the
   same instant in both and is recognised by `locked_at = created_at`; columns that round differently (say
-  `DATETIME(6)` and `DATETIME(3)`) break that equality and every hot-path write misses.
+  `DATETIME(6)` and `DATETIME(3)`) break that equality for any instant they do not both hold exactly, so hot-path
+  writes miss.
 
 Use `DATETIME(6)` on MySQL and `TIMESTAMPTZ` on PostgreSQL for all four timestamp columns. To check an existing table:
 
 ```sql
--- MySQL: both rows must show the same DATA_TYPE and a DATETIME_PRECISION of at least 3
+-- Both rows must show the same type and the same precision, and that precision must be at least 3.
+-- MySQL
 SELECT COLUMN_NAME, DATA_TYPE, DATETIME_PRECISION FROM information_schema.COLUMNS
  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'outbox_event' AND COLUMN_NAME IN ('created_at', 'locked_at');
--- PostgreSQL: same data_type, datetime_precision of at least 3
-SELECT column_name, data_type, datetime_precision FROM information_schema.columns
- WHERE table_name = 'outbox_event' AND column_name IN ('created_at', 'locked_at');
+-- PostgreSQL (the schema your application connects to)
+SELECT table_schema, column_name, data_type, datetime_precision FROM information_schema.columns
+ WHERE table_schema = current_schema() AND table_name = 'outbox_event' AND column_name IN ('created_at', 'locked_at');
 ```
 
 To fix one, raise the precision of all four columns together and keep each column's type: converting between

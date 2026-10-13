@@ -645,8 +645,9 @@ poller claim overwrites `locked_at`, ending the exemption. Events older than `WR
 (backfills) are written unowned and skip hot delivery. The store reports its stamp owner through
 `OutboxStore.writerOwnerId()` (empty by default). `Outbox.multiNode()` with the hot path requires a stamp from a store
 that `supportsClaimLocking()`, and in every case requires it to equal the claim owner (`claimLocking(Duration)` takes
-the stamp's owner); a stamping store also needs a lock timeout of at least twice `WRITER_STAMP_MAX_AGE`. The Spring Boot
-starter stamps exactly in `multi-node` with the hot path (`outbox.dispatcher.stamp-writer-owner` is deprecated and
+the stamp's owner); with the hot path on, a stamping store also needs a lock timeout of at least twice
+`WRITER_STAMP_MAX_AGE`. A store built with an owner keeps stamping in poller-only mode; the Spring Boot starter builds
+its store to stamp exactly in `multi-node` with the hot path (`outbox.dispatcher.stamp-writer-owner` is deprecated and
 ignored).
 
 A poller claim writes `locked_at = leaseTimestamp(now)`, which the JDBC stores define as `now` truncated to

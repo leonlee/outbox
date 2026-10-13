@@ -181,7 +181,8 @@ outbox-jdbc/src/main/java/
   claim once immediately while other nodes wait for the lock timeout. Rows older than
   `OutboxStore.WRITER_STAMP_MAX_AGE` (30s) insert unowned and skip the hot path. `OutboxStore.writerOwnerId()` reports
   the stamp; `multiNode()` with the hot path requires it on a locking store, requires it to equal the claim owner
-  (`claimLocking(Duration)` adopts it), and requires `lockTimeout >= 2 * WRITER_STAMP_MAX_AGE` when stamping.
+  (`claimLocking(Duration)` adopts it), and requires `lockTimeout >= 2 * WRITER_STAMP_MAX_AGE` when stamping with the
+  hot path on.
 - **AbstractJdbcOutboxStore** (`io.outbox.jdbc.store`): Base JDBC outbox store with shared SQL, row mapper, and
   H2-compatible default `claimPending`. Subclasses: `H2OutboxStore`, `MySqlOutboxStore` (UPDATE...ORDER BY...LIMIT),
   `PostgresOutboxStore` (FOR UPDATE SKIP LOCKED + RETURNING).

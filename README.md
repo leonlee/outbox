@@ -279,7 +279,7 @@ the hot/cold race are no longer needed:
 
 | Setting              | With the hot path                                       | Poller-only                         |
 |----------------------|---------------------------------------------------------|-------------------------------------|
-| writer stamp         | always on: keeps other nodes off the row being delivered from memory, and fences its write | off: rows insert unowned |
+| writer stamp         | required: keeps other nodes off the row being delivered from memory, and fences its write | not needed (the starter inserts rows unowned) |
 | `skip-recent-ms`     | holds the poller back so it cannot race that delivery   | can be `0`                          |
 | `suppress-replays`   | dedupes a hot copy against the poller's copy            | no second copy exists to dedupe     |
 | `hot-trip-ms`        | sheds hot work when the queue backs up                  | nothing is enqueued hot             |

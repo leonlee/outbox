@@ -18,6 +18,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -170,27 +171,49 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
         }
     }
 
+    /**
+     * The columns of the one table the store's unquoted SQL names. Catalog, schema and table are
+     * matched literally (getColumns takes LIKE patterns, so an {@code _} would match neighbours),
+     * and the name is folded as the database folds unquoted identifiers — a quoted look-alike is
+     * a different table. If the connection's scope still matches more than one table, there is
+     * no telling which the SQL uses, so nothing is returned.
+     */
     private Map<String, TimestampColumn> timestampColumns(Connection conn) throws SQLException {
         DatabaseMetaData metaData = conn.getMetaData();
         String escape = metaData.getSearchStringEscape();
-        // Identifier case is the database's business: H2 upper-cases unquoted names, PostgreSQL
-        // lower-cases them, MySQL keeps them (or not, by platform).
-        for (String name : List.of(tableName, tableName.toUpperCase(Locale.ROOT), tableName.toLowerCase(Locale.ROOT))) {
-            Map<String, TimestampColumn> found = new HashMap<>();
-            try (ResultSet rs = metaData.getColumns(conn.getCatalog(), conn.getSchema(), likeLiteral(name, escape), "%")) {
-                while (rs.next()) {
-                    String column = rs.getString("COLUMN_NAME").toLowerCase(Locale.ROOT);
-                    if (CREATED_AT.equals(column) || LOCKED_AT.equals(column)) {
-                        found.put(column, new TimestampColumn(rs.getString("TYPE_NAME"),
-                                rs.getInt("COLUMN_SIZE"), fractionalSecondsDigits(rs).orElse(TimestampColumn.UNKNOWN)));
-                    }
+        String schema = conn.getSchema();
+        String table = foldUnquoted(metaData, tableName);
+        Map<String, Map<String, TimestampColumn>> byTable = new LinkedHashMap<>();
+        try (ResultSet rs = metaData.getColumns(conn.getCatalog(),
+                schema == null ? null : likeLiteral(schema, escape), likeLiteral(table, escape), "%")) {
+            while (rs.next()) {
+                String column = rs.getString("COLUMN_NAME").toLowerCase(Locale.ROOT);
+                if (CREATED_AT.equals(column) || LOCKED_AT.equals(column)) {
+                    String relation = rs.getString("TABLE_CAT") + "." + rs.getString("TABLE_SCHEM") + "."
+                            + rs.getString("TABLE_NAME");
+                    byTable.computeIfAbsent(relation, k -> new HashMap<>()).put(column, new TimestampColumn(
+                            rs.getString("TYPE_NAME"), rs.getInt("COLUMN_SIZE"),
+                            fractionalSecondsDigits(rs).orElse(TimestampColumn.UNKNOWN)));
                 }
             }
-            if (!found.isEmpty()) {
-                return found;
-            }
         }
-        return Map.of();
+        if (byTable.size() > 1) {
+            LOGGER.warning(tableName + " matches " + byTable.keySet() + " in the connection's catalog and "
+                    + "schema; cannot tell which one the store uses, skipping the timestamp-column check");
+            return Map.of();
+        }
+        return byTable.isEmpty() ? Map.of() : byTable.values().iterator().next();
+    }
+
+    /** TableNames admits only unquoted identifiers, which the database stores folded. */
+    private static String foldUnquoted(DatabaseMetaData metaData, String name) throws SQLException {
+        if (metaData.storesUpperCaseIdentifiers()) {
+            return name.toUpperCase(Locale.ROOT);
+        }
+        if (metaData.storesLowerCaseIdentifiers()) {
+            return name.toLowerCase(Locale.ROOT);
+        }
+        return name;
     }
 
     /** {@code getColumns} takes a LIKE pattern; the {@code _} in {@code outbox_event} must match only itself. */

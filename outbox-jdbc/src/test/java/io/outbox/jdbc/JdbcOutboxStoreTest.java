@@ -1254,6 +1254,51 @@ class JdbcOutboxStoreTest {
         assertTrue(e.getMessage().contains("differ"), e.getMessage());
     }
 
+    /**
+     * getColumns takes the schema as a LIKE pattern: "tenant_a" also matches "tenantza". Only the
+     * table in the connection's own schema — the one the store's SQL resolves to — is checked.
+     */
+    @Test
+    void verifySchemaMatchesTheConnectionsSchemaLiterally() throws SQLException {
+        try (Connection conn = dataSource.getConnection(); var st = conn.createStatement()) {
+            st.execute("CREATE SCHEMA tenant_a");
+            st.execute("CREATE SCHEMA tenantza");
+            st.execute("CREATE TABLE tenant_a.outbox_event (event_id VARCHAR(36) PRIMARY KEY, "
+                    + "created_at TIMESTAMP(6) NOT NULL, locked_at TIMESTAMP(6))");
+            st.execute("CREATE TABLE tenantza.outbox_event (event_id VARCHAR(36) PRIMARY KEY, "
+                    + "created_at TIMESTAMP(0) NOT NULL, locked_at TIMESTAMP(0))");
+
+            conn.setSchema("TENANT_A");
+            new H2OutboxStore().verifySchema(conn);
+
+            // The other way round, a coarse table in use beside a fine neighbour must be refused —
+            // not matched together with the neighbour and skipped as ambiguous.
+            st.execute("CREATE SCHEMA tenant_b");
+            st.execute("CREATE SCHEMA tenantzb");
+            st.execute("CREATE TABLE tenant_b.outbox_event (event_id VARCHAR(36) PRIMARY KEY, "
+                    + "created_at TIMESTAMP(0) NOT NULL, locked_at TIMESTAMP(0))");
+            st.execute("CREATE TABLE tenantzb.outbox_event (event_id VARCHAR(36) PRIMARY KEY, "
+                    + "created_at TIMESTAMP(6) NOT NULL, locked_at TIMESTAMP(6))");
+            conn.setSchema("TENANT_B");
+            assertThrows(IllegalStateException.class, () -> new H2OutboxStore().verifySchema(conn));
+        }
+    }
+
+    /**
+     * The store's SQL names the table unquoted, which H2 folds to upper case. A quoted lower-case
+     * look-alike is a different table and must not stand in for it, either way round.
+     */
+    @Test
+    void verifySchemaChecksTheTableTheUnquotedNameResolvesTo() throws SQLException {
+        createTimestampTable("outbox_shadow", "TIMESTAMP(6)", "TIMESTAMP(6)");
+        createTimestampTable("\"outbox_shadow\"", "TIMESTAMP(0)", "TIMESTAMP(0)");
+        verify("outbox_shadow");
+
+        createTimestampTable("outbox_shadow2", "TIMESTAMP(0)", "TIMESTAMP(0)");
+        createTimestampTable("\"outbox_shadow2\"", "TIMESTAMP(6)", "TIMESTAMP(6)");
+        assertThrows(IllegalStateException.class, () -> verify("outbox_shadow2"));
+    }
+
     /** Not found is not a mismatch: the table may live elsewhere or be created after startup. */
     @Test
     void verifySchemaSkipsATableItCannotFind() throws SQLException {

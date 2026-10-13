@@ -612,6 +612,7 @@ public final class Outbox implements AutoCloseable {
                     .hotTripMs(hotTripMs)
                     .suppressReplays(suppressReplays)
                     .hotPathEnabled(hotPathEnabled)
+                    .claimOwner(ownerId)
                     .interceptors(interceptors);
             if (inFlightTtlMs > 0) {
                 db.inFlightTracker(new DefaultInFlightTracker(inFlightTtlMs));

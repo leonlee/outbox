@@ -284,7 +284,9 @@ the hot/cold race are no longer needed:
 | `hot-trip-ms`        | sheds hot work when the queue backs up                  | nothing is enqueued hot             |
 
 The claim is a single atomic `UPDATE`: one node wins, its lease holds until the row settles or the lock timeout
-passes, and a node that dies mid-delivery has its row taken over afterwards. Delivery stays at-least-once.
+passes, and a node that dies mid-delivery has its row taken over afterwards. Status writes are fenced on the exact
+lease: a copy whose lease was taken over cannot clear the newer claim or overwrite the new holder's outcome when its
+late result arrives. Delivery stays at-least-once.
 
 `ordered` is poller-only by construction, and `writer-only` dispatches nothing. Independently of the mode, the
 dispatcher will not queue a second copy of an event it is already running — an in-memory guard that holds within one

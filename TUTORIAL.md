@@ -755,6 +755,9 @@ OutboxPoller poller = OutboxPoller.builder()
 - Each poller claims events by setting `locked_by`/`locked_at` columns
 - Expired locks (older than the configured timeout) are automatically reclaimed
 - Locks are cleared when events reach DONE, RETRY, or DEAD status
+- Status writes are fenced on the claim: a copy whose lease expired and was claimed again cannot clear the newer claim
+  or overwrite its outcome. When wiring the dispatcher yourself, also set `.claimOwner("poller-node-1")` on
+  `OutboxDispatcher.builder()` so hot-path copies are fenced too (`Outbox.multiNode()` does this for you)
 - Omit `claimLocking` from the builder for single-node mode (no locking)
 
 ---
@@ -1363,9 +1366,9 @@ Metrics are then available at `/actuator/prometheus`.
 | `outbox.enqueue.hot.skipped.delayed` | Delayed events left for the poller (`availableAt` in the future) |
 | `outbox.enqueue.hot.skipped.stale` | Events older than the writer-stamp window at commit (backfills), left for the poller |
 | `outbox.enqueue.cold`        | Events enqueued via cold (poller) path |
-| `outbox.dispatch.success`    | Events marked DONE (write succeeded)   |
+| `outbox.dispatch.success`    | Events marked DONE (row updated)       |
 | `outbox.dispatch.failure`    | Events failed (will retry)             |
-| `outbox.dispatch.dead`       | Events marked DEAD (write succeeded)   |
+| `outbox.dispatch.dead`       | Events marked DEAD (row updated)       |
 | `outbox.dispatch.deferred`   | Events deferred by `DispatchResult.retryAfter` |
 | `outbox.dispatch.suppressed` | Duplicate copies refused by the in-flight tracker |
 

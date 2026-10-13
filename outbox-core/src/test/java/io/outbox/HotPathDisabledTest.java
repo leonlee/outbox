@@ -99,6 +99,33 @@ class HotPathDisabledTest {
         }
 
         @Override
+        public boolean supportsClaimFencing() {
+            return true;
+        }
+
+        @Override
+        public int markDone(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+            return 1;
+        }
+
+        @Override
+        public int markRetry(Connection conn, String eventId, Instant nextAt, String error,
+                             String claimOwner, Instant claimedAt) {
+            return 1;
+        }
+
+        @Override
+        public int markDead(Connection conn, String eventId, String error, String claimOwner, Instant claimedAt) {
+            return 1;
+        }
+
+        @Override
+        public int markDeferred(Connection conn, String eventId, Instant nextAt, String claimOwner,
+                                Instant claimedAt) {
+            return 1;
+        }
+
+        @Override
         public synchronized void insertNew(Connection conn, EventEnvelope event) {
             inserted.add(event.eventId());
         }

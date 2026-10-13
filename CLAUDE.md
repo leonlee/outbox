@@ -97,6 +97,7 @@ outbox-core/src/main/java/
         │   ├── InFlightTracker.java (interface)
         │   ├── DefaultInFlightTracker.java
         │   ├── QueuedEvent.java (record)
+        │   ├── ClaimHandoff.java (per-reservation lease hand-over for fenced status writes)
         │   ├── EventInterceptor.java (interface)
         │   └── UnroutableEventException.java
         │
@@ -168,6 +169,13 @@ outbox-jdbc/src/main/java/
   in `io.outbox.jdbc.store`. `supportsClaimLocking()` (default `false`; MySQL/Postgres `true`) says whether
   `claimPending` really locks; `releaseClaim(conn, id, owner, claimedAt)` drops only that exact lease;
   `leaseTimestamp(now)` is the single definition of the `locked_at` a claim writes.
+  The four status writes have claim-fenced overloads `(…, claimOwner, claimedAt)`: owner `null` = unfenced; a
+  `claimedAt` = exact lease (`locked_by=? AND locked_at=?`); no `claimedAt` = hot copy (needs the store's writer stamp,
+  or an unclaimed row if the store does not stamp). `supportsClaimFencing()` (JDBC `true`); the defaults throw for a
+  fenced write on a locking store, and dispatcher/poller builders reject that store when a claim owner is set. In the
+  dispatcher each reservation has a `ClaimHandoff`: a cold copy turned away because its event is queued/running hands
+  its newer lease to that copy (or releases it if refused); a newer reservation retires the old handoff first. A
+  0-row write is not settled.
 - **Writer-stamped ownership**: JDBC stores take an optional `writerOwnerId` constructor arg. When set, inserts write
   `locked_by = owner, locked_at = created_at`; `claimPending` treats that equality as an unclaimed stamp the owner may
   claim once immediately while other nodes wait for the lock timeout. Rows older than

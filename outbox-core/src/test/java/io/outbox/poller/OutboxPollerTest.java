@@ -31,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class OutboxPollerTest {
@@ -381,6 +382,67 @@ class OutboxPollerTest {
 
         assertEquals(List.of("bad"), deadIds);
         assertEquals(List.of("good"), handled);
+    }
+
+    /** The poller's own DEAD write for an undecodable row is fenced on the batch's exact lease. */
+    @Test
+    void decodeFailureDeadWriteIsFencedOnTheBatchLease() {
+        JsonCodec.setDefault(new JsonCodec() {
+            @Override
+            public String toJson(Object obj) {
+                return "{}";
+            }
+
+            @Override
+            public <T> T fromJson(String json, Class<T> type) {
+                throw new IllegalArgumentException("malformed");
+            }
+        });
+        List<String> fences = new CopyOnWriteArrayList<>();
+        List<Instant> claims = new CopyOnWriteArrayList<>();
+        OutboxStore store = new StubStore() {
+            @Override
+            public List<OutboxEvent> claimPending(Connection conn, String ownerId, Instant now,
+                                                  Instant lockExpiry, Duration skipRecent, int limit) {
+                claims.add(leaseTimestamp(now));
+                return List.of(row("bad"));
+            }
+
+            @Override
+            public int markDead(Connection conn, String eventId, String error, String claimOwner, Instant claimedAt) {
+                fences.add(claimOwner + "@" + claimedAt);
+                return 1;
+            }
+        };
+
+        try (OutboxPoller poller = OutboxPoller.builder()
+                .connectionProvider(CP)
+                .outboxStore(store)
+                .handler((event, attempts) -> true)
+                .claimLocking("owner-1", Duration.ofMinutes(5))
+                .build()) {
+            poller.poll();
+        }
+
+        assertEquals(List.of("owner-1@" + claims.get(0)), fences);
+    }
+
+    /** A locking store that predates fencing is refused up front rather than failing every fenced write. */
+    @Test
+    void claimLockingRejectsALockingStoreWithoutFencing() {
+        OutboxStore legacy = new StubStore() {
+            @Override
+            public boolean supportsClaimLocking() {
+                return true;
+            }
+        };
+        OutboxPoller.Builder builder = OutboxPoller.builder()
+                .connectionProvider(CP)
+                .outboxStore(legacy)
+                .handler((event, attempts) -> true)
+                .claimLocking("owner-1", Duration.ofMinutes(5));
+
+        assertThrows(IllegalArgumentException.class, builder::build);
     }
 
     private static void awaitOrFail(CountDownLatch latch) {

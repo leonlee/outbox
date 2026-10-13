@@ -13,6 +13,7 @@ import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
@@ -234,36 +235,101 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
 
     @Override
     public int markDone(Connection conn, String eventId) {
+        return markDone(conn, eventId, null, null);
+    }
+
+    @Override
+    public int markDone(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
         String sql = "UPDATE " + tableName() +
                 " SET status=" + EventStatus.DONE.code() + ", done_at=?, locked_by=NULL, locked_at=NULL" +
-                " WHERE event_id=? AND status NOT IN " + TERMINAL_STATUS_IN;
-        return JdbcTemplate.update(conn, sql, Timestamp.from(Instant.now()), eventId);
+                unsettled(claimOwner, claimedAt);
+        return JdbcTemplate.update(conn, sql,
+                withFence(claimOwner, claimedAt, Timestamp.from(Instant.now()), eventId));
     }
 
     @Override
     public int markRetry(Connection conn, String eventId, Instant nextAt, String error) {
+        return markRetry(conn, eventId, nextAt, error, null, null);
+    }
+
+    @Override
+    public int markRetry(Connection conn, String eventId, Instant nextAt, String error,
+                         String claimOwner, Instant claimedAt) {
         String sql = "UPDATE " + tableName() +
                 " SET status=" + EventStatus.RETRY.code() +
                 ", attempts=attempts+1, available_at=?, last_error=?, locked_by=NULL, locked_at=NULL" +
-                " WHERE event_id=? AND status NOT IN " + TERMINAL_STATUS_IN;
-        return JdbcTemplate.update(conn, sql, Timestamp.from(nextAt), truncateError(error), eventId);
+                unsettled(claimOwner, claimedAt);
+        return JdbcTemplate.update(conn, sql,
+                withFence(claimOwner, claimedAt, Timestamp.from(nextAt), truncateError(error), eventId));
     }
 
     @Override
     public int markDead(Connection conn, String eventId, String error) {
+        return markDead(conn, eventId, error, null, null);
+    }
+
+    @Override
+    public int markDead(Connection conn, String eventId, String error, String claimOwner, Instant claimedAt) {
         String sql = "UPDATE " + tableName() +
                 " SET status=" + EventStatus.DEAD.code() + ", done_at=?, last_error=?, locked_by=NULL, locked_at=NULL" +
-                " WHERE event_id=? AND status NOT IN " + TERMINAL_STATUS_IN;
-        return JdbcTemplate.update(conn, sql, Timestamp.from(Instant.now()), truncateError(error), eventId);
+                unsettled(claimOwner, claimedAt);
+        return JdbcTemplate.update(conn, sql,
+                withFence(claimOwner, claimedAt, Timestamp.from(Instant.now()), truncateError(error), eventId));
     }
 
     @Override
     public int markDeferred(Connection conn, String eventId, Instant nextAt) {
+        return markDeferred(conn, eventId, nextAt, null, null);
+    }
+
+    @Override
+    public int markDeferred(Connection conn, String eventId, Instant nextAt, String claimOwner, Instant claimedAt) {
         String sql = "UPDATE " + tableName() +
                 " SET status=" + EventStatus.NEW.code() +
                 ", available_at=?, locked_by=NULL, locked_at=NULL" +
-                " WHERE event_id=? AND status NOT IN " + TERMINAL_STATUS_IN;
-        return JdbcTemplate.update(conn, sql, Timestamp.from(nextAt), eventId);
+                unsettled(claimOwner, claimedAt);
+        return JdbcTemplate.update(conn, sql,
+                withFence(claimOwner, claimedAt, Timestamp.from(nextAt), eventId));
+    }
+
+    @Override
+    public boolean supportsClaimFencing() {
+        return true;
+    }
+
+    /**
+     * WHERE clause shared by the status writes: the event is not yet terminal and the write still
+     * has authority over it, per the modes on {@link OutboxStore#markDone(Connection, String, String, Instant)}.
+     */
+    private String unsettled(String claimOwner, Instant claimedAt) {
+        String where = " WHERE event_id=? AND status NOT IN " + TERMINAL_STATUS_IN;
+        if (claimOwner == null) {
+            return where;
+        }
+        if (claimedAt != null) {
+            return where + " AND locked_by=? AND locked_at=?";
+        }
+        // A hot copy: its authority is the writer stamp of this owner, which a claim overwrites.
+        return where + (writerOwnerId != null ? " AND locked_by=? AND locked_at=created_at" : " AND locked_by IS NULL");
+    }
+
+    /** Parameters for an {@link #unsettled} update: {@code params}, then the fence's own. */
+    private Object[] withFence(String claimOwner, Instant claimedAt, Object... params) {
+        if (claimOwner == null) {
+            return params;
+        }
+        if (claimedAt != null) {
+            Object[] all = Arrays.copyOf(params, params.length + 2);
+            all[params.length] = claimOwner;
+            all[params.length + 1] = Timestamp.from(claimedAt);
+            return all;
+        }
+        if (writerOwnerId == null) {
+            return params;
+        }
+        Object[] all = Arrays.copyOf(params, params.length + 1);
+        all[params.length] = claimOwner;
+        return all;
     }
 
     @Override

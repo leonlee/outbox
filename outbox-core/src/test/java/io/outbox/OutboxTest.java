@@ -130,7 +130,10 @@ class OutboxTest {
                         .build());
     }
 
-    /** A locking store that predates claim fencing would throw on every fenced write: refuse it up front. */
+    /**
+     * A locking store that predates claim fencing would throw on every fenced write: refuse it up
+     * front, and for that rather than the missing stamp it also lacks.
+     */
     @Test
     void multiNode_lockingStoreWithoutFencing_throwsIAE() {
         OutboxStore legacyLocking = new OutboxStore() {
@@ -167,8 +170,6 @@ class OutboxTest {
                 Outbox.multiNode()
                         .connectionProvider(STUB_CP).txContext(STUB_TX)
                         .outboxStore(legacyLocking).listenerRegistry(STUB_REG)
-                        // poller-only: with the hot path the missing stamp is refused first
-                        .hotPathEnabled(false)
                         .claimLocking(Duration.ofMinutes(5))
                         .build());
     }

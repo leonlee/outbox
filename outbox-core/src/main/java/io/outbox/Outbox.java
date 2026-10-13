@@ -815,8 +815,8 @@ public final class Outbox implements AutoCloseable {
      * <p>With the hot path on and a store that {@link OutboxStore#supportsClaimLocking() locks},
      * the store must stamp rows with the claim owner ({@link OutboxStore#writerOwnerId()}): the
      * stamp is the hot copy's lease, without which a stale hot write could overwrite a newer
-     * claim's outcome. A stamping store also needs a lock timeout of at least twice
-     * {@link OutboxStore#WRITER_STAMP_MAX_AGE}.
+     * claim's outcome. With the hot path on, a stamping store also needs a lock timeout of at
+     * least twice {@link OutboxStore#WRITER_STAMP_MAX_AGE}.
      */
     public static final class MultiNodeBuilder extends AbstractBuilder<MultiNodeBuilder> {
         private int workerCount = 4;
@@ -980,7 +980,9 @@ public final class Outbox implements AutoCloseable {
             if (!hotPathEnabled) {
                 return;
             }
-            if (stamp == null && outboxStore.supportsClaimLocking()) {
+            // A store that cannot fence is refused by the dispatcher builder; let that, the more
+            // fundamental gap, be the first error rather than a stamp it would then still fail on.
+            if (stamp == null && outboxStore.supportsClaimLocking() && outboxStore.supportsClaimFencing()) {
                 throw new IllegalStateException("multiNode() with the hot path needs a store that "
                         + "stamps rows with the claim owner, and " + outboxStore.getClass().getName()
                         + " does not report writerOwnerId(). Construct it with the owner id (e.g. "

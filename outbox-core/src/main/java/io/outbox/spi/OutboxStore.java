@@ -36,8 +36,8 @@ public interface OutboxStore {
      *
      * <p>Must stay well below the claim lock-timeout (default PT5M): a stamp aged anywhere inside
      * this window is only a reservation if the timeout has not already passed it.
-     * {@code Outbox.multiNode()} refuses a stamping store with a lock-timeout under twice this
-     * value; anyone wiring the store directly owes the same check. A stamp on a fresh event still expires
+     * With the hot path on, {@code Outbox.multiNode()} refuses a stamping store with a
+     * lock-timeout under twice this value; anyone wiring the store directly owes the same check. A stamp on a fresh event still expires
      * if its transaction takes longer than the lock-timeout to commit, and that residual — a
      * multi-minute write transaction racing another node's claim — is the at-least-once tail this
      * design accepts rather than closes.

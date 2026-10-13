@@ -18,6 +18,7 @@ import java.util.function.BiFunction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class InMemoryOutboxStoreTest {
@@ -163,6 +164,42 @@ class InMemoryOutboxStoreTest {
         // As in the JDBC stores — otherwise the in-memory poller would redeliver a settled event.
         assertEquals(EventStatus.DONE, store.statusOf(done.eventId()));
         assertEquals(EventStatus.DEAD, store.statusOf(dead.eventId()));
+    }
+
+    /**
+     * The JDBC stores' status writes all carry {@code status NOT IN (DONE, DEAD)}: a late write
+     * matches no row. A fake that let a late RETRY turn DONE back into RETRY would pass tests the
+     * real store would fail.
+     */
+    @Test
+    void statusWritesLeaveSettledEventsAlone() {
+        EventEnvelope done = EventEnvelope.ofJson("Test", "{}");
+        EventEnvelope dead = EventEnvelope.ofJson("Test", "{}");
+        store.insertNew(null, done);
+        store.insertNew(null, dead);
+        store.markDone(null, done.eventId());
+        store.markDead(null, dead.eventId(), "boom");
+
+        for (EventEnvelope settled : List.of(done, dead)) {
+            String id = settled.eventId();
+            assertEquals(0, store.markDone(null, id));
+            assertEquals(0, store.markRetry(null, id, Instant.now(), "late"));
+            assertEquals(0, store.markDead(null, id, "late"));
+            assertEquals(0, store.markDeferred(null, id, Instant.now()));
+        }
+        assertEquals(EventStatus.DONE, store.statusOf(done.eventId()));
+        assertEquals(EventStatus.DEAD, store.statusOf(dead.eventId()));
+    }
+
+    /** The JDBC stores reject a duplicate event_id through the primary key; so must the fake. */
+    @Test
+    void insertingADuplicateIdFails() {
+        EventEnvelope event = EventEnvelope.ofJson("Test", "{}");
+        store.insertNew(null, event);
+        store.markDone(null, event.eventId());
+
+        assertThrows(IllegalStateException.class, () -> store.insertNew(null, event));
+        assertEquals(EventStatus.DONE, store.statusOf(event.eventId()), "the existing event is untouched");
     }
 
     @Test

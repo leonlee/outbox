@@ -13,6 +13,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.UnaryOperator;
 
 /**
  * In-memory {@link OutboxStore} for unit testing without JDBC.
@@ -36,55 +37,60 @@ import java.util.concurrent.ConcurrentHashMap;
 public class InMemoryOutboxStore implements OutboxStore {
     private final Map<String, StoredEvent> events = new ConcurrentHashMap<>();
 
+    /**
+     * Inserts a NEW event.
+     *
+     * @throws IllegalStateException if an event with the same id exists, as the JDBC stores' primary
+     *                               key does (there it rolls the caller's transaction back)
+     */
     @Override
     public void insertNew(Connection conn, EventEnvelope event) {
         Instant avail = event.availableAt() != null ? event.availableAt() : event.occurredAt();
-        events.put(event.eventId(), new StoredEvent(event, EventStatus.NEW, 0, avail, null));
+        StoredEvent previous = events.putIfAbsent(event.eventId(), new StoredEvent(event, EventStatus.NEW, 0, avail, null));
+        if (previous != null) {
+            throw new IllegalStateException("Duplicate event_id: " + event.eventId());
+        }
     }
 
     @Override
     public int markDone(Connection conn, String eventId) {
-        StoredEvent existing = events.get(eventId);
-        if (existing == null) return 0;
-        events.put(eventId, existing.withStatus(EventStatus.DONE));
-        return 1;
+        return updateUnsettled(eventId, existing -> existing.withStatus(EventStatus.DONE));
     }
 
     @Override
     public int markRetry(Connection conn, String eventId, Instant nextAt, String error) {
-        StoredEvent existing = events.get(eventId);
-        if (existing == null) return 0;
-        events.put(eventId, new StoredEvent(
-                existing.envelope, EventStatus.RETRY,
-                existing.attempts + 1, nextAt, error));
-        return 1;
+        return updateUnsettled(eventId, existing -> new StoredEvent(
+                existing.envelope, EventStatus.RETRY, existing.attempts + 1, nextAt, error));
     }
 
     @Override
     public int markDead(Connection conn, String eventId, String error) {
-        StoredEvent existing = events.get(eventId);
-        if (existing == null) return 0;
-        events.put(eventId, new StoredEvent(
-                existing.envelope, EventStatus.DEAD,
-                existing.attempts, existing.availableAt, error));
-        return 1;
+        return updateUnsettled(eventId, existing -> new StoredEvent(
+                existing.envelope, EventStatus.DEAD, existing.attempts, existing.availableAt, error));
     }
 
     @Override
     public int markDeferred(Connection conn, String eventId, Instant nextAt) {
-        // Same rule as the JDBC stores: a settled event is never brought back, and the last error
-        // stays for whoever inspects the row. Checked inside the atomic update, as the JDBC
-        // UPDATE's WHERE clause is: a separate read could see NEW, lose to a concurrent markDone,
-        // and then write its stale snapshot back over DONE.
-        boolean[] deferred = {false};
+        // The last error stays for whoever inspects the row.
+        return updateUnsettled(eventId, existing -> new StoredEvent(
+                existing.envelope, EventStatus.NEW, existing.attempts, nextAt, existing.error));
+    }
+
+    /**
+     * Applies a status write the way the JDBC stores' {@code UPDATE … WHERE status NOT IN (DONE, DEAD)}
+     * does: a settled event is never touched (0 rows), and the check and the write are one atomic
+     * step, so a write racing a markDone cannot put its stale snapshot back over DONE.
+     */
+    private int updateUnsettled(String eventId, UnaryOperator<StoredEvent> change) {
+        boolean[] updated = {false};
         events.computeIfPresent(eventId, (id, existing) -> {
             if (existing.status == EventStatus.DONE || existing.status == EventStatus.DEAD) {
                 return existing;
             }
-            deferred[0] = true;
-            return new StoredEvent(existing.envelope, EventStatus.NEW, existing.attempts, nextAt, existing.error);
+            updated[0] = true;
+            return change.apply(existing);
         });
-        return deferred[0] ? 1 : 0;
+        return updated[0] ? 1 : 0;
     }
 
     @Override
@@ -94,7 +100,8 @@ public class InMemoryOutboxStore implements OutboxStore {
                 .filter(e -> e.status == EventStatus.NEW || e.status == EventStatus.RETRY)
                 .filter(e -> e.availableAt == null || !e.availableAt.isAfter(now))
                 .filter(e -> !e.envelope.occurredAt().isAfter(cutoff))
-                .sorted(Comparator.comparing(e -> e.envelope.occurredAt()))
+                .sorted(Comparator.comparing((StoredEvent e) -> e.envelope.occurredAt())
+                        .thenComparing(e -> e.envelope.eventId()))
                 .limit(limit)
                 .map(this::toOutboxEvent)
                 .toList();
@@ -126,11 +133,15 @@ public class InMemoryOutboxStore implements OutboxStore {
 
     @Override
     public int replayDead(Connection conn, String eventId) {
-        StoredEvent existing = events.get(eventId);
-        if (existing == null || existing.status != EventStatus.DEAD) return 0;
-        events.put(eventId, new StoredEvent(
-                existing.envelope, EventStatus.NEW, 0, null, null));
-        return 1;
+        boolean[] replayed = {false};
+        events.computeIfPresent(eventId, (id, existing) -> {
+            if (existing.status != EventStatus.DEAD) {
+                return existing;
+            }
+            replayed[0] = true;
+            return new StoredEvent(existing.envelope, EventStatus.NEW, 0, null, null);
+        });
+        return replayed[0] ? 1 : 0;
     }
 
     @Override

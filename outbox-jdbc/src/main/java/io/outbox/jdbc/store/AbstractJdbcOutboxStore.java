@@ -576,8 +576,10 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
 
     @Override
     public Instant leaseTimestamp(Instant now) {
-        // Truncated so the stored value round-trips: the column is millisecond-precision and a
-        // nanosecond-precision Instant would never compare equal to what came back out of it.
+        // Truncated so the stored value round-trips: the schema guarantees locked_at holds at least
+        // milliseconds (the shipped schemas hold microseconds), and a nanosecond-precision Instant
+        // would never compare equal to what came back out of it. A coarser column breaks fencing —
+        // see SPEC §4.1.
         //
         // Plus one millisecond so a poller lease can never equal created_at. The writer stamp is
         // recognised by locked_at = created_at alone; a claim landing in the same millisecond as a

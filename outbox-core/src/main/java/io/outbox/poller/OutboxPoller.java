@@ -15,6 +15,8 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -164,7 +166,7 @@ public final class OutboxPoller implements AutoCloseable {
      * lease they were never claimed under — and a release naming that lease would clear a
      * generation belonging to the other batch.
      *
-     * @param rows  the claimed rows, oldest first
+     * @param rows  the claimed rows, in the order the store returned them
      * @param lease the lease stamped on them, or {@code null} without claim locking
      */
     private record Batch(List<OutboxEvent> rows, ClaimLease lease) {
@@ -207,8 +209,7 @@ public final class OutboxPoller implements AutoCloseable {
     }
 
     private Instant dispatchRows(Batch batch, JsonCodec codec) {
-        List<OutboxEvent> rows = batch.rows();
-        // Rows are sorted oldest-first by SQL ORDER BY created_at
+        List<OutboxEvent> rows = oldestFirst(batch.rows());
         Instant oldest = rows.isEmpty() ? null : rows.get(0).createdAt();
         for (OutboxEvent row : rows) {
             if (!dispatchRow(row, batch.lease(), codec)) {
@@ -216,6 +217,21 @@ public final class OutboxPoller implements AutoCloseable {
             }
         }
         return oldest;
+    }
+
+    /**
+     * The rows sorted by {@code (created_at, event_id)}. The claim's subquery orders them, but not
+     * every store returns them in that order — PostgreSQL's {@code UPDATE … RETURNING} does not — and
+     * both the lag gauge (first row) and back-pressure (the rows left claimed when the cold queue
+     * fills should be the newest) depend on it.
+     */
+    private static List<OutboxEvent> oldestFirst(List<OutboxEvent> rows) {
+        if (rows.size() < 2) {
+            return rows;
+        }
+        List<OutboxEvent> sorted = new ArrayList<>(rows);
+        sorted.sort(Comparator.comparing(OutboxEvent::createdAt).thenComparing(OutboxEvent::eventId));
+        return sorted;
     }
 
     private boolean dispatchRow(OutboxEvent row, ClaimLease lease, JsonCodec codec) {

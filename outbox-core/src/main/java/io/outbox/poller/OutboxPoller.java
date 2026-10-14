@@ -211,12 +211,48 @@ public final class OutboxPoller implements AutoCloseable {
     private Instant dispatchRows(Batch batch, JsonCodec codec) {
         List<OutboxEvent> rows = oldestFirst(batch.rows());
         Instant oldest = rows.isEmpty() ? null : rows.get(0).createdAt();
-        for (OutboxEvent row : rows) {
-            if (!dispatchRow(row, batch.lease(), codec)) {
-                break; // cold queue full
+        for (int i = 0; i < rows.size(); i++) {
+            if (!dispatchRow(rows.get(i), batch.lease(), codec)) {
+                // Back-pressure: the handler took neither this row nor, by stopping here, the rest.
+                releaseRefused(rows.subList(i, rows.size()), batch.lease());
+                break;
             }
         }
         return oldest;
+    }
+
+    /**
+     * Hands back the claims on rows the handler refused, so the next poll — here or on another
+     * node — takes them instead of every node waiting out the lock timeout.
+     *
+     * <p>Only for a store whose claim is exclusive ({@link OutboxStore#supportsClaimLocking()}).
+     * A refusal says nothing about other copies of the same row, and only an exclusive claim
+     * guarantees there are none under this lease: a non-exclusive claim (H2's) can give the same
+     * row the same lease in two overlapping polls, and the dispatcher refuses the second while it
+     * is closing even though the first is still running — releasing would take that copy's claim.
+     * Those stores keep the expiry recovery.
+     *
+     * <p>Each release names this batch's exact lease, so a newer claim or a settled row is left
+     * alone. Best effort: a failed release is logged and the row is retaken after the lock timeout.
+     */
+    private void releaseRefused(List<OutboxEvent> rows, ClaimLease lease) {
+        if (lease == null || !outboxStore.supportsClaimLocking()) {
+            return;
+        }
+        try (Connection conn = connectionProvider.getConnection()) {
+            conn.setAutoCommit(true);
+            for (OutboxEvent row : rows) {
+                try {
+                    outboxStore.releaseClaim(conn, row.eventId(), lease.owner(), lease.claimedAt());
+                } catch (RuntimeException e) {
+                    logger.log(Level.WARNING, "Failed to release the claim on refused eventId=" + row.eventId()
+                            + "; it is retaken after the lock timeout", e);
+                }
+            }
+        } catch (SQLException | RuntimeException e) {
+            logger.log(Level.WARNING, "Could not release the claims on " + rows.size()
+                    + " refused row(s); they are retaken after the lock timeout", e);
+        }
     }
 
     /**

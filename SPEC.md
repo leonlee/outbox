@@ -1263,7 +1263,9 @@ Workers execute listeners synchronously (blocking). This provides natural rate l
 ### 13.4 Hot Queue Full Behavior (DispatcherWriterHook)
 
 - `write()` MUST NOT throw
-- `DispatcherWriterHook` logs WARNING and increments metric when the hot queue drops
+- `DispatcherWriterHook` increments the metric on every hot queue drop and logs a WARNING for the first one, then at
+  most one per 30 seconds naming how many fell back since the last (a saturated queue refuses every commit). An
+  enqueue that throws is logged each time with its stack trace.
 - Delayed events (`isDelayed()`) are skipped entirely — not enqueued to the hot queue. The poller delivers them when
   `available_at` arrives. `incrementHotSkippedDelayed()` metric is emitted.
 - Event remains in DB with status NEW
@@ -1419,8 +1421,9 @@ collisions.
 | ERROR   | OutboxDispatcher/poller loop errors   |
 | SEVERE  | Decode failures (malformed headers)   |
 
-Hot queue drop warnings are emitted by `DispatcherWriterHook`. If no hook is installed (CDC-only), no warning or metric
-is produced.
+Hot queue drop warnings are emitted by `DispatcherWriterHook`, at most one per 30 seconds (§13.4). If no hook is
+installed (CDC-only), no warning or metric is produced. Failed claim releases after a handler refusal (§10.5) log one
+WARNING per batch with the failure count and the first cause; per-row details are FINE.
 
 ### 15.4 Idempotency Requirements
 

@@ -241,13 +241,24 @@ public final class OutboxPoller implements AutoCloseable {
         }
         try (Connection conn = connectionProvider.getConnection()) {
             conn.setAutoCommit(true);
+            int failed = 0;
+            RuntimeException firstFailure = null;
             for (OutboxEvent row : rows) {
                 try {
                     outboxStore.releaseClaim(conn, row.eventId(), lease.owner(), lease.claimedAt());
                 } catch (RuntimeException e) {
-                    logger.log(Level.WARNING, "Failed to release the claim on refused eventId=" + row.eventId()
-                            + "; it is retaken after the lock timeout", e);
+                    // One warning per batch: with the database down every row fails the same way.
+                    logger.log(Level.FINE, "Failed to release the claim on refused eventId=" + row.eventId(), e);
+                    failed++;
+                    if (firstFailure == null) {
+                        firstFailure = e;
+                    }
                 }
+            }
+            if (firstFailure != null) {
+                logger.log(Level.WARNING, "Failed to release the claims on " + failed + " of " + rows.size()
+                        + " refused row(s); they are retaken after the lock timeout (first failure shown)",
+                        firstFailure);
             }
         } catch (SQLException | RuntimeException e) {
             logger.log(Level.WARNING, "Could not release the claims on " + rows.size()

@@ -292,7 +292,7 @@ outbox-jdbc/src/main/java/
    caller's transaction
 2. After commit, `WriterHook.afterCommit` fires (e.g., `DispatcherWriterHook` enqueues each event individually to
    OutboxDispatcher hot queue; delayed events with `availableAt` are skipped — the poller delivers them later)
-3. If hot queue full, event is dropped (logged) and poller picks it up later
+3. If hot queue full, event is dropped (WARNING at most once per 30s; every drop is counted) and poller picks it up later
 4. OutboxDispatcher workers process events one at a time: acquire in-flight → run interceptors → find listener via
    `(aggregateType, eventType)` → call `listener.onEvent()` → handle DispatchResult:
     - Done: markDone

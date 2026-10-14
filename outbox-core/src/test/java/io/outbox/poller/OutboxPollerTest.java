@@ -24,6 +24,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Handler;
+import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
@@ -626,6 +627,47 @@ class OutboxPollerTest {
         pollOnce(store, (event, attempts) -> false, true);
         assertEquals(List.of("a:owner-1@" + LEASE_AT, "b:owner-1@" + LEASE_AT, "c:owner-1@" + LEASE_AT),
                 store.releases);
+    }
+
+    /** With the database down every row fails the same way: one warning per batch, not per row. */
+    @Test
+    void failedReleasesWarnOncePerBatch() {
+        var store = new ClaimingStore(true) {
+            @Override
+            public int releaseClaim(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+                super.releaseClaim(conn, eventId, claimOwner, claimedAt);
+                throw new IllegalStateException("release " + eventId + " failed");
+            }
+        };
+        List<LogRecord> warnings = new CopyOnWriteArrayList<>();
+        Handler capture = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                if (record.getLevel().intValue() >= Level.WARNING.intValue()) {
+                    warnings.add(record);
+                }
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        Logger logger = Logger.getLogger(OutboxPoller.class.getName());
+        logger.addHandler(capture);
+        try {
+            pollOnce(store, (event, attempts) -> false, true);
+        } finally {
+            logger.removeHandler(capture);
+        }
+
+        assertEquals(3, store.releases.size(), "every row is still attempted");
+        assertEquals(1, warnings.size(), warnings.toString());
+        assertTrue(warnings.get(0).getMessage().contains("3 of 3"), warnings.get(0).getMessage());
+        assertEquals("release a failed", warnings.get(0).getThrown().getMessage());
     }
 
     /**

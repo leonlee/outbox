@@ -6,11 +6,13 @@ import io.outbox.spi.MetricsExporter;
 import io.outbox.spi.OutboxStore;
 import io.outbox.util.IsolatingMetricsExporter;
 
+import java.time.Duration;
 import java.time.Instant;
 
 import java.util.List;
 import java.util.Objects;
 import java.util.function.BooleanSupplier;
+import java.util.function.LongSupplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -25,9 +27,20 @@ import java.util.logging.Logger;
 public final class DispatcherWriterHook implements WriterHook {
     private static final Logger logger = Logger.getLogger(DispatcherWriterHook.class.getName());
 
+    /**
+     * A saturated hot queue refuses every committed event, so a warning per refusal grows with
+     * write throughput. One per interval names the refusals it stood for; the hot-dropped metric
+     * still counts each one.
+     */
+    static final Duration REFUSAL_WARNING_INTERVAL = Duration.ofSeconds(30);
+
     private final OutboxDispatcher dispatcher;
     private final MetricsExporter metrics;
     private final BooleanSupplier open;
+    private final LongSupplier nanoClock;
+    private final Object refusalWarningLock = new Object();
+    private long nextRefusalWarningAt; // guarded by refusalWarningLock
+    private long suppressedRefusals; // guarded by refusalWarningLock
 
     public DispatcherWriterHook(OutboxDispatcher dispatcher) {
         this(dispatcher, null);
@@ -44,9 +57,16 @@ public final class DispatcherWriterHook implements WriterHook {
      *                   are left for the poller (used to hold the hot path until listeners exist)
      */
     public DispatcherWriterHook(OutboxDispatcher dispatcher, MetricsExporter metrics, BooleanSupplier open) {
+        this(dispatcher, metrics, open, System::nanoTime);
+    }
+
+    DispatcherWriterHook(OutboxDispatcher dispatcher, MetricsExporter metrics, BooleanSupplier open,
+                         LongSupplier nanoClock) {
         this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
         this.metrics = IsolatingMetricsExporter.of(metrics);
         this.open = Objects.requireNonNull(open, "open");
+        this.nanoClock = Objects.requireNonNull(nanoClock, "nanoClock");
+        this.nextRefusalWarningAt = nanoClock.getAsLong();
     }
 
     @Override
@@ -89,9 +109,7 @@ public final class DispatcherWriterHook implements WriterHook {
                     // Deliberately does not say "full": enqueueHot also refuses when its
                     // head-of-line age trips the breaker, and a boolean cannot tell us which.
                     // The dispatcher logs the trip itself; outbox.enqueue.hot.tripped splits them.
-                    logger.log(Level.WARNING,
-                            "Hot queue did not accept event (full or throttled), "
-                                    + "falling back to poller for eventId=" + event.eventId());
+                    warnRefused(event.eventId());
                 }
             } catch (RuntimeException ex) {
                 metrics.incrementHotDropped();
@@ -99,5 +117,23 @@ public final class DispatcherWriterHook implements WriterHook {
                         "Failed to enqueue hot event, falling back to poller for eventId=" + event.eventId(), ex);
             }
         }
+    }
+
+    private void warnRefused(String eventId) {
+        final long suppressed;
+        synchronized (refusalWarningLock) {
+            final long now = nanoClock.getAsLong();
+            if (now - nextRefusalWarningAt < 0) {
+                suppressedRefusals++;
+                return;
+            }
+            nextRefusalWarningAt = now + REFUSAL_WARNING_INTERVAL.toNanos();
+            suppressed = suppressedRefusals;
+            suppressedRefusals = 0;
+        }
+        logger.log(Level.WARNING, "Hot queue did not accept event (full or throttled), "
+                + "falling back to poller for eventId=" + eventId
+                + (suppressed == 0 ? "" : "; " + suppressed + " more fell back since the last warning")
+                + " (at most one warning per " + REFUSAL_WARNING_INTERVAL.toSeconds() + "s)");
     }
 }

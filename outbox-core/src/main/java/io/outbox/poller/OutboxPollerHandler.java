@@ -20,7 +20,9 @@ public interface OutboxPollerHandler {
      * ({@link io.outbox.spi.OutboxStore#supportsClaimLocking()}), hands back the claims on this row
      * and the rest of the batch so they are polled again at once. A handler that keeps the event
      * must return {@code true} — that includes recognising it as a duplicate of one it already
-     * has. Throwing leaves the claims to expire.
+     * has. Throwing leaves the claims to expire. A handler that cannot take anything for a while
+     * should report it through {@link #availableCapacity()} returning {@code 0} rather than refuse
+     * row by row: every refusal costs a claim and a release, and the next poll claims the rows again.
      *
      * @param event    the event envelope reconstructed from the database row
      * @param attempts the number of previous dispatch attempts

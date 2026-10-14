@@ -1043,6 +1043,8 @@ public interface OutboxPollerHandler {
   auto-commit connection, best effort per row), so the next poll on any node takes them at once instead of after the
   lock timeout. A non-exclusive claim (H2) is left to expire: two overlapping polls can carry the same lease there, and
   a refused second copy says nothing about the first. A handler that throws leaves every claim to expire.
+- A handler that cannot take anything for a while reports `availableCapacity() == 0` (the poll is skipped) rather than
+  refusing row by row: each refusal costs a claim plus a release, and the next poll claims the same rows again.
 
 ### 10.6 CDC Alternative (Optional)
 

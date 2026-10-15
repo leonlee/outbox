@@ -873,20 +873,24 @@ and waits up to `drainTimeoutMs` before forcing shutdown.
 Copies still queued when the workers stop are dropped; the poller delivers their rows again. On a store whose claim is
 exclusive (`supportsClaimLocking()`), and only once every worker has terminated, `close()` first hands back what each
 dropped copy still holds, one statement per copy: a claim handed over to it, else its own lease (`releaseClaim`, exact
-lease), else a hot copy's writer stamp (`releaseStamp`). Other nodes then take those rows at once instead of after the
-lock timeout. Copies that hold nothing (single-node: no lease, no stamp) need no connection. The cleanup is best effort:
-it runs on its own thread over one auto-commit connection, and `close()` waits for it at most one second; past that,
-or when the closing thread is interrupted meanwhile, `close()` returns and cancels it. Cancellation is checked before
-each statement, so it holds even if a callee swallows the interrupt; a statement already being issued still runs. This
-bounds `close()`, not the cleanup's I/O: a call already in progress (acquiring the connection, a statement, closing the
-connection) can finish after `close()` returns, bounded only by the driver's or pool's own timeouts. One WARNING
-summarises failures; once it has a connection, it ends with one INFO line, cancelled or not, reporting the rows
-actually handed back (a row settled or claimed again since updates nothing and is not counted), failed and not
-reached. Rows it did not release expire as before. It is skipped when the
-workers did not stop within the forced-shutdown grace (5 s after `shutdownNow`) or the closing thread is already
-interrupted. A producer that passed the accepting check before
-`close()` can still publish a copy after the queues were drained; that copy never runs, and its row waits for the lock
-timeout.
+lease), else a hot copy's writer stamp (`releaseStamp`). It then does the same for each status write that failed
+outright once the forced shutdown's interrupt was in play (typically the write it cancelled): the exact lease or stamp
+that write was fenced on, even when nothing is left queued. Other nodes then take those rows at once instead of after
+the lock timeout. A write that ran but matched no row holds nothing. A write that failed earlier, the graceful drain
+included, is not tracked: its row keeps the claim until the lock timeout, as before. Copies that hold nothing
+(single-node: no lease, no stamp) need no connection.
+
+The cleanup is best effort: it runs on its own thread over one auto-commit connection, and `close()` waits for it at
+most one second; past that, or when the closing thread is interrupted meanwhile, `close()` returns and cancels it.
+Cancellation is checked before each statement, so it holds even if a callee swallows the interrupt; a statement
+already being issued still runs. This bounds `close()`, not the cleanup's I/O: a call already in progress (acquiring
+the connection, a statement, closing the connection) can finish after `close()` returns, bounded only by the driver's
+or pool's own timeouts. One WARNING summarises failures; once it has a connection, it ends with one INFO line,
+cancelled or not, reporting the rows actually handed back (a row settled or claimed again since updates nothing and is
+not counted), failed and not reached. Rows it did not release expire as before. It is skipped when the workers did not
+stop within the forced-shutdown grace (5 s after `shutdownNow`) or the closing thread is already interrupted. A
+producer that passed the accepting check before `close()` can still publish a copy after the queues were drained; that
+copy never runs, and its row waits for the lock timeout.
 
 This is intentional for **natural backpressure**:
 

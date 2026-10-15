@@ -34,6 +34,9 @@ abstract class AbstractOutboxStoreIntegrationTest {
     /** This store's type on another table. */
     abstract AbstractJdbcOutboxStore storeFor(String table);
 
+    /** This store's type stamping {@code owner} on the rows it writes. */
+    abstract AbstractJdbcOutboxStore stampingStore(String owner);
+
     /** The database's timestamp column type with {@code digits} fractional-second digits. */
     abstract String timestampType(int digits);
 
@@ -482,10 +485,51 @@ abstract class AbstractOutboxStoreIntegrationTest {
         }
     }
 
+    /**
+     * releaseStamp drops only an unclaimed writer stamp, which the SQL recognises by
+     * {@code locked_at = created_at}: a claim (the owner's own too), another owner's stamp and a
+     * settled row are left alone, and a released row is claimable by any node at once.
+     */
+    @Test
+    void releaseStampClearsOnlyAnUnclaimedStamp() throws Exception {
+        AbstractJdbcOutboxStore podA = stampingStore("pod-a");
+        EventEnvelope claimed = EventEnvelope.ofJson("StampEvent", "{}");
+        EventEnvelope stamped = EventEnvelope.ofJson("StampEvent", "{}");
+        EventEnvelope settled = EventEnvelope.ofJson("StampEvent", "{}");
+        try (Connection conn = dataSource().getConnection()) {
+            conn.setAutoCommit(true);
+            podA.insertNew(conn, claimed);
+            Instant now = Instant.now();
+            assertEquals(1, podA.claimPending(conn, "pod-a", now, now.minusSeconds(60), Duration.ZERO, 10).size());
+            podA.insertNew(conn, stamped);
+            podA.insertNew(conn, settled);
+            settleKeepingTheStamp(conn, settled.eventId());
+
+            assertEquals(0, podA.releaseStamp(conn, claimed.eventId(), "pod-a"), "a claim is not a stamp");
+            assertEquals(0, podA.releaseStamp(conn, settled.eventId(), "pod-a"), "a settled row stays settled");
+            assertEquals(0, podA.releaseStamp(conn, stamped.eventId(), "pod-b"), "only the stamp's owner");
+            assertEquals(1, podA.releaseStamp(conn, stamped.eventId(), "pod-a"));
+
+            Instant next = Instant.now();
+            List<OutboxEvent> taken = store().claimPending(conn, "pod-b", next, next.minusSeconds(60), Duration.ZERO, 10);
+            assertEquals(List.of(stamped.eventId()), taken.stream().map(OutboxEvent::eventId).toList(),
+                    "another node takes the released row at once; the claimed one stays claimed");
+        }
+    }
+
     @Test
     void autoDetectFromDataSource() {
         AbstractJdbcOutboxStore detected = JdbcOutboxStores.detect(dataSource());
         assertEquals(store().name(), detected.name());
+    }
+
+    /** DONE with the stamp still on the row; the store's own terminal writes clear it. */
+    private static void settleKeepingTheStamp(Connection conn, String eventId) throws Exception {
+        try (PreparedStatement ps = conn.prepareStatement("UPDATE outbox_event SET status = ? WHERE event_id = ?")) {
+            ps.setInt(1, EventStatus.DONE.code());
+            ps.setString(2, eventId);
+            assertEquals(1, ps.executeUpdate());
+        }
     }
 
     private static int statusOf(Connection conn, String eventId) throws Exception {

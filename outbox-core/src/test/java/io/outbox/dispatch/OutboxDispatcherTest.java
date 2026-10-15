@@ -3405,6 +3405,427 @@ class OutboxDispatcherTest {
         assertEquals(List.of(claimed.eventId() + ":" + at(L1)), store.writes, "the leased copy stayed fenced");
     }
 
+    // ── Shutdown: hand back what dropped copies held ──────────────────
+
+    /**
+     * An exclusive-claim store stamping for pod-a. Records each release as "eventId:owner@claimedAt"
+     * and each stamp release as "eventId:stamp@owner"; every fenced write lands.
+     */
+    private static class ExclusiveStore extends FencingStore {
+        final List<String> released = new CopyOnWriteArrayList<>();
+
+        @Override
+        public boolean supportsClaimLocking() {
+            return true;
+        }
+
+        @Override
+        public boolean supportsClaimFencing() {
+            return true;
+        }
+
+        @Override
+        public Optional<String> writerOwnerId() {
+            return Optional.of("pod-a");
+        }
+
+        @Override
+        public int markRetry(Connection conn, String eventId, Instant nextAt, String error,
+                             String claimOwner, Instant claimedAt) {
+            writes.add(eventId + ":" + claimOwner + "@" + claimedAt);
+            return 1;
+        }
+
+        @Override
+        public int releaseClaim(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+            released.add(eventId + ":" + claimOwner + "@" + claimedAt);
+            return 1;
+        }
+
+        @Override
+        public int releaseStamp(Connection conn, String eventId, String writerOwner) {
+            released.add(eventId + ":stamp@" + writerOwner);
+            return 1;
+        }
+    }
+
+    private static OutboxDispatcher exclusive(FencingStore store, DefaultListenerRegistry registry,
+                                              int workers, long drainMs) {
+        return OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(registry)
+                .workerCount(workers).claimOwner("pod-a").drainTimeoutMs(drainMs)
+                .build();
+    }
+
+    /**
+     * Copies still queued when the workers stop never run, so their rows are handed back at once
+     * instead of waiting for the lock timeout: a hot copy's writer stamp, a claim handed over to a
+     * copy, and a cold copy's lease. One statement each: a handed-over claim has replaced the copy's
+     * own lease and stamp on the row.
+     */
+    @Test
+    void closeReleasesWhatQueuedCopiesHeld() {
+        var store = new ExclusiveStore();
+        EventEnvelope stamped = EventEnvelope.ofJson(ONCE, "{}");
+        EventEnvelope reclaimed = EventEnvelope.ofJson(ONCE, "{}");
+        EventEnvelope claimed = EventEnvelope.ofJson(ONCE, "{}");
+        EventEnvelope claimedAgain = EventEnvelope.ofJson(ONCE, "{}");
+        var d = exclusive(store, new DefaultListenerRegistry(), 0, 1000);
+        assertTrue(d.enqueueHot(new QueuedEvent(stamped, QueuedEvent.Source.HOT, 0)));
+        assertTrue(d.enqueueHot(new QueuedEvent(reclaimed, QueuedEvent.Source.HOT, 0)));
+        assertTrue(d.enqueueCold(cold(reclaimed, L2)), "turned away: its claim is handed to the hot copy");
+        assertTrue(d.enqueueCold(cold(claimed, L1)));
+        assertTrue(d.enqueueCold(cold(claimedAgain, L1)));
+        assertTrue(d.enqueueCold(cold(claimedAgain, L2)), "turned away: the newer claim replaces the queued copy's");
+        assertEquals(List.of(), store.released);
+
+        d.close();
+
+        assertEquals(List.of(
+                stamped.eventId() + ":stamp@pod-a",
+                reclaimed.eventId() + ":" + at(L2),
+                claimed.eventId() + ":" + at(L1),
+                claimedAgain.eventId() + ":" + at(L2)), store.released);
+    }
+
+    /** Copies that hold nothing (single-node: no lease, no stamp) need no connection at all. */
+    @Test
+    void copiesHoldingNothingNeedNoConnection() {
+        AtomicInteger connections = new AtomicInteger();
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(() -> {
+                    connections.incrementAndGet();
+                    return stubCp().getConnection();
+                })
+                .outboxStore(new ExclusiveStore()).listenerRegistry(new DefaultListenerRegistry())
+                .workerCount(0)
+                .build();
+        assertTrue(d.enqueueCold(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.COLD, 0)));
+
+        d.close();
+
+        assertEquals(0, connections.get());
+    }
+
+    /** A non-exclusive claim cannot prove no other copy holds the same lease, so nothing is released. */
+    @Test
+    void aNonExclusiveStoreKeepsItsClaimsAtShutdown() {
+        var store = new FencingStore();
+        var d = exclusive(store, new DefaultListenerRegistry(), 0, 1000);
+        assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L1)));
+
+        d.close();
+
+        assertEquals(List.of(), store.releases);
+    }
+
+    /**
+     * The worker of a copy it already dequeued settles that copy itself; only what is still queued
+     * is released, and only after the forced shutdown has stopped every worker.
+     */
+    @Test
+    void aForcedShutdownReleasesOnlyWhatIsStillQueued() throws Exception {
+        CountDownLatch running = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            running.countDown();
+            awaitQuietly(new CountDownLatch(1)); // until shutdownNow interrupts it
+            return DispatchResult.done();
+        });
+        var store = new ExclusiveStore();
+        EventEnvelope first = EventEnvelope.ofJson(ONCE, "{}");
+        EventEnvelope queued = EventEnvelope.ofJson(ONCE, "{}");
+        var d = exclusive(store, registry, 1, 100);
+        assertTrue(d.enqueueCold(cold(first, L1)));
+        assertTrue(running.await(5, TimeUnit.SECONDS));
+        assertTrue(d.enqueueCold(cold(queued, L2)));
+
+        d.close();
+
+        assertEquals(List.of(first.eventId() + ":" + at(L1)), store.writes, "the running copy wrote");
+        assertEquals(List.of(queued.eventId() + ":" + at(L2)), store.released);
+    }
+
+    /**
+     * An interrupted close keeps its cancellation: no database round trips, every claim left to
+     * expire. No workers here, so the pool terminates at once and only the interrupt stops the release.
+     */
+    @Test
+    void anInterruptedCloseReleasesNothing() throws Exception {
+        CountDownLatch connOpened = new CountDownLatch(1);
+        var store = new ExclusiveStore();
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(() -> {
+                    connOpened.countDown();
+                    return stubCp().getConnection();
+                })
+                .outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
+                .workerCount(0).claimOwner("pod-a")
+                .build();
+        assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L1)));
+
+        Thread.currentThread().interrupt();
+        d.close();
+        boolean interrupted = Thread.interrupted();
+
+        assertTrue(interrupted, "close keeps the caller's interrupt");
+        assertFalse(connOpened.await(500, TimeUnit.MILLISECONDS), "no connection is even requested");
+        assertEquals(List.of(), store.released);
+    }
+
+    /**
+     * A worker that ignores the shutdown interrupt may still write under a dropped copy's claim, so
+     * without confirmed termination nothing is released. Waits out close()'s 5-second grace.
+     */
+    @Test
+    void workersThatDoNotStopKeepEveryClaim() throws Exception {
+        CountDownLatch running = new CountDownLatch(1);
+        AtomicBoolean stop = new AtomicBoolean();
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            running.countDown();
+            while (!stop.get()) {
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException ignored) {
+                    // deliberately deaf to shutdownNow
+                }
+            }
+            return DispatchResult.done();
+        });
+        var store = new ExclusiveStore();
+        var d = exclusive(store, registry, 1, 50);
+        try {
+            assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L1)));
+            assertTrue(running.await(5, TimeUnit.SECONDS));
+            assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L2)));
+
+            d.close();
+        } finally {
+            stop.set(true);
+        }
+
+        assertEquals(List.of(), store.released);
+    }
+
+    /**
+     * Documented limit: an enqueue that passed the accepting check before close can publish after the
+     * queues were drained. Its copy never runs and is not released; the row waits for the lock timeout.
+     */
+    @Test
+    void aCopyPublishedAfterTheDrainIsLeftToExpire() throws Exception {
+        CountDownLatch inReserve = new CountDownLatch(1);
+        CountDownLatch resume = new CountDownLatch(1);
+        InFlightTracker pausing = new InFlightTracker() {
+            @Override
+            public boolean tryAcquire(String eventId) {
+                return true;
+            }
+
+            @Override
+            public void release(String eventId) {
+            }
+
+            @Override
+            public boolean supportsIsRunning() {
+                return true;
+            }
+
+            @Override
+            public boolean isRunning(String eventId) {
+                inReserve.countDown();
+                awaitQuietly(resume);
+                return false;
+            }
+        };
+        var store = new ExclusiveStore();
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
+                .inFlightTracker(pausing).workerCount(0).claimOwner("pod-a")
+                .build();
+        AtomicBoolean accepted = new AtomicBoolean();
+        Thread producer = new Thread(() -> accepted.set(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L1))));
+        producer.start();
+        assertTrue(inReserve.await(5, TimeUnit.SECONDS));
+
+        d.close();
+        resume.countDown();
+        producer.join(5000);
+
+        assertTrue(accepted.get(), "published after close");
+        assertEquals(List.of(), store.released);
+    }
+
+    /** One failed release does not stop the rest. */
+    @Test
+    void aFailedReleaseAtShutdownDoesNotStopTheRest() {
+        EventEnvelope failing = EventEnvelope.ofJson(ONCE, "{}");
+        EventEnvelope next = EventEnvelope.ofJson(ONCE, "{}");
+        var store = new ExclusiveStore() {
+            @Override
+            public int releaseClaim(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+                if (eventId.equals(failing.eventId())) {
+                    throw new IllegalStateException("connection reset");
+                }
+                return super.releaseClaim(conn, eventId, claimOwner, claimedAt);
+            }
+        };
+        var d = exclusive(store, new DefaultListenerRegistry(), 0, 1000);
+        assertTrue(d.enqueueCold(cold(failing, L1)));
+        assertTrue(d.enqueueCold(cold(next, L2)));
+
+        d.close();
+
+        assertEquals(List.of(next.eventId() + ":" + at(L2)), store.released);
+    }
+
+    /** No connection for the cleanup: close still completes, and the claims expire as before. */
+    @Test
+    void noConnectionAtShutdownLeavesTheClaimsToExpire() {
+        var store = new ExclusiveStore();
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(() -> {
+                    throw new SQLException("pool closed");
+                })
+                .outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
+                .workerCount(0).claimOwner("pod-a")
+                .build();
+        assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L1)));
+
+        assertDoesNotThrow(d::close);
+        assertEquals(List.of(), store.released);
+    }
+
+    /** A pool that cannot hand out a connection does not hold up close(); the late one is only closed. */
+    @Test
+    void aStalledConnectionDoesNotHoldUpClose() throws Exception {
+        CountDownLatch unblock = new CountDownLatch(1);
+        CountDownLatch connClosed = new CountDownLatch(1);
+        List<String> calls = new CopyOnWriteArrayList<>();
+        ConnectionProvider pool = recordingCp(calls, connClosed);
+        var store = new ExclusiveStore();
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(() -> {
+                    awaitDeaf(unblock);
+                    return pool.getConnection();
+                })
+                .outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
+                .workerCount(0).claimOwner("pod-a")
+                .build();
+        assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L1)));
+
+        long start = System.nanoTime();
+        d.close();
+        long tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+        unblock.countDown();
+
+        assertTrue(tookMs < OutboxDispatcher.RELEASE_ON_CLOSE_BUDGET_MS + 500, "took " + tookMs + "ms");
+        assertTrue(connClosed.await(5, TimeUnit.SECONDS), "the late connection is closed");
+        assertEquals(List.of("close"), calls);
+        assertEquals(List.of(), store.released);
+    }
+
+    /** A statement stalled past the budget does not hold up close(); once it returns, the next row is not touched. */
+    @Test
+    void aStalledReleaseDoesNotHoldUpCloseAndStopsAfterIt() throws Exception {
+        CountDownLatch unblock = new CountDownLatch(1);
+        CountDownLatch connClosed = new CountDownLatch(1);
+        var store = new ExclusiveStore() {
+            @Override
+            public int releaseClaim(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+                awaitDeaf(unblock);
+                return super.releaseClaim(conn, eventId, claimOwner, claimedAt);
+            }
+        };
+        EventEnvelope hot = EventEnvelope.ofJson(ONCE, "{}");
+        EventEnvelope next = EventEnvelope.ofJson(ONCE, "{}");
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(recordingCp(new CopyOnWriteArrayList<>(), connClosed))
+                .outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
+                .workerCount(0).claimOwner("pod-a")
+                .build();
+        assertTrue(d.enqueueHot(new QueuedEvent(hot, QueuedEvent.Source.HOT, 0)));
+        assertTrue(d.enqueueCold(cold(hot, L2)), "turned away: its claim is handed to the hot copy");
+        assertTrue(d.enqueueCold(cold(next, L1)));
+
+        long start = System.nanoTime();
+        d.close();
+        long tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+        unblock.countDown();
+
+        assertTrue(tookMs < OutboxDispatcher.RELEASE_ON_CLOSE_BUDGET_MS + 500, "took " + tookMs + "ms");
+        assertTrue(connClosed.await(5, TimeUnit.SECONDS));
+        assertEquals(List.of(hot.eventId() + ":" + at(L2)), store.released);
+    }
+
+    /** An interrupt during the release returns close() at once and stops the release after its statement. */
+    @Test
+    void anInterruptDuringTheReleaseStopsIt() throws Exception {
+        CountDownLatch inRelease = new CountDownLatch(1);
+        CountDownLatch unblock = new CountDownLatch(1);
+        CountDownLatch connClosed = new CountDownLatch(1);
+        var store = new ExclusiveStore() {
+            @Override
+            public int releaseClaim(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+                inRelease.countDown();
+                awaitDeaf(unblock);
+                return super.releaseClaim(conn, eventId, claimOwner, claimedAt);
+            }
+        };
+        EventEnvelope first = EventEnvelope.ofJson(ONCE, "{}");
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(recordingCp(new CopyOnWriteArrayList<>(), connClosed))
+                .outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
+                .workerCount(0).claimOwner("pod-a")
+                .build();
+        assertTrue(d.enqueueCold(cold(first, L1)));
+        assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L2)));
+        AtomicBoolean keptInterrupt = new AtomicBoolean();
+        Thread closer = new Thread(() -> {
+            d.close();
+            keptInterrupt.set(Thread.currentThread().isInterrupted());
+        });
+
+        closer.start();
+        assertTrue(inRelease.await(5, TimeUnit.SECONDS));
+        closer.interrupt();
+        closer.join(OutboxDispatcher.RELEASE_ON_CLOSE_BUDGET_MS / 2);
+        boolean returnedAtOnce = !closer.isAlive();
+        unblock.countDown();
+
+        assertTrue(returnedAtOnce, "close returns on the interrupt, not at the budget");
+        assertTrue(keptInterrupt.get(), "close keeps the caller's interrupt");
+        assertTrue(connClosed.await(5, TimeUnit.SECONDS));
+        assertEquals(List.of(first.eventId() + ":" + at(L1)), store.released);
+    }
+
+    /** A connection that records each call by name and counts down when closed. */
+    private static ConnectionProvider recordingCp(List<String> calls, CountDownLatch closed) {
+        return () -> (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> {
+                    calls.add(method.getName());
+                    if ("close".equals(method.getName())) {
+                        closed.countDown();
+                    }
+                    return null;
+                });
+    }
+
+    /**
+     * Waits (up to 5s) like a driver or pool call that swallows interrupts: the interrupt is consumed and
+     * not restored, so only the dispatcher's own cancellation can stop what follows.
+     */
+    private static void awaitDeaf(CountDownLatch latch) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (latch.getCount() > 0 && System.nanoTime() - deadline < 0) {
+            try {
+                latch.await(deadline - System.nanoTime(), TimeUnit.NANOSECONDS);
+            } catch (InterruptedException swallowed) {
+                // deliberately not restored
+            }
+        }
+    }
+
     private static void awaitCount(AtomicInteger counter, int expected) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         while (counter.get() < expected) {

@@ -172,6 +172,7 @@ outbox-jdbc/src/main/java/
   `AbstractJdbcOutboxStore` overrides with `addBatch/executeBatch`. Implemented by `AbstractJdbcOutboxStore` hierarchy
   in `io.outbox.jdbc.store`. `supportsClaimLocking()` (default `false`; MySQL/Postgres `true`) says whether
   `claimPending` really locks; `releaseClaim(conn, id, owner, claimedAt)` drops only that exact lease;
+  `releaseStamp(conn, id, owner)` drops only an unclaimed writer stamp (`locked_at = created_at`);
   `leaseTimestamp(now)` is the single definition of the `locked_at` a claim writes.
   The four status writes have claim-fenced overloads `(…, claimOwner, claimedAt)`; the dispatcher and poller call the
   plain overload for an unfenced write, so a store's override of it still applies. Owner `null` = unfenced; a
@@ -221,7 +222,12 @@ outbox-jdbc/src/main/java/
   Duplicate guards: an internal queued-id set refuses a second copy of an event already queued or running;
   `InFlightTracker` acquisitions are token-scoped (`acquire` / `release(id, token)`) so a late completion cannot end a
   newer acquisition; opt-in `suppressReplays` keeps settled entries until TTL (requires a TTL tracker); opt-in
-  `hotTripMs` breaker refuses hot enqueue once the hot queue head is too old (recovers at half). `hotPathEnabled(false)`
+  `hotTripMs` breaker refuses hot enqueue once the hot queue head is too old (recovers at half). `close()` drains the
+  queues with `drainTo`; after confirmed worker termination on an exclusive-claim store it releases what each dropped
+  copy still holds (one statement: handed-over claim, else own lease, else hot writer stamp; none = no connection) on
+  its own thread and one connection; `close()` waits at most `RELEASE_ON_CLOSE_BUDGET_MS` (or until interrupted), then
+  cancels it via a flag checked before each statement (skipped if workers did not stop or the closer is interrupted; a
+  copy published after the drain expires). `hotPathEnabled(false)`
   = poller-only delivery (`enqueueHot` refuses). Claim-leased cold copies and a `claimOwner` need a tracker with
   `supportsIsRunning()` (`DefaultInFlightTracker`); a `claimOwner` must equal the store's `writerOwnerId()` if it
   stamps. A listener's leftover interrupt is cleared before the status write. Dispatcher, poller and writer hook wrap

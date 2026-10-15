@@ -62,6 +62,11 @@ class PostgresOutboxStoreIntegrationTest extends AbstractOutboxStoreIntegrationT
     }
 
     @Override
+    AbstractJdbcOutboxStore stampingStore(String owner) {
+        return new PostgresOutboxStore("outbox_event", owner);
+    }
+
+    @Override
     String timestampType(int digits) {
         return "TIMESTAMPTZ(" + digits + ")";
     }

@@ -641,6 +641,9 @@ public interface OutboxStore {
     // Drop a lease this owner took at claimedAt, only if it is still that lease (default no-op)
     default int releaseClaim(Connection conn, String eventId, String claimOwner, Instant claimedAt);
 
+    // Drop this owner's unclaimed writer stamp (locked_at = created_at) on a pending row (default no-op)
+    default int releaseStamp(Connection conn, String eventId, String writerOwner);
+
     // The locked_at value claimPending writes for a claim taken at `now`
     default Instant leaseTimestamp(Instant now);
 
@@ -866,6 +869,21 @@ This prevents cold queue starvation under sustained hot load.
 
 `close()` stops accepting new events, signals workers to drain remaining events,
 and waits up to `drainTimeoutMs` before forcing shutdown.
+
+Copies still queued when the workers stop are dropped; the poller delivers their rows again. On a store whose claim is
+exclusive (`supportsClaimLocking()`), and only once every worker has terminated, `close()` first hands back what each
+dropped copy still holds, one statement per copy: a claim handed over to it, else its own lease (`releaseClaim`, exact
+lease), else a hot copy's writer stamp (`releaseStamp`). Other nodes then take those rows at once instead of after the
+lock timeout. Copies that hold nothing (single-node: no lease, no stamp) need no connection. The cleanup is best effort:
+it runs on its own thread over one auto-commit connection, and `close()` waits for it at most one second; past that,
+or when the closing thread is interrupted meanwhile, `close()` returns and cancels it. Cancellation is checked before
+each statement, so it holds even if a callee swallows the interrupt; a statement already being issued still runs. This
+bounds `close()`, not the cleanup's I/O: a call already in progress (acquiring the connection, a statement, closing the
+connection) can finish after `close()` returns, bounded only by the driver's or pool's own timeouts. One WARNING
+summarises failures; rows it did not release expire as before. It is skipped when the workers did not stop within the
+forced-shutdown grace or the closing thread is already interrupted. A producer that passed the accepting check before
+`close()` can still publish a copy after the queues were drained; that copy never runs, and its row waits for the lock
+timeout.
 
 This is intentional for **natural backpressure**:
 

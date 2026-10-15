@@ -880,8 +880,9 @@ or when the closing thread is interrupted meanwhile, `close()` returns and cance
 each statement, so it holds even if a callee swallows the interrupt; a statement already being issued still runs. This
 bounds `close()`, not the cleanup's I/O: a call already in progress (acquiring the connection, a statement, closing the
 connection) can finish after `close()` returns, bounded only by the driver's or pool's own timeouts. One WARNING
-summarises failures; when it finishes, one INFO line reports the rows actually handed back (a row settled or claimed
-again since updates nothing and is not counted). Rows it did not release expire as before. It is skipped when the
+summarises failures; once it has a connection, it ends with one INFO line, cancelled or not, reporting the rows
+actually handed back (a row settled or claimed again since updates nothing and is not counted), failed and not
+reached. Rows it did not release expire as before. It is skipped when the
 workers did not stop within the forced-shutdown grace (5 s after `shutdownNow`) or the closing thread is already
 interrupted. A producer that passed the accepting check before
 `close()` can still publish a copy after the queues were drained; that copy never runs, and its row waits for the lock

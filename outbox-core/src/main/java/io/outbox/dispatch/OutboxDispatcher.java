@@ -54,7 +54,7 @@ public final class OutboxDispatcher implements AutoCloseable {
 
     private static final long QUEUE_POLL_TIMEOUT_MS = 50;
     /** How long close() waits, after shutdownNow, for the workers to stop; only then are claims released. */
-    static final long FORCED_SHUTDOWN_GRACE_MS = 5000;
+    private static final long FORCED_SHUTDOWN_GRACE_MS = 5000;
     /** How long close() spends after the workers stop handing back the claims of copies still queued. */
     static final long RELEASE_ON_CLOSE_BUDGET_MS = 1000;
     /** {@link #withConnection} result for a status write that threw. */
@@ -994,7 +994,8 @@ public final class OutboxDispatcher implements AutoCloseable {
     /**
      * Best effort on one auto-commit connection. Cancellation is a flag, not the thread's interrupt,
      * so a callee that swallows the interrupt cannot restart it; checked before each statement, it
-     * stops all but one already being issued.
+     * stops all but one already being issued. Once it has a connection it always ends with one INFO
+     * report, cancelled or not.
      */
     private static void release(OutboxStore store, ConnectionProvider provider, List<Release> releases,
                                 AtomicBoolean cancelled) {
@@ -1007,10 +1008,9 @@ public final class OutboxDispatcher implements AutoCloseable {
         int failed = 0;
         RuntimeException firstFailure = null;
         try (Connection conn = provider.getConnection()) {
-            if (cancelled.get()) {
-                return;
+            if (!cancelled.get()) {
+                conn.setAutoCommit(true);
             }
-            conn.setAutoCommit(true);
             for (Release release : releases) {
                 if (cancelled.get()) {
                     break;
@@ -1028,10 +1028,14 @@ public final class OutboxDispatcher implements AutoCloseable {
                 }
             }
         } catch (SQLException | RuntimeException e) {
-            logger.log(Level.WARNING, "Shutdown release failed after handing back " + released + " of "
-                    + releases.size() + " row(s) held by events dropped at shutdown; the rest are retaken after "
-                    + "the lock timeout", e);
-            return;
+            // Statements fail per row above, so this is acquiring, setting up or closing the connection.
+            if (attempted == 0) {
+                logger.log(Level.WARNING, "Could not release the claims of " + releases.size()
+                        + " event(s) dropped at shutdown; they are retaken after the lock timeout", e);
+                return;
+            }
+            logger.log(Level.WARNING, "Shutdown release: closing the connection failed after " + attempted
+                    + " statement(s)", e);
         }
         if (firstFailure != null) {
             logger.log(Level.WARNING, "Failed to release the claims of " + failed + " of " + releases.size()

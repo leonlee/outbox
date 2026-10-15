@@ -29,7 +29,13 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
+import java.util.logging.SimpleFormatter;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -1494,6 +1500,7 @@ class OutboxDispatcherTest {
         final AtomicInteger enqueued = new AtomicInteger();
         final AtomicInteger success = new AtomicInteger();
         final AtomicInteger dead = new AtomicInteger();
+        final List<String> depths = new CopyOnWriteArrayList<>();
 
         @Override public void incrementHotTripped() {
             tripped.incrementAndGet();
@@ -1526,6 +1533,7 @@ class OutboxDispatcherTest {
         }
 
         @Override public void recordQueueDepths(int hotDepth, int coldDepth) {
+            depths.add(hotDepth + "/" + coldDepth);
         }
 
         @Override public void recordOldestLagMs(long lagMs) {
@@ -3477,6 +3485,8 @@ class OutboxDispatcherTest {
         assertTrue(d.enqueueCold(cold(claimed, L1)));
         assertTrue(d.enqueueCold(cold(claimedAgain, L1)));
         assertTrue(d.enqueueCold(cold(claimedAgain, L2)), "turned away: the newer claim replaces the queued copy's");
+        assertTrue(d.enqueueCold(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.COLD, 0)),
+                "an unleased cold copy holds nothing, not even on a stamping store");
         assertEquals(List.of(), store.released);
 
         d.close();
@@ -3488,23 +3498,129 @@ class OutboxDispatcherTest {
                 claimedAgain.eventId() + ":" + at(L2)), store.released);
     }
 
-    /** Copies that hold nothing (single-node: no lease, no stamp) need no connection at all. */
+    /**
+     * Copies that hold nothing need no connection at all: single-node on MySQL/Postgres locks rows but
+     * neither stamps (hot) nor leases (cold, from pollPending).
+     */
     @Test
     void copiesHoldingNothingNeedNoConnection() {
         AtomicInteger connections = new AtomicInteger();
+        var store = new ExclusiveStore() {
+            @Override
+            public Optional<String> writerOwnerId() {
+                return Optional.empty();
+            }
+        };
         var d = OutboxDispatcher.builder()
                 .connectionProvider(() -> {
                     connections.incrementAndGet();
                     return stubCp().getConnection();
                 })
-                .outboxStore(new ExclusiveStore()).listenerRegistry(new DefaultListenerRegistry())
+                .outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
                 .workerCount(0)
                 .build();
+        assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
         assertTrue(d.enqueueCold(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.COLD, 0)));
 
         d.close();
 
         assertEquals(0, connections.get());
+        assertEquals(List.of(), store.released);
+    }
+
+    /**
+     * The release reports rows actually handed back, after it ran: a row that moved on since (settled,
+     * claimed again) updates nothing and is not counted. A connection that fails to close after the
+     * statements does not hide that report or the statement failures.
+     */
+    @Test
+    void theShutdownReleaseReportsRowsActuallyHandedBack() {
+        EventEnvelope movedOn = EventEnvelope.ofJson(ONCE, "{}");
+        EventEnvelope failing = EventEnvelope.ofJson(ONCE, "{}");
+        var store = new ExclusiveStore() {
+            @Override
+            public int releaseClaim(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+                if (eventId.equals(failing.eventId())) {
+                    throw new IllegalStateException("connection reset");
+                }
+                super.releaseClaim(conn, eventId, claimOwner, claimedAt);
+                return eventId.equals(movedOn.eventId()) ? 0 : 1;
+            }
+        };
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(() -> (Connection) Proxy.newProxyInstance(
+                        Connection.class.getClassLoader(),
+                        new Class<?>[]{Connection.class},
+                        (proxy, method, args) -> {
+                            if ("close".equals(method.getName())) {
+                                throw new SQLException("pool shut down");
+                            }
+                            return null;
+                        }))
+                .outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
+                .workerCount(0).claimOwner("pod-a")
+                .build();
+        assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
+        assertTrue(d.enqueueCold(cold(movedOn, L1)));
+        assertTrue(d.enqueueCold(cold(failing, L1)));
+        assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L2)));
+
+        List<String> messages = captureDispatcherLogs(live -> d.close());
+
+        assertTrue(messages.stream().anyMatch(m -> m.startsWith("Shutdown release handed back 2 of 4 row(s)")
+                && m.contains("(1 failed, 0 not reached)")), "got: " + messages);
+        assertTrue(messages.stream().anyMatch(m -> m.startsWith("Failed to release the claims of 1 of 4")),
+                "got: " + messages);
+        assertTrue(messages.stream().anyMatch(m -> m.contains("closing the connection failed after 4 statement(s)")),
+                "got: " + messages);
+    }
+
+    /** close() takes the copies out of the queues, so the depth gauges drop with them. */
+    @Test
+    void closeRecordsTheDrainedQueueDepths() {
+        CountingMetrics metrics = new CountingMetrics();
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(new FencingStore())
+                .listenerRegistry(new DefaultListenerRegistry()).metrics(metrics)
+                .workerCount(0)
+                .build();
+        assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
+        assertTrue(d.enqueueCold(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.COLD, 0)));
+        assertEquals("1/1", metrics.depths.get(metrics.depths.size() - 1));
+
+        d.close();
+
+        assertEquals("0/0", metrics.depths.get(metrics.depths.size() - 1));
+    }
+
+    /**
+     * Formatted messages the dispatcher logs while {@code action} runs; the action sees the live list,
+     * to wait for a message logged by the release thread after close() returned.
+     */
+    private static List<String> captureDispatcherLogs(Consumer<List<String>> action) {
+        List<String> messages = new CopyOnWriteArrayList<>();
+        Handler capture = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                messages.add(new SimpleFormatter().formatMessage(record));
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        Logger logger = Logger.getLogger(OutboxDispatcher.class.getName());
+        logger.addHandler(capture);
+        try {
+            action.accept(messages);
+        } finally {
+            logger.removeHandler(capture);
+        }
+        return messages;
     }
 
     /** A non-exclusive claim cannot prove no other copy holds the same lease, so nothing is released. */
@@ -3690,8 +3806,13 @@ class OutboxDispatcherTest {
                 .build();
         assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L1)));
 
-        assertDoesNotThrow(d::close);
+        List<String> messages = captureDispatcherLogs(live -> assertDoesNotThrow(d::close));
+
         assertEquals(List.of(), store.released);
+        assertTrue(messages.stream().anyMatch(m -> m.startsWith("Could not release the claims of 1 event(s)")),
+                "got: " + messages);
+        assertTrue(messages.stream().noneMatch(m -> m.startsWith("Shutdown release handed back")),
+                "no report without a connection: " + messages);
     }
 
     /** A pool that cannot hand out a connection does not hold up close(); the late one is only closed. */
@@ -3746,14 +3867,33 @@ class OutboxDispatcherTest {
         assertTrue(d.enqueueCold(cold(hot, L2)), "turned away: its claim is handed to the hot copy");
         assertTrue(d.enqueueCold(cold(next, L1)));
 
-        long start = System.nanoTime();
-        d.close();
-        long tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
-        unblock.countDown();
+        AtomicLong tookMs = new AtomicLong();
+        List<String> messages = captureDispatcherLogs(live -> {
+            long start = System.nanoTime();
+            d.close();
+            tookMs.set(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start));
+            unblock.countDown();
+            awaitMessage(live, "Shutdown release handed back");
+        });
 
-        assertTrue(tookMs < OutboxDispatcher.RELEASE_ON_CLOSE_BUDGET_MS + 500, "took " + tookMs + "ms");
+        assertTrue(tookMs.get() < OutboxDispatcher.RELEASE_ON_CLOSE_BUDGET_MS + 500, "took " + tookMs + "ms");
         assertTrue(connClosed.await(5, TimeUnit.SECONDS));
         assertEquals(List.of(hot.eventId() + ":" + at(L2)), store.released);
+        assertTrue(messages.stream().anyMatch(m -> m.startsWith("Shutdown release handed back 1 of 2 row(s)")
+                && m.contains("(0 failed, 1 not reached)")), "got: " + messages);
+    }
+
+    /** Waits (up to 5s) for a message starting with {@code prefix}, logged on another thread. */
+    private static void awaitMessage(List<String> messages, String prefix) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (messages.stream().noneMatch(m -> m.startsWith(prefix)) && System.nanoTime() - deadline < 0) {
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
     }
 
     /** An interrupt during the release returns close() at once and stops the release after its statement. */

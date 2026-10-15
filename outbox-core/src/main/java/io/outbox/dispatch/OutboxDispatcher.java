@@ -18,6 +18,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -57,7 +58,10 @@ public final class OutboxDispatcher implements AutoCloseable {
     private static final long QUEUE_POLL_TIMEOUT_MS = 50;
     /** How long close() waits, after shutdownNow, for the workers to stop; only then are claims released. */
     private static final long FORCED_SHUTDOWN_GRACE_MS = 5000;
-    /** How long close() spends after the workers stop handing back the claims of copies still queued. */
+    /**
+     * How long close() spends, after the workers stop, handing back the claims of copies still queued
+     * and of status writes the forced shutdown cut short.
+     */
     static final long RELEASE_ON_CLOSE_BUDGET_MS = 1000;
     /** {@link #withConnection} result for a status write that threw. */
     private static final int WRITE_FAILED = -1;
@@ -69,10 +73,10 @@ public final class OutboxDispatcher implements AutoCloseable {
     private volatile boolean forced;
     private final AtomicBoolean running = new AtomicBoolean(true);
     /**
-     * The exact fence of each status write that failed once close() had begun — typically one the
-     * forced shutdown cancelled — so its claim is handed back with the stranded copies once every
-     * worker has stopped. Kept only for the shutdown tail: copies that run after close() began — those
-     * queued or running then, plus any an already-admitted producer still publishes.
+     * The exact fence of each status write that failed once the forced shutdown's interrupt was in
+     * play — typically the write it cancelled — so its claim is handed back with the stranded copies
+     * once every worker has stopped. A failure before that, the graceful drain included, keeps the
+     * lock-timeout backoff. Kept only for the copies still running or queued at the forced shutdown.
      */
     private final Set<Release> failedWrites = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean accepting = new AtomicBoolean(true);
@@ -797,8 +801,10 @@ public final class OutboxDispatcher implements AutoCloseable {
             String owner = lease != null ? lease.owner() : claimOwner;
             Instant claimedAt = lease != null ? lease.claimedAt() : null;
             int written = withConnection(action, eventId, conn -> op.execute(conn, owner, claimedAt));
-            // The lease actually used — an adopted one, not the copy's own. Unfenced (no owner): nothing held.
-            if (written == WRITE_FAILED && owner != null && !running.get()) {
+            // The lease actually used — an adopted one, not the copy's own. Unfenced (no owner), or
+            // no lease on a store that does not stamp: nothing held.
+            if (written == WRITE_FAILED && forced && owner != null
+                    && (claimedAt != null || outboxStore.writerOwnerId().isPresent())) {
                 failedWrites.add(new Release(eventId, owner, claimedAt));
             }
             return written;
@@ -918,11 +924,15 @@ public final class OutboxDispatcher implements AutoCloseable {
         }
         // Only once no worker can run any more: until then a dropped copy's claim may still be the
         // one a running write is fenced on. An interrupted close keeps its cancellation instead.
+        if (stranded.isEmpty() && failedWrites.isEmpty()) {
+            return;
+        }
         if (terminated && outboxStore.supportsClaimLocking() && !Thread.currentThread().isInterrupted()) {
-            Set<Release> releases = new LinkedHashSet<>(failedWrites);
-            releases.addAll(endStrandedReservations(stranded));
+            // Queued copies first: a failed write's row is the likelier one to be slow.
+            Set<Release> releases = new LinkedHashSet<>(endStrandedReservations(stranded));
+            releases.addAll(failedWrites);
             if (!releases.isEmpty()) {
-                releaseWithinBudget(new ArrayList<>(releases));
+                releaseWithinBudget(releases);
             }
         }
     }
@@ -983,7 +993,7 @@ public final class OutboxDispatcher implements AutoCloseable {
      * connection, a statement, closing the connection — can finish after close() returns, bounded
      * only by the driver's or pool's own timeouts. The thread holds nothing of this dispatcher.
      */
-    private void releaseWithinBudget(List<Release> releases) {
+    private void releaseWithinBudget(Collection<Release> releases) {
         AtomicBoolean cancelled = new AtomicBoolean();
         OutboxStore store = outboxStore;
         ConnectionProvider provider = connectionProvider;
@@ -1012,7 +1022,7 @@ public final class OutboxDispatcher implements AutoCloseable {
      * stops all but one already being issued. Once it has a connection it always ends with one INFO
      * report, cancelled or not.
      */
-    private static void release(OutboxStore store, ConnectionProvider provider, List<Release> releases,
+    private static void release(OutboxStore store, ConnectionProvider provider, Collection<Release> releases,
                                 AtomicBoolean cancelled) {
         // ponytail: one round trip per release within a fixed budget; batch the UPDATEs if large queues need more.
         if (cancelled.get()) {

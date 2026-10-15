@@ -3823,10 +3823,21 @@ class OutboxDispatcherTest {
     private static class InterruptSensitiveStore extends ExclusiveStore {
         @Override
         public int markDone(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+            refuseIfInterrupted();
+            return super.markDone(conn, eventId, claimOwner, claimedAt);
+        }
+
+        @Override
+        public int markRetry(Connection conn, String eventId, Instant nextAt, String error,
+                             String claimOwner, Instant claimedAt) {
+            refuseIfInterrupted();
+            return super.markRetry(conn, eventId, nextAt, error, claimOwner, claimedAt);
+        }
+
+        private static void refuseIfInterrupted() {
             if (Thread.currentThread().isInterrupted()) {
                 throw new IllegalStateException("interrupted during connection acquisition");
             }
-            return super.markDone(conn, eventId, claimOwner, claimedAt);
         }
     }
 
@@ -3877,8 +3888,8 @@ class OutboxDispatcherTest {
 
         d.close();
 
-        assertEquals(Set.of(reclaimed.eventId() + ":" + at(L2), stamped.eventId() + ":stamp@pod-a"),
-                Set.copyOf(store.released));
+        assertEquals(List.of(reclaimed.eventId() + ":" + at(L2), stamped.eventId() + ":stamp@pod-a").stream()
+                .sorted().toList(), store.released.stream().sorted().toList(), "each once");
     }
 
     /**
@@ -3888,9 +3899,11 @@ class OutboxDispatcherTest {
     @Test
     void aWriteThatMissedHoldsNothing() throws Exception {
         CountDownLatch running = new CountDownLatch(1);
+        AtomicInteger attempts = new AtomicInteger();
         var store = new ExclusiveStore() {
             @Override
             public int markDone(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+                attempts.incrementAndGet();
                 return 0;
             }
         };
@@ -3900,7 +3913,98 @@ class OutboxDispatcherTest {
 
         d.close();
 
+        assertEquals(1, attempts.get(), "the write ran");
         assertEquals(List.of(), store.released);
+    }
+
+    /**
+     * The usual forced-shutdown outcome: the listener throws on the interrupt, so the copy goes to a
+     * retry write, which fails the same way and is handed back.
+     */
+    @Test
+    void aRetryCutShortByTheForcedShutdownHandsBackItsLease() throws Exception {
+        CountDownLatch running = new CountDownLatch(1);
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            running.countDown();
+            awaitQuietly(new CountDownLatch(1)); // until shutdownNow interrupts it
+            throw new IllegalStateException("interrupted");
+        });
+        var store = new InterruptSensitiveStore();
+        EventEnvelope first = EventEnvelope.ofJson(ONCE, "{}");
+        var d = exclusive(store, registry, 1, 100);
+        assertTrue(d.enqueueCold(cold(first, L1)));
+        assertTrue(running.await(5, TimeUnit.SECONDS));
+
+        d.close();
+
+        assertEquals(List.of(), store.writes, "the retry write was cancelled");
+        assertEquals(List.of(first.eventId() + ":" + at(L1)), store.released);
+    }
+
+    /**
+     * A write that fails in the graceful drain — close() has begun, but nothing was interrupted — is
+     * an ordinary failure: its row keeps the lock-timeout backoff, as it would before close().
+     */
+    @Test
+    void aWriteThatFailsInTheGracefulDrainKeepsItsLease() throws Exception {
+        CountDownLatch running = new CountDownLatch(1);
+        CountDownLatch finish = new CountDownLatch(1);
+        AtomicInteger attempts = new AtomicInteger();
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            running.countDown();
+            awaitQuietly(finish);
+            return DispatchResult.done();
+        });
+        var store = new ExclusiveStore() {
+            @Override
+            public int markDone(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+                attempts.incrementAndGet();
+                throw new IllegalStateException("connection reset");
+            }
+        };
+        var d = exclusive(store, registry, 1, 5000);
+        assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L1)));
+        assertTrue(running.await(5, TimeUnit.SECONDS));
+        Thread closer = new Thread(d::close);
+
+        closer.start();
+        awaitWaiting(closer); // in the drain: close() has begun, the worker is not interrupted
+        finish.countDown();
+        closer.join(5000);
+
+        assertFalse(closer.isAlive(), "drained gracefully");
+        assertEquals(1, attempts.get(), "the write failed in the drain");
+        assertEquals(List.of(), store.released);
+    }
+
+    /** On a store that does not stamp, a hot copy's failed write had no stamp to hand back. */
+    @Test
+    void aHotWriteOnANonStampingStoreHoldsNothing() throws Exception {
+        CountDownLatch running = new CountDownLatch(1);
+        var store = new InterruptSensitiveStore() {
+            @Override
+            public Optional<String> writerOwnerId() {
+                return Optional.empty();
+            }
+        };
+        var d = exclusive(store, runUntilForced(running), 1, 100);
+        assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
+        assertTrue(running.await(5, TimeUnit.SECONDS));
+
+        d.close();
+
+        assertEquals(List.of(), store.released);
+    }
+
+    /** Waits (up to 5s) until {@code thread} is parked in a timed wait, such as close()'s drain. */
+    private static void awaitWaiting(Thread thread) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (thread.getState() != Thread.State.TIMED_WAITING) {
+            if (System.nanoTime() - deadline > 0) {
+                throw new AssertionError("never waited: " + thread.getState());
+            }
+            Thread.sleep(5);
+        }
     }
 
     /**
@@ -3929,17 +4033,15 @@ class OutboxDispatcherTest {
         assertEquals(List.of(), store.released);
     }
 
-    /** An unfenced write (no claim owner, no lease) holds nothing, so its failure needs no release. */
+    /**
+     * An unfenced write (no claim owner, no lease) holds nothing, so its failure needs no release —
+     * even on a store that stamps.
+     */
     @Test
     void anUnfencedFailedWriteHoldsNothing() throws Exception {
         CountDownLatch running = new CountDownLatch(1);
         AtomicInteger connections = new AtomicInteger();
         var store = new InterruptSensitiveStore() {
-            @Override
-            public Optional<String> writerOwnerId() {
-                return Optional.empty();
-            }
-
             @Override
             public int markDone(Connection conn, String eventId) {
                 throw new IllegalStateException("interrupted during connection acquisition");

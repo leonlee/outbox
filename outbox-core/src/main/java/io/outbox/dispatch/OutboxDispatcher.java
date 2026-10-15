@@ -71,8 +71,8 @@ public final class OutboxDispatcher implements AutoCloseable {
     /**
      * The exact fence of each status write that failed once close() had begun — typically one the
      * forced shutdown cancelled — so its claim is handed back with the stranded copies once every
-     * worker has stopped. Bounded: only copies that run after close() began, at most the queue
-     * capacities plus one per worker.
+     * worker has stopped. Kept only for the shutdown tail: copies that run after close() began — those
+     * queued or running then, plus any an already-admitted producer still publishes.
      */
     private final Set<Release> failedWrites = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean accepting = new AtomicBoolean(true);

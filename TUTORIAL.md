@@ -420,7 +420,7 @@ The `outbox-spring-boot-starter` auto-configures the entire outbox framework fro
 <dependency>
     <groupId>io.github.leonlee</groupId>
     <artifactId>outbox-spring-boot-starter</artifactId>
-    <version>0.13.0</version>
+    <version>0.14.0</version>
 </dependency>
 ```
 
@@ -565,7 +565,7 @@ beans needed:
 <dependency>
     <groupId>io.github.leonlee</groupId>
     <artifactId>outbox-micrometer</artifactId>
-    <version>0.13.0</version>
+    <version>0.14.0</version>
 </dependency>
 <dependency>
 <groupId>org.springframework.boot</groupId>
@@ -1357,7 +1357,7 @@ Micrometer `MeterRegistry` for export to Prometheus, Grafana, Datadog, etc.
 <dependency>
     <groupId>io.github.leonlee</groupId>
     <artifactId>outbox-micrometer</artifactId>
-    <version>0.13.0</version>
+    <version>0.14.0</version>
 </dependency>
 ```
 

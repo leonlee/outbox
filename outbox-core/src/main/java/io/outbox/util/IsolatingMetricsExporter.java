@@ -4,6 +4,7 @@ import io.outbox.spi.MetricsExporter;
 
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.IntSupplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -109,6 +110,11 @@ public final class IsolatingMetricsExporter implements MetricsExporter {
     @Override
     public void recordQueueDepths(int hotDepth, int coldDepth) {
         run("recordQueueDepths", () -> delegate.recordQueueDepths(hotDepth, coldDepth));
+    }
+
+    @Override
+    public void bindQueueDepths(IntSupplier hotDepth, IntSupplier coldDepth) {
+        run("bindQueueDepths", () -> delegate.bindQueueDepths(hotDepth, coldDepth));
     }
 
     @Override

@@ -218,6 +218,10 @@ public interface OutboxStore {
      * requires it from a store that {@link #supportsClaimLocking() locks}, and requires it to equal
      * the claim owner.
      *
+     * <p>A store may write a run-scoped value into {@code locked_by} — this owner plus a token for the
+     * current stamping run (see {@link #endStampRun()}) — and still report the plain owner here. It
+     * then treats this owner, wherever a stamp is matched, as its current run's stamp.
+     *
      * <p>Defaults to empty: the store writes rows unowned.
      *
      * @return the stamped owner, or empty if rows are written unowned
@@ -362,8 +366,9 @@ public interface OutboxStore {
      * under the stamp again. The caller owes that guarantee: a hot copy that still runs here after
      * the release has lost its write authority, and another node may deliver the event too.
      *
-     * <p>Implementations MUST match only a stamp: {@code locked_by = writerOwner} and
-     * {@code locked_at = created_at}, in a pending state. A poller claim — this owner's included —
+     * <p>Implementations MUST match only a stamp: {@code locked_by} equal to the stamp
+     * {@code writerOwner} names (for a run-scoped store, its own owner names its current run's stamp;
+     * an ended run's stamp is matched as given) and {@code locked_at = created_at}, in a pending state. A poller claim — this owner's included —
      * has replaced the stamp and is left alone, as is a settled row.
      *
      * <p>Defaults to doing nothing, which is safe: the stamp expires with the lock timeout.
@@ -375,6 +380,91 @@ public interface OutboxStore {
      */
     default int releaseStamp(Connection conn, String eventId, String writerOwner) {
         return 0;
+    }
+
+    /**
+     * A claim or writer stamp to hand back with {@link #releaseHeld}: an exact lease when
+     * {@code claimedAt} is set (as {@link #releaseClaim}), otherwise the stamp {@code owner} names
+     * (as {@link #releaseStamp}).
+     *
+     * @param eventId   the event whose row is held
+     * @param owner     the lease owner, or the stamp: the owner (this run) or an ended run's stamp
+     * @param claimedAt the lease's {@code locked_at}, or {@code null} for a writer stamp
+     */
+    record Held(String eventId, String owner, Instant claimedAt) {
+    }
+
+    /**
+     * What {@link #releaseHeld} achieved.
+     *
+     * @param released     rows confirmed released — a lower bound, as a driver may report a batch
+     *                     statement's count as unknown
+     * @param failed       releases that failed, or whose outcome is unknown after a batch error
+     * @param firstFailure the first failure, or {@code null} if none
+     */
+    record ReleaseResult(int released, int failed, RuntimeException firstFailure) {
+    }
+
+    /**
+     * Releases many claims and stamps at once, each exactly as {@link #releaseClaim} or
+     * {@link #releaseStamp} would.
+     *
+     * <p>Best effort: a failure is reported in the result, not thrown, and the rest are still
+     * attempted. The default releases one at a time; JDBC stores batch the statements.
+     *
+     * @param conn the connection to use
+     * @param held what to release
+     * @return rows released, and what failed
+     */
+    default ReleaseResult releaseHeld(Connection conn, List<Held> held) {
+        int released = 0;
+        int failed = 0;
+        RuntimeException firstFailure = null;
+        for (Held one : held) {
+            try {
+                released += one.claimedAt() == null
+                        ? releaseStamp(conn, one.eventId(), one.owner())
+                        : releaseClaim(conn, one.eventId(), one.owner(), one.claimedAt());
+            } catch (RuntimeException e) {
+                failed++;
+                if (firstFailure == null) {
+                    firstFailure = e;
+                }
+            }
+        }
+        return new ReleaseResult(released, failed, firstFailure);
+    }
+
+    /**
+     * Ends this store's current stamping run: rows inserted from now on are stamped under a new run.
+     *
+     * <p>Called once the instance that stamped under the ended run has stopped delivering, so its
+     * remaining stamps can be found ({@link #findStamped}) and released without touching rows a
+     * later run — over this store or another with the same owner — stamps in the meantime. Must be
+     * in-memory and atomic: it runs on the closing thread.
+     *
+     * <p>Defaults to empty: the store has no stamping runs, and nothing is swept.
+     *
+     * @return the ended run's exact {@code locked_by} stamp, or empty
+     */
+    default Optional<String> endStampRun() {
+        return Optional.empty();
+    }
+
+    /**
+     * Event ids of up to {@code limit} pending rows still carrying exactly {@code stamp} unclaimed
+     * ({@code locked_by = stamp AND locked_at = created_at}). A plain read that takes no row locks,
+     * so the releases that follow touch only these rows.
+     *
+     * <p>Defaults to none.
+     *
+     * @param conn  the connection to use
+     * @param stamp an ended run's stamp, from {@link #endStampRun()}
+     * @param limit the most ids to return
+     * @return the matching event ids
+     */
+    default List<String> findStamped(Connection conn, String stamp, int limit) {
+        return List.of();
     }
 
     /**

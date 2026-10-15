@@ -644,6 +644,18 @@ public interface OutboxStore {
     // Drop this owner's unclaimed writer stamp (locked_at = created_at) on a pending row (default no-op)
     default int releaseStamp(Connection conn, String eventId, String writerOwner);
 
+    // Release many leases (claimedAt set) and stamps (claimedAt null) at once; failures are reported, not thrown
+    // (default: one at a time; JDBC: batched). released is a lower bound.
+    record Held(String eventId, String owner, Instant claimedAt) {}
+    record ReleaseResult(int released, int failed, RuntimeException firstFailure) {}
+    default ReleaseResult releaseHeld(Connection conn, List<Held> held);
+
+    // End the current stamping run: later inserts stamp a new run; returns the ended run's exact stamp (default empty)
+    default Optional<String> endStampRun();
+
+    // Ids of pending rows still carrying exactly this stamp unclaimed; a plain, lock-free read (default none)
+    default List<String> findStamped(Connection conn, String stamp, int limit);
+
     // The locked_at value claimPending writes for a claim taken at `now`
     default Instant leaseTimestamp(Instant now);
 
@@ -656,11 +668,20 @@ public interface OutboxStore {
 rows locked. `MySqlOutboxStore` and `PostgresOutboxStore` return `true`; `H2OutboxStore` keeps the default.
 
 **Writer-stamped ownership.** The JDBC stores take an optional `writerOwnerId` constructor argument (e.g.
-`new MySqlOutboxStore(tableName, ownerId)`). When it is set, `insertNew`/`insertBatch` write `locked_by = ownerId` and
-`locked_at = created_at`, so a row is already owned by the writing instance the moment it becomes visible to other
-nodes, and the hot copy and any cold copy land in the same JVM. `claimPending` treats `locked_at = created_at` as an
-*unclaimed writer stamp*: the owner may claim it once immediately, while other nodes wait for the lock timeout. A
-poller claim overwrites `locked_at`, ending the exemption. Events older than `WRITER_STAMP_MAX_AGE` at insert
+`new MySqlOutboxStore(tableName, ownerId)`). When it is set, `insertNew`/`insertBatch` write `locked_by =
+ownerId#run` and `locked_at = created_at`, so a row is already owned by the writing instance the moment it becomes
+visible to other nodes, and the hot copy and any cold copy land in the same JVM. `run` is a 22-character token (a
+random version-4 UUID — 122 random bits — base64url-encoded) for the store's current *stamping run*: it sets one run's
+stamps apart from any other run of the same owner — a pod restarted under the same name, an `Outbox` rebuilt over the
+store — so the shutdown sweep (§9.7) clears only its own. `claimPending` treats `locked_at = created_at` as an
+*unclaimed writer stamp*: the owner may claim its current run's stamp once immediately, while other nodes wait for the
+lock timeout. A poller claim
+overwrites `locked_at`, ending the exemption, and writes the plain owner (`locked_by = ownerId`): leases are not
+run-scoped. Every stamp comparison is exact — no prefix matching — so a predecessor run's stamp, or a base-only stamp
+written by 0.13 and earlier, waits for the lock timeout like any other node's. `writerOwnerId()` still reports the
+plain owner; wherever a stamp is matched, the store resolves its own owner to the current run's stamp and takes any
+other value (an ended run's stamp) as given. The writer and the dispatcher must therefore share the store instance
+(`Outbox` and the starter do). Events older than `WRITER_STAMP_MAX_AGE` at insert
 (backfills) are written unowned and skip hot delivery. The store reports its stamp owner through
 `OutboxStore.writerOwnerId()` (empty by default). `Outbox.multiNode()` with the hot path requires a stamp from a store
 that `supportsClaimLocking()`, and in every case requires it to equal the claim owner (`claimLocking(Duration)` takes
@@ -671,9 +692,11 @@ ignored).
 
 **Schema verification.** `Outbox.multiNode()` calls `verifySchema(conn)` before anything starts (opt out with
 `verifySchema(false)`, or `outbox.claim-locking.verify-schema=false` in the starter). The JDBC stores read the metadata
-of `created_at` and `locked_at` and refuse, with `IllegalStateException`, a `locked_at` with fewer than 3
+of `created_at`, `locked_at` and `locked_by` and refuse, with `IllegalStateException`, a `locked_at` with fewer than 3
 fractional-second digits or two columns that differ in type, size or precision — the cases in which claimed status
-writes or the writer stamp can never match (§4.1). It reads only metadata, and logs and continues when the table or
+writes or the writer stamp can never match (§4.1) — and a `locked_by` too narrow for the stamp (the owner id plus 23
+characters: at most a 105-character owner with the stock `VARCHAR(128)`; non-strict MySQL would otherwise truncate it
+silently). With the check off, the deployment must ensure the stamp fits. It reads only metadata, and logs and continues when the table or
 its metadata cannot be found or the database cannot be reached. Precision comes from `DECIMAL_DIGITS`, except on MySQL,
 whose driver reports it through `COLUMN_SIZE` (19 = whole seconds, 20 + digits otherwise).
 
@@ -693,7 +716,7 @@ INSERT INTO outbox_event (event_id, event_type, aggregate_type, aggregate_id, te
   payload, headers, status, attempts, available_at, created_at, done_at, last_error, locked_by, locked_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, NULL, NULL, ?, ?)
 -- created_at = occurredAt; available_at = availableAt, else occurredAt.
--- With a writer stamp: locked_by = writerOwnerId, locked_at = created_at; otherwise both NULL
+-- With a writer stamp: locked_by = writerOwnerId#run, locked_at = created_at; otherwise both NULL
 -- (also for events older than WRITER_STAMP_MAX_AGE).
 ```
 
@@ -734,13 +757,13 @@ LIMIT ?
 ```
 
 **Claim Pending** (multi-node) takes a row that is pending, due, older than `skipRecent`, and either unclaimed, carrying
-this owner's own unclaimed writer stamp, or holding an expired lease; it writes `locked_by = owner,
+this store's current-run unclaimed writer stamp, or holding an expired lease; it writes `locked_by = owner,
 locked_at = leaseTimestamp(now)`:
 
 ```sql
 -- eligibility, shared by all stores
 status IN (0, 2) AND available_at <= ? AND created_at <= ?
-  AND (locked_by IS NULL OR (locked_by = ? AND locked_at = created_at) OR locked_at < ?)   -- owner, now - lockTimeout
+  AND (locked_by IS NULL OR (locked_by = ? AND locked_at = created_at) OR locked_at < ?)   -- owner#run, now - lockTimeout
 ORDER BY created_at, event_id LIMIT ?
 ```
 
@@ -871,26 +894,43 @@ This prevents cold queue starvation under sustained hot load.
 and waits up to `drainTimeoutMs` before forcing shutdown.
 
 Copies still queued when the workers stop are dropped; the poller delivers their rows again. On a store whose claim is
-exclusive (`supportsClaimLocking()`), and only once every worker has terminated, `close()` first hands back what each
-dropped copy still holds, one statement per copy: a claim handed over to it, else its own lease (`releaseClaim`, exact
-lease), else a hot copy's writer stamp (`releaseStamp`). It then does the same for each status write that failed
-outright once the forced shutdown's interrupt was in play (typically the write it cancelled): the exact lease or stamp
-that write was fenced on, even when nothing is left queued. Other nodes then take those rows at once instead of after
-the lock timeout. A write that ran but matched no row holds nothing. A write that failed earlier, the graceful drain
-included, is not tracked: its row keeps the claim until the lock timeout, as before. Copies that hold nothing
-(single-node: no lease, no stamp) need no connection.
+exclusive (`supportsClaimLocking()`), and only once every worker has terminated, `close()` hands back what this node
+still holds:
 
-The cleanup is best effort: it runs on its own thread over one auto-commit connection, and `close()` waits for it at
-most one second; past that, or when the closing thread is interrupted meanwhile, `close()` returns and cancels it.
-Cancellation is checked before each statement, so it holds even if a callee swallows the interrupt; a statement
-already being issued still runs. This bounds `close()`, not the cleanup's I/O: a call already in progress (acquiring
-the connection, a statement, closing the connection) can finish after `close()` returns, bounded only by the driver's
-or pool's own timeouts. One WARNING summarises failures; once it has a connection, it ends with one INFO line,
-cancelled or not, reporting the rows actually handed back (a row settled or claimed again since updates nothing and is
-not counted), failed and not reached. Rows it did not release expire as before. It is skipped when the workers did not
-stop within the forced-shutdown grace (5 s after `shutdownNow`) or the closing thread is already interrupted. A
-producer that passed the accepting check before `close()` can still publish a copy after the queues were drained; that
-copy never runs, and its row waits for the lock timeout.
+1. **Known leases.** For each dropped copy, a claim handed over to it, else its own lease; then the exact lease of each
+   statement — a status write, or the release of a claim — that failed outright once the forced shutdown's interrupt
+   was in play (typically the one it cancelled), even when nothing is left queued.
+2. **Known stamps.** A dropped hot copy's writer stamp, and that of a cut-short hot write.
+3. **The rest of the run's stamps.** `close()` first ends the store's stamping run (`endStampRun()`, in memory, on the
+   closing thread, before any release starts), so rows written from then on — by this store's next user, too — carry a
+   new run. The known stamps are pinned to the ended run's exact stamp. The sweep then reads the ended run's remaining
+   unclaimed stamps with a plain, lock-free `findStamped` and releases them by exact id in batches, until a read comes
+   back short or a batch frees nothing: hot copies the dispatcher refused (full queue, open breaker, a commit after
+   `close()` began) or never queued. No statement locks rows beyond its own, so another owner's locked rows neither
+   block it nor are touched.
+
+Other nodes then take those rows at once instead of after the lock timeout. A statement that ran but matched no row
+holds nothing. A failure before the forced shutdown, the graceful drain included, is not tracked: its row keeps the
+claim until the lock timeout, as before. An insert that races the run's end can keep the ended run's stamp, and a
+release issued by a producer or the poller after the workers stopped can fail; such rows wait for the lock timeout.
+Copies that hold nothing (single-node: no lease, no stamp) need no connection.
+
+The cleanup is best effort: it runs on its own thread over one auto-commit connection, releasing in batches of up to
+200 (`releaseHeld`; the JDBC stores send each as one JDBC batch), and `close()` waits for it at most one second; past
+that, or when the closing thread is interrupted meanwhile, `close()` returns and cancels it. Cancellation is checked
+before each batch and each read, so it holds even if a callee swallows the interrupt; a batch already being issued
+still runs. This bounds `close()`, not the cleanup's I/O: a call already in progress (acquiring the connection, a
+statement, closing the connection) can finish after `close()` returns, bounded only by the driver's or pool's own
+timeouts. One WARNING summarises failures; once it has a connection, it ends with one INFO line, cancelled or not,
+reporting the rows handed back — a lower bound: a row settled or claimed again since updates nothing, and a driver may
+report a batch count as unknown — with failed and not-reached counts and the sweep's count. Rows it did not release
+expire as before. It is skipped when the workers did not stop within the forced-shutdown grace (5 s after
+`shutdownNow`) or the closing thread is already interrupted.
+
+A producer that passed the accepting check before `close()` can reach a queue after `close()` drained it. That copy
+would never run, so the enqueue takes back exactly the entry it inserted and refuses it: the writer hook leaves the row
+to the poller (its stamp to the sweep, if the sweep has not run yet), and a refused cold copy's claim is the caller's
+to release, as for any refusal.
 
 This is intentional for **natural backpressure**:
 
@@ -1393,6 +1433,10 @@ public interface MetricsExporter {
 
     void recordQueueDepths(int hotDepth, int coldDepth);
 
+    // A dispatcher binds its live queue sizes once, at construction; a pull gauge reads them instead of the
+    // last pushed depths, which a producer racing shutdown can leave stale (default: ignored)
+    default void bindQueueDepths(IntSupplier hotDepth, IntSupplier coldDepth);
+
     void recordOldestLagMs(long lagMs);
 
     MetricsExporter NOOP = new Noop();
@@ -1433,6 +1477,9 @@ MicrometerMetricsExporter(MeterRegistry registry, String namePrefix) // custom p
 | `{prefix}.queue.hot.depth`  | Current hot queue depth                     |
 | `{prefix}.queue.cold.depth` | Current cold queue depth                    |
 | `{prefix}.lag.oldest.ms`    | Lag of oldest pending event in milliseconds |
+
+The two depth gauges read the dispatcher's live queue sizes once it binds them (`bindQueueDepths`, at construction; a
+dispatcher built later rebinds), and the last pushed `recordQueueDepths` values until then.
 
 The default prefix is `outbox`. For multi-instance setups, use a custom prefix (e.g., `"orders.outbox"`) to avoid metric
 collisions.

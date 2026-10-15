@@ -286,8 +286,10 @@ the hot/cold race are no longer needed:
 
 The claim is a single atomic `UPDATE`: one node wins, its lease holds until the row settles or the lock timeout
 passes, and a node that dies mid-delivery has its row taken over afterwards. A node that shuts down cleanly also
-tries, for up to a second, to hand back the claims and writer stamps of events it still had queued, so other nodes
-can take those rows at once; whatever it cannot hand back waits for the lock timeout. Status writes are fenced on the exact
+tries, for up to a second, to hand back the claims it still held and the writer stamps of its run — including those of
+events its hot path refused — so other nodes can take those rows at once; whatever it cannot hand back waits for the
+lock timeout. A writer stamp is the owner id plus a per-run token (`pod-a#<22 chars>`), so the owner id can be at most
+105 characters with the stock `locked_by VARCHAR(128)`. Status writes are fenced on the exact
 lease: a copy whose lease was taken over cannot clear the newer claim or overwrite the new holder's outcome when its
 late result arrives. Delivery stays at-least-once.
 

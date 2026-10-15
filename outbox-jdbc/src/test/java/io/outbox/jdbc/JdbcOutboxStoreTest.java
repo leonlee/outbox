@@ -4,6 +4,7 @@ import io.outbox.EventEnvelope;
 import io.outbox.jdbc.store.H2OutboxStore;
 import io.outbox.model.EventStatus;
 import io.outbox.model.OutboxEvent;
+import io.outbox.spi.OutboxStore;
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -17,8 +18,10 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -886,7 +889,7 @@ class JdbcOutboxStoreTest {
                     "SELECT locked_by, locked_at FROM outbox_event");
                  ResultSet rs = ps.executeQuery()) {
                 assertTrue(rs.next());
-                assertEquals(POD_A, rs.getString("locked_by"),
+                assertStampOf(POD_A, rs.getString("locked_by"),
                         "the row must be owned the moment it becomes visible to other instances");
                 assertNotNull(rs.getTimestamp("locked_at"));
             }
@@ -1169,6 +1172,147 @@ class JdbcOutboxStoreTest {
         }
     }
 
+    // ── Stamping runs ──────────────────────────────────────────────
+
+    /**
+     * Ending a run leaves exactly its stamps to the sweep. A replacement that stamps afterwards —
+     * over this same store, or a new store with the same owner — carries another run, which a late
+     * sweep of the ended one can neither find nor release, even by id.
+     */
+    @Test
+    void aSweepOfAnEndedRunCannotTouchALaterRun() throws SQLException {
+        H2OutboxStore store = new H2OutboxStore(TABLE, POD_A);
+        EventEnvelope old = event();
+        EventEnvelope reused = event();
+        EventEnvelope rebuilt = event();
+        try (Connection conn = dataSource.getConnection()) {
+            store.insertNew(conn, old);
+            String ended = store.endStampRun().orElseThrow();
+            assertEquals(ended, lockedByOf(conn, old.eventId()), "the ended run is the stamp the row carries");
+
+            store.insertNew(conn, reused);
+            new H2OutboxStore(TABLE, POD_A).insertNew(conn, rebuilt);
+            assertNotEquals(ended, lockedByOf(conn, reused.eventId()), "the same store stamps a new run");
+            assertNotEquals(lockedByOf(conn, reused.eventId()), lockedByOf(conn, rebuilt.eventId()));
+
+            assertEquals(List.of(old.eventId()), store.findStamped(conn, ended, 10));
+            OutboxStore.ReleaseResult result = store.releaseHeld(conn, List.of(
+                    new OutboxStore.Held(old.eventId(), ended, null),
+                    new OutboxStore.Held(reused.eventId(), ended, null),
+                    new OutboxStore.Held(rebuilt.eventId(), ended, null)));
+
+            assertEquals(1, result.released(), "only the ended run's row");
+            assertEquals(0, result.failed());
+            assertNull(lockedByOf(conn, old.eventId()));
+            assertStampOf(POD_A, lockedByOf(conn, reused.eventId()), "a later run keeps its stamp");
+            assertStampOf(POD_A, lockedByOf(conn, rebuilt.eventId()), "a later run keeps its stamp");
+            assertEquals(List.of(), store.findStamped(conn, ended, 10));
+        }
+    }
+
+    /** A store that does not stamp has no run to end. */
+    @Test
+    void anUnstampedStoreHasNoRunToEnd() {
+        assertEquals(Optional.empty(), new H2OutboxStore(TABLE).endStampRun());
+    }
+
+    /**
+     * Only this run's stamp is the owner's to claim early. A predecessor's — another run of the same
+     * owner, or a 0.13 base-only stamp — waits for the lock timeout like any other node's.
+     */
+    @Test
+    void aPredecessorsStampWaitsForTheLockTimeout() throws SQLException {
+        H2OutboxStore predecessor = new H2OutboxStore(TABLE, POD_A);
+        H2OutboxStore current = new H2OutboxStore(TABLE, POD_A);
+        EventEnvelope earlierRun = event();
+        EventEnvelope legacy = event();
+        try (Connection conn = dataSource.getConnection()) {
+            predecessor.insertNew(conn, earlierRun);
+            current.insertNew(conn, legacy);
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE outbox_event SET locked_by = ? WHERE event_id = ?")) {
+                ps.setString(1, POD_A); // as 0.13 stamped it
+                ps.setString(2, legacy.eventId());
+                assertEquals(1, ps.executeUpdate());
+            }
+            Instant now = Instant.now();
+
+            assertEquals(List.of(), current.claimPending(conn, POD_A, now, now.minusSeconds(300), Duration.ZERO, 10),
+                    "neither is this run's stamp");
+            assertEquals(2, current.claimPending(conn, POD_A, now, now.plusSeconds(1), Duration.ZERO, 10).size(),
+                    "both are taken once their lock times out");
+        }
+    }
+
+    /** Matching is exact, so an owner id with '#', '%' or '_' claims only its own stamps. */
+    @Test
+    void ownerIdsWithMetacharactersMatchOnlyThemselves() throws SQLException {
+        String odd = "pod%_#a";
+        H2OutboxStore oddStore = new H2OutboxStore(TABLE, odd);
+        H2OutboxStore plain = new H2OutboxStore(TABLE, "pod");
+        try (Connection conn = dataSource.getConnection()) {
+            oddStore.insertNew(conn, event());
+            Instant now = Instant.now();
+
+            assertEquals(List.of(), plain.claimPending(conn, "pod", now, now.minusSeconds(300), Duration.ZERO, 10));
+            assertEquals(1, oddStore.claimPending(conn, odd, now, now.minusSeconds(300), Duration.ZERO, 10).size());
+        }
+    }
+
+    /** The stamp is the owner plus a 23-character run suffix; verifySchema refuses one locked_by cannot hold. */
+    @Test
+    void verifySchemaRefusesAStampWiderThanLockedBy() throws SQLException {
+        try (Connection conn = dataSource.getConnection()) {
+            assertDoesNotThrow(() -> new H2OutboxStore(TABLE, "x".repeat(105)).verifySchema(conn));
+            IllegalStateException refused = assertThrows(IllegalStateException.class,
+                    () -> new H2OutboxStore(TABLE, "x".repeat(106)).verifySchema(conn));
+            assertTrue(refused.getMessage().contains("at most 105"), refused.getMessage());
+        }
+    }
+
+    /** One call releases leases and stamps alike; a failure is reported, not thrown. */
+    @Test
+    void releaseHeldReleasesLeasesAndStampsAndReportsFailures() throws SQLException {
+        H2OutboxStore store = new H2OutboxStore(TABLE, POD_A);
+        EventEnvelope claimed = event();
+        EventEnvelope stamped = event();
+        try (Connection conn = dataSource.getConnection()) {
+            store.insertNew(conn, claimed);
+            Instant now = Instant.now();
+            assertEquals(1, store.claimPending(conn, POD_A, now, now.minusSeconds(300), Duration.ZERO, 10).size());
+            Instant lease = store.leaseTimestamp(now);
+            store.insertNew(conn, stamped);
+
+            OutboxStore.ReleaseResult result = store.releaseHeld(conn, List.of(
+                    new OutboxStore.Held(claimed.eventId(), POD_A, lease),
+                    new OutboxStore.Held(stamped.eventId(), POD_A, null),
+                    new OutboxStore.Held("missing", POD_A, lease)));
+
+            assertEquals(new OutboxStore.ReleaseResult(2, 0, null), result);
+        }
+        Connection closed = dataSource.getConnection();
+        closed.close();
+        OutboxStore.ReleaseResult failed = store.releaseHeld(closed, List.of(
+                new OutboxStore.Held("a", POD_A, Instant.now()), new OutboxStore.Held("b", POD_A, null)));
+        assertEquals(0, failed.released());
+        assertEquals(2, failed.failed());
+        assertNotNull(failed.firstFailure());
+    }
+
+    private static EventEnvelope event() {
+        return EventEnvelope.builder("TestEvent").payloadJson("{}").build();
+    }
+
+    private String lockedByOf(Connection conn, String eventId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT locked_by FROM outbox_event WHERE event_id = ?")) {
+            ps.setString(1, eventId);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next());
+                return rs.getString(1);
+            }
+        }
+    }
+
     /** The stamp authorises only its own owner: another owner's hot write must not clear it. */
     @Test
     void hotWriteOnAStampingStoreNeedsTheStampsOwner() throws SQLException {
@@ -1183,7 +1327,7 @@ class JdbcOutboxStoreTest {
             assertEquals(0, podA.markRetry(conn, id, later, "x", "pod-b", null));
             assertEquals(0, podA.markDead(conn, id, "x", "pod-b", null));
             assertEquals(0, podA.markDeferred(conn, id, later, "pod-b", null));
-            assertEquals(POD_A, lockedByOf(conn), "the stamp is untouched");
+            assertStampOf(POD_A, lockedByOf(conn), "the stamp is untouched");
 
             assertEquals(1, podA.markDone(conn, id, POD_A, null));
         }
@@ -1341,5 +1485,13 @@ class JdbcOutboxStoreTest {
     void verifySchemaDoesNotMistakeALookalikeTable() throws SQLException {
         createTimestampTable("abcXdef", "TIMESTAMP(0)", "TIMESTAMP(0)");
         verify("abc_def");
+    }
+
+    /** A stamp is the owner plus this run's token: {@code owner#<22 base64url chars>}. */
+    private static void assertStampOf(String owner, String lockedBy, String message) {
+        assertNotNull(lockedBy, message);
+        assertTrue(lockedBy.startsWith(owner + "#"), message + ": " + lockedBy);
+        assertEquals(owner.length() + 23, lockedBy.length(), message + ": " + lockedBy);
+        assertTrue(lockedBy.substring(owner.length() + 1).matches("[A-Za-z0-9_-]{22}"), message + ": " + lockedBy);
     }
 }

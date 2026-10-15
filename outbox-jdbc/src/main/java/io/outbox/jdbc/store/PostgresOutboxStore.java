@@ -71,6 +71,6 @@ public final class PostgresOutboxStore extends AbstractJdbcOutboxStore {
                 "tenant_id, payload, headers, attempts, created_at, available_at";
         return JdbcTemplate.updateReturning(conn, sql, EVENT_ROW_MAPPER,
                 ownerId, Timestamp.from(nowMs), Timestamp.from(now),
-                ownerId, Timestamp.from(lockExpiry), Timestamp.from(recentCutoff), limit);
+                stampOf(ownerId), Timestamp.from(lockExpiry), Timestamp.from(recentCutoff), limit);
     }
 }

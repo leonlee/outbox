@@ -2,21 +2,27 @@ package io.outbox.jdbc.store;
 
 import io.outbox.EventEnvelope;
 import io.outbox.jdbc.JdbcTemplate;
+import io.outbox.jdbc.OutboxStoreException;
 import io.outbox.jdbc.TableNames;
 import io.outbox.model.EventStatus;
 import io.outbox.model.OutboxEvent;
 import io.outbox.spi.JsonCodec;
 import io.outbox.spi.OutboxStore;
 
+import java.nio.ByteBuffer;
+import java.sql.BatchUpdateException;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -25,6 +31,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -42,11 +50,26 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     private static final Logger LOGGER = Logger.getLogger(AbstractJdbcOutboxStore.class.getName());
     private static final String CREATED_AT = "created_at";
     private static final String LOCKED_AT = "locked_at";
+    private static final String LOCKED_BY = "locked_by";
+    /** Separates the owner from the run token in a stamp; the token never contains it. */
+    private static final char RUN_SEPARATOR = '#';
+    /** A run token: a random (version 4) UUID — 122 random bits — base64url without padding, 22 characters. */
+    static final int RUN_TOKEN_LENGTH = 22;
     /** A lease is {@link #leaseTimestamp} — milliseconds — and must round-trip exactly. */
     private static final int MIN_LEASE_DIGITS = 3;
     protected static final int MAX_BATCH_ROWS = 500;
     protected static final String PENDING_STATUS_IN =
             "(" + EventStatus.NEW.code() + "," + EventStatus.RETRY.code() + ")";
+
+    /** An exact lease: event, owner and claim time, still pending. */
+    private static final String RELEASE_CLAIM_SQL = "UPDATE %s SET locked_by=NULL, locked_at=NULL"
+            + " WHERE event_id=? AND locked_by=? AND locked_at=? AND status IN " + PENDING_STATUS_IN;
+    /**
+     * An exact stamp: locked_at = created_at is what makes it one, and a poller lease never equals
+     * created_at (see leaseTimestamp), so a claim — this owner's too — is left alone.
+     */
+    private static final String RELEASE_STAMP_SQL = "UPDATE %s SET locked_by=NULL, locked_at=NULL"
+            + " WHERE event_id=? AND locked_by=? AND locked_at=created_at AND status IN " + PENDING_STATUS_IN;
     protected static final String TERMINAL_STATUS_IN =
             "(" + EventStatus.DONE.code() + "," + EventStatus.DEAD.code() + ")";
 
@@ -105,6 +128,17 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     private final String writerOwnerId;
 
     /**
+     * What an insert writes into {@code locked_by} now: the owner plus the current run's token
+     * ({@code owner#token}), or {@code null} when this store writes rows unowned.
+     *
+     * <p>The token sets this run's stamps apart from any other run of the same owner — a pod
+     * restarted under the same name, an {@code Outbox} rebuilt over this store — so that the
+     * sweep after a run ends ({@link #endStampRun()}) clears only that run's stamps. Every stamp
+     * predicate compares the exact value; a poller lease still writes and fences on the plain owner.
+     */
+    private final AtomicReference<String> stamp;
+
+    /**
      * @see OutboxStore#WRITER_STAMP_MAX_AGE — shared with the writer hook, which skips hot
      * delivery for the same events so an unstamped row is never raced by a hot copy.
      */
@@ -126,6 +160,26 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     protected AbstractJdbcOutboxStore(String tableName, String writerOwnerId) {
         this.tableName = TableNames.validate(tableName);
         this.writerOwnerId = writerOwnerId;
+        this.stamp = new AtomicReference<>(writerOwnerId == null ? null : newStamp(writerOwnerId));
+    }
+
+    private static String newStamp(String owner) {
+        UUID run = UUID.randomUUID();
+        byte[] bits = ByteBuffer.allocate(16)
+                .putLong(run.getMostSignificantBits()).putLong(run.getLeastSignificantBits()).array();
+        return owner + RUN_SEPARATOR + Base64.getUrlEncoder().withoutPadding().encodeToString(bits);
+    }
+
+    /**
+     * The value a stamp predicate compares {@code locked_by} with for {@code owner}: this store's
+     * owner means its current run's stamp; anything else (an ended run's stamp, another owner) is
+     * taken as given. For stamps only — a lease's {@code locked_by} is the plain owner.
+     *
+     * @param owner the owner a caller named
+     * @return the exact {@code locked_by} of that owner's stamp
+     */
+    protected final String stampOf(String owner) {
+        return owner.equals(writerOwnerId) ? stamp.get() : owner;
     }
 
 
@@ -135,29 +189,32 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     }
 
     /**
-     * Reads the column metadata of {@code created_at} and {@code locked_at} (no writes, no DDL) and
-     * refuses a definite mismatch: {@code locked_at} with fewer than 3 fractional-second digits,
-     * or the two columns differing in type, size or precision. Logs and returns when the table or
-     * its metadata cannot be found — another schema, a table created after startup.
+     * Reads the column metadata of {@code created_at}, {@code locked_at} and {@code locked_by} (no
+     * writes, no DDL) and refuses a definite mismatch: {@code locked_at} with fewer than 3
+     * fractional-second digits, the two timestamp columns differing in type, size or precision, or
+     * a {@code locked_by} too narrow for this store's stamp (the owner plus a run suffix). Logs and
+     * returns when the table or its metadata cannot be found — another schema, a table created
+     * after startup.
      */
     @Override
     public void verifySchema(Connection conn) {
-        Map<String, TimestampColumn> columns;
+        Map<String, DeclaredColumn> columns;
         try {
-            columns = timestampColumns(conn);
+            columns = schemaColumns(conn);
         } catch (SQLException e) {
             LOGGER.log(Level.WARNING, "Could not read the metadata of " + tableName
                     + "; skipping the timestamp-column check", e);
             return;
         }
-        TimestampColumn created = columns.get(CREATED_AT);
-        TimestampColumn locked = columns.get(LOCKED_AT);
+        requireStampFits(columns.get(LOCKED_BY));
+        DeclaredColumn created = columns.get(CREATED_AT);
+        DeclaredColumn locked = columns.get(LOCKED_AT);
         if (created == null || locked == null) {
             LOGGER.warning("Columns created_at/locked_at of " + tableName + " not found in the "
                     + "connection's catalog and schema; skipping the timestamp-column check");
             return;
         }
-        if (locked.digits() != TimestampColumn.UNKNOWN && locked.digits() < MIN_LEASE_DIGITS) {
+        if (locked.digits() != DeclaredColumn.UNKNOWN && locked.digits() < MIN_LEASE_DIGITS) {
             throw new IllegalStateException(tableName + ".locked_at keeps " + locked.digits()
                     + " fractional-second digit(s); claim fencing needs at least " + MIN_LEASE_DIGITS
                     + ". Every claimed status write would match no row. Widen the timestamp columns "
@@ -172,28 +229,43 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     }
 
     /**
+     * A stamp longer than {@code locked_by} would be cut short — silently, under non-strict MySQL —
+     * and then match nothing: no fenced hot write would land, and the shutdown sweep would miss it.
+     */
+    private void requireStampFits(DeclaredColumn lockedBy) {
+        String current = stamp.get();
+        if (current == null || lockedBy == null || lockedBy.size() <= 0 || current.length() <= lockedBy.size()) {
+            return;
+        }
+        throw new IllegalStateException(tableName + ".locked_by holds " + lockedBy.size() + " characters, but this "
+                + "store stamps " + current.length() + ": the owner id plus a " + (RUN_TOKEN_LENGTH + 1)
+                + "-character run suffix. Use an owner id of at most " + (lockedBy.size() - RUN_TOKEN_LENGTH - 1)
+                + " characters, or widen locked_by.");
+    }
+
+    /**
      * The columns of the one table the store's unquoted SQL names. Catalog, schema and table are
      * matched literally (getColumns takes LIKE patterns, so an {@code _} would match neighbours),
      * and the name is folded as the database folds unquoted identifiers — a quoted look-alike is
      * a different table. If the connection's scope still matches more than one table, there is
      * no telling which the SQL uses, so nothing is returned.
      */
-    private Map<String, TimestampColumn> timestampColumns(Connection conn) throws SQLException {
+    private Map<String, DeclaredColumn> schemaColumns(Connection conn) throws SQLException {
         DatabaseMetaData metaData = conn.getMetaData();
         String escape = metaData.getSearchStringEscape();
         String schema = conn.getSchema();
         String table = foldUnquoted(metaData, tableName);
-        Map<String, Map<String, TimestampColumn>> byTable = new LinkedHashMap<>();
+        Map<String, Map<String, DeclaredColumn>> byTable = new LinkedHashMap<>();
         try (ResultSet rs = metaData.getColumns(conn.getCatalog(),
                 schema == null ? null : likeLiteral(schema, escape), likeLiteral(table, escape), "%")) {
             while (rs.next()) {
                 String column = rs.getString("COLUMN_NAME").toLowerCase(Locale.ROOT);
-                if (CREATED_AT.equals(column) || LOCKED_AT.equals(column)) {
+                if (CREATED_AT.equals(column) || LOCKED_AT.equals(column) || LOCKED_BY.equals(column)) {
                     String relation = rs.getString("TABLE_CAT") + "." + rs.getString("TABLE_SCHEM") + "."
                             + rs.getString("TABLE_NAME");
-                    byTable.computeIfAbsent(relation, k -> new HashMap<>()).put(column, new TimestampColumn(
+                    byTable.computeIfAbsent(relation, k -> new HashMap<>()).put(column, new DeclaredColumn(
                             rs.getString("TYPE_NAME"), rs.getInt("COLUMN_SIZE"),
-                            fractionalSecondsDigits(rs).orElse(TimestampColumn.UNKNOWN)));
+                            fractionalSecondsDigits(rs).orElse(DeclaredColumn.UNKNOWN)));
                 }
             }
         }
@@ -238,11 +310,11 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
         return column.wasNull() ? OptionalInt.empty() : OptionalInt.of(digits);
     }
 
-    /** One timestamp column's declared shape, as the driver reports it. */
-    private record TimestampColumn(String type, int size, int digits) {
+    /** One column's declared shape, as the driver reports it (digits only mean something for a timestamp). */
+    private record DeclaredColumn(String type, int size, int digits) {
         static final int UNKNOWN = -1;
 
-        boolean sameAs(TimestampColumn other) {
+        boolean sameAs(DeclaredColumn other) {
             return type.equalsIgnoreCase(other.type) && size == other.size && digits == other.digits;
         }
 
@@ -295,7 +367,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
         if (writerOwnerId == null) {
             return null;
         }
-        return occurredAt.isBefore(Instant.now().minus(WRITER_STAMP_MAX_AGE)) ? null : writerOwnerId;
+        return occurredAt.isBefore(Instant.now().minus(WRITER_STAMP_MAX_AGE)) ? null : stamp.get();
     }
 
     @Override
@@ -472,7 +544,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
             return params;
         }
         Object[] all = Arrays.copyOf(params, params.length + 1);
-        all[params.length] = claimOwner;
+        all[params.length] = stampOf(claimOwner);
         return all;
     }
 
@@ -519,7 +591,7 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
                 " AND created_at <= ? ORDER BY created_at, event_id LIMIT ?)";
         int updated = JdbcTemplate.update(conn, claimSql,
                 ownerId, Timestamp.from(nowMs), Timestamp.from(now),
-                ownerId, Timestamp.from(lockExpiry), Timestamp.from(recentCutoff), limit);
+                stampOf(ownerId), Timestamp.from(lockExpiry), Timestamp.from(recentCutoff), limit);
         if (updated == 0) {
             return List.of();
         }
@@ -568,10 +640,8 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
         // clearing a NEWER lease of our OWN: an owner id is reused for the life of the pod, so
         // after a lease expires and the same pod re-claims the row, a copy queued under the old
         // lease would otherwise release the new one out from under the copy riding it.
-        String sql = "UPDATE " + tableName() +
-                " SET locked_by=NULL, locked_at=NULL" +
-                " WHERE event_id=? AND locked_by=? AND locked_at=? AND status IN " + PENDING_STATUS_IN;
-        return JdbcTemplate.update(conn, sql, eventId, claimOwner, Timestamp.from(claimedAt));
+        return JdbcTemplate.update(conn, RELEASE_CLAIM_SQL.formatted(tableName()),
+                eventId, claimOwner, Timestamp.from(claimedAt));
     }
 
     @Override
@@ -579,12 +649,73 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
         if (writerOwner == null) {
             return 0;
         }
-        // locked_at = created_at is what makes it a stamp; a poller lease never equals created_at
-        // (see leaseTimestamp), so a claim — this owner's too — is left alone.
-        String sql = "UPDATE " + tableName() +
-                " SET locked_by=NULL, locked_at=NULL" +
-                " WHERE event_id=? AND locked_by=? AND locked_at=created_at AND status IN " + PENDING_STATUS_IN;
-        return JdbcTemplate.update(conn, sql, eventId, writerOwner);
+        return JdbcTemplate.update(conn, RELEASE_STAMP_SQL.formatted(tableName()), eventId, stampOf(writerOwner));
+    }
+
+    @Override
+    public ReleaseResult releaseHeld(Connection conn, List<Held> held) {
+        List<Held> claims = new ArrayList<>();
+        List<Held> stamps = new ArrayList<>();
+        for (Held one : held) {
+            if (one.owner() != null) {
+                (one.claimedAt() != null ? claims : stamps).add(one);
+            }
+        }
+        ReleaseResult claimed = executeBatch(conn, RELEASE_CLAIM_SQL.formatted(tableName()), claims, true);
+        ReleaseResult stamped = executeBatch(conn, RELEASE_STAMP_SQL.formatted(tableName()), stamps, false);
+        RuntimeException first = claimed.firstFailure() != null ? claimed.firstFailure() : stamped.firstFailure();
+        return new ReleaseResult(claimed.released() + stamped.released(),
+                claimed.failed() + stamped.failed(), first);
+    }
+
+    /**
+     * One batch of exact releases. A count the driver reports as unknown ({@code SUCCESS_NO_INFO})
+     * is not counted released, and after a batch error every statement without a confirmed count
+     * is counted failed — so the result is a lower bound, never an overstatement.
+     */
+    private ReleaseResult executeBatch(Connection conn, String sql, List<Held> batch, boolean lease) {
+        if (batch.isEmpty()) {
+            return new ReleaseResult(0, 0, null);
+        }
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            for (Held one : batch) {
+                ps.setString(1, one.eventId());
+                ps.setString(2, lease ? one.owner() : stampOf(one.owner()));
+                if (lease) {
+                    ps.setTimestamp(3, Timestamp.from(one.claimedAt()));
+                }
+                ps.addBatch();
+            }
+            return new ReleaseResult(confirmed(ps.executeBatch()), 0, null);
+        } catch (BatchUpdateException e) {
+            int[] counts = e.getUpdateCounts();
+            int done = counts == null ? 0 : (int) Arrays.stream(counts).filter(c -> c >= 0).count();
+            return new ReleaseResult(confirmed(counts), batch.size() - done,
+                    new OutboxStoreException("Failed to release " + (batch.size() - done) + " of " + batch.size(), e));
+        } catch (SQLException e) {
+            return new ReleaseResult(0, batch.size(),
+                    new OutboxStoreException("Failed to release " + batch.size() + " held row(s)", e));
+        }
+    }
+
+    private static int confirmed(int[] counts) {
+        return counts == null ? 0 : Arrays.stream(counts).filter(c -> c > 0).sum();
+    }
+
+    @Override
+    public Optional<String> endStampRun() {
+        if (writerOwnerId == null) {
+            return Optional.empty();
+        }
+        return Optional.of(stamp.getAndSet(newStamp(writerOwnerId)));
+    }
+
+    @Override
+    public List<String> findStamped(Connection conn, String stamp, int limit) {
+        // A plain read: no row locks, so the by-id releases that follow touch only these rows.
+        String sql = "SELECT event_id FROM " + tableName()
+                + " WHERE locked_by=? AND locked_at=created_at AND status IN " + PENDING_STATUS_IN + " LIMIT ?";
+        return JdbcTemplate.query(conn, sql, rs -> rs.getString(1), stamp, limit);
     }
 
     @Override

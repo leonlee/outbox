@@ -92,7 +92,7 @@ public final class MySqlOutboxStore extends AbstractJdbcOutboxStore {
                 " AND created_at <= ? ORDER BY created_at, event_id LIMIT ?" +
                 " FOR UPDATE SKIP LOCKED";
         List<OutboxEvent> events = JdbcTemplate.query(conn, lockSql, EVENT_ROW_MAPPER,
-                Timestamp.from(now), ownerId, Timestamp.from(lockExpiry),
+                Timestamp.from(now), stampOf(ownerId), Timestamp.from(lockExpiry),
                 Timestamp.from(recentCutoff), limit);
         if (events.isEmpty()) {
             return List.of();

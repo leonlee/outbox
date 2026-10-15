@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
+import java.sql.Statement;
 
 @DockerAvailable
 @Testcontainers
@@ -64,6 +65,13 @@ class PostgresOutboxStoreIntegrationTest extends AbstractOutboxStoreIntegrationT
     @Override
     AbstractJdbcOutboxStore stampingStore(String owner) {
         return new PostgresOutboxStore("outbox_event", owner);
+    }
+
+    @Override
+    void shortLockWait(Connection conn) throws Exception {
+        try (Statement st = conn.createStatement()) {
+            st.execute("SET lock_timeout = '1s'");
+        }
     }
 
     @Override

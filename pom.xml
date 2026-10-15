@@ -51,7 +51,7 @@
         <h2.version>2.5.252</h2.version>
         <ulid-creator.version>5.2.4</ulid-creator.version>
         <spring-boot.version>4.1.1</spring-boot.version>
-        <mysql-connector.version>9.6.0</mysql-connector.version>
+        <mysql-connector.version>26.7.0</mysql-connector.version>
         <postgresql.version>42.7.13</postgresql.version>
         <hikaricp.version>7.1.0</hikaricp.version>
         <testcontainers.version>2.0.5</testcontainers.version>

@@ -3459,26 +3459,52 @@ class OutboxDispatcherTest {
 
     /**
      * Copies still queued when the workers stop never run, so their rows are handed back at once
-     * instead of waiting for the lock timeout: a cold copy's lease, a claim handed over to a copy,
-     * and a hot copy's writer stamp.
+     * instead of waiting for the lock timeout: a hot copy's writer stamp, a claim handed over to a
+     * copy, and a cold copy's lease. One statement each: a handed-over claim has replaced the copy's
+     * own lease and stamp on the row.
      */
     @Test
     void closeReleasesWhatQueuedCopiesHeld() {
         var store = new ExclusiveStore();
-        EventEnvelope hot = EventEnvelope.ofJson(ONCE, "{}");
+        EventEnvelope stamped = EventEnvelope.ofJson(ONCE, "{}");
+        EventEnvelope reclaimed = EventEnvelope.ofJson(ONCE, "{}");
         EventEnvelope claimed = EventEnvelope.ofJson(ONCE, "{}");
+        EventEnvelope claimedAgain = EventEnvelope.ofJson(ONCE, "{}");
         var d = exclusive(store, new DefaultListenerRegistry(), 0, 1000);
-        assertTrue(d.enqueueHot(new QueuedEvent(hot, QueuedEvent.Source.HOT, 0)));
-        assertTrue(d.enqueueCold(cold(hot, L2)), "turned away: its claim is handed to the hot copy");
+        assertTrue(d.enqueueHot(new QueuedEvent(stamped, QueuedEvent.Source.HOT, 0)));
+        assertTrue(d.enqueueHot(new QueuedEvent(reclaimed, QueuedEvent.Source.HOT, 0)));
+        assertTrue(d.enqueueCold(cold(reclaimed, L2)), "turned away: its claim is handed to the hot copy");
         assertTrue(d.enqueueCold(cold(claimed, L1)));
+        assertTrue(d.enqueueCold(cold(claimedAgain, L1)));
+        assertTrue(d.enqueueCold(cold(claimedAgain, L2)), "turned away: the newer claim replaces the queued copy's");
         assertEquals(List.of(), store.released);
 
         d.close();
 
         assertEquals(List.of(
-                hot.eventId() + ":" + at(L2),
-                hot.eventId() + ":stamp@pod-a",
-                claimed.eventId() + ":" + at(L1)), store.released);
+                stamped.eventId() + ":stamp@pod-a",
+                reclaimed.eventId() + ":" + at(L2),
+                claimed.eventId() + ":" + at(L1),
+                claimedAgain.eventId() + ":" + at(L2)), store.released);
+    }
+
+    /** Copies that hold nothing (single-node: no lease, no stamp) need no connection at all. */
+    @Test
+    void copiesHoldingNothingNeedNoConnection() {
+        AtomicInteger connections = new AtomicInteger();
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(() -> {
+                    connections.incrementAndGet();
+                    return stubCp().getConnection();
+                })
+                .outboxStore(new ExclusiveStore()).listenerRegistry(new DefaultListenerRegistry())
+                .workerCount(0)
+                .build();
+        assertTrue(d.enqueueCold(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.COLD, 0)));
+
+        d.close();
+
+        assertEquals(0, connections.get());
     }
 
     /** A non-exclusive claim cannot prove no other copy holds the same lease, so nothing is released. */
@@ -3567,12 +3593,15 @@ class OutboxDispatcherTest {
         });
         var store = new ExclusiveStore();
         var d = exclusive(store, registry, 1, 50);
-        assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L1)));
-        assertTrue(running.await(5, TimeUnit.SECONDS));
-        assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L2)));
+        try {
+            assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L1)));
+            assertTrue(running.await(5, TimeUnit.SECONDS));
+            assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L2)));
 
-        d.close();
-        stop.set(true);
+            d.close();
+        } finally {
+            stop.set(true);
+        }
 
         assertEquals(List.of(), store.released);
     }
@@ -3694,15 +3723,11 @@ class OutboxDispatcherTest {
         assertEquals(List.of(), store.released);
     }
 
-    /**
-     * A statement that stalls past the budget does not hold up close(); once it returns, the release
-     * stops — neither the same copy's stamp nor the next row is touched.
-     */
+    /** A statement stalled past the budget does not hold up close(); once it returns, the next row is not touched. */
     @Test
     void aStalledReleaseDoesNotHoldUpCloseAndStopsAfterIt() throws Exception {
         CountDownLatch unblock = new CountDownLatch(1);
         CountDownLatch connClosed = new CountDownLatch(1);
-        List<String> calls = new CopyOnWriteArrayList<>();
         var store = new ExclusiveStore() {
             @Override
             public int releaseClaim(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
@@ -3713,7 +3738,7 @@ class OutboxDispatcherTest {
         EventEnvelope hot = EventEnvelope.ofJson(ONCE, "{}");
         EventEnvelope next = EventEnvelope.ofJson(ONCE, "{}");
         var d = OutboxDispatcher.builder()
-                .connectionProvider(recordingCp(calls, connClosed))
+                .connectionProvider(recordingCp(new CopyOnWriteArrayList<>(), connClosed))
                 .outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
                 .workerCount(0).claimOwner("pod-a")
                 .build();
@@ -3729,7 +3754,6 @@ class OutboxDispatcherTest {
         assertTrue(tookMs < OutboxDispatcher.RELEASE_ON_CLOSE_BUDGET_MS + 500, "took " + tookMs + "ms");
         assertTrue(connClosed.await(5, TimeUnit.SECONDS));
         assertEquals(List.of(hot.eventId() + ":" + at(L2)), store.released);
-        assertTrue(calls.contains("setNetworkTimeout"), "the driver bounds a statement still running: " + calls);
     }
 
     /** An interrupt during the release returns close() at once and stops the release after its statement. */

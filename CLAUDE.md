@@ -224,9 +224,10 @@ outbox-jdbc/src/main/java/
   newer acquisition; opt-in `suppressReplays` keeps settled entries until TTL (requires a TTL tracker); opt-in
   `hotTripMs` breaker refuses hot enqueue once the hot queue head is too old (recovers at half). `close()` drains the
   queues with `drainTo`; after confirmed worker termination on an exclusive-claim store it releases what each dropped
-  copy held (cold lease, handed-over claim, hot writer stamp) on its own thread and one connection; `close()` waits
-  at most `RELEASE_ON_CLOSE_BUDGET_MS` (or until interrupted), then the release stops before its next statement
-  (skipped if workers did not stop or the closer is interrupted; a copy published after the drain expires). `hotPathEnabled(false)`
+  copy still holds (one statement: handed-over claim, else own lease, else hot writer stamp; none = no connection) on
+  its own thread and one connection; `close()` waits at most `RELEASE_ON_CLOSE_BUDGET_MS` (or until interrupted), then
+  cancels it via a flag checked before each statement (skipped if workers did not stop or the closer is interrupted; a
+  copy published after the drain expires). `hotPathEnabled(false)`
   = poller-only delivery (`enqueueHot` refuses). Claim-leased cold copies and a `claimOwner` need a tracker with
   `supportsIsRunning()` (`DefaultInFlightTracker`); a `claimOwner` must equal the store's `writerOwnerId()` if it
   stamps. A listener's leftover interrupt is cleared before the status write. Dispatcher, poller and writer hook wrap

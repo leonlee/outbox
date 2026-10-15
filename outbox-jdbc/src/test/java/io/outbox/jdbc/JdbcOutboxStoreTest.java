@@ -9,6 +9,8 @@ import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Proxy;
+import java.sql.BatchUpdateException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -1195,7 +1197,7 @@ class JdbcOutboxStoreTest {
             assertNotEquals(ended, lockedByOf(conn, reused.eventId()), "the same store stamps a new run");
             assertNotEquals(lockedByOf(conn, reused.eventId()), lockedByOf(conn, rebuilt.eventId()));
 
-            assertEquals(List.of(old.eventId()), store.findStamped(conn, ended, 10));
+            assertEquals(List.of(old.eventId()), store.findStamped(conn, ended, null, 10));
             OutboxStore.ReleaseResult result = store.releaseHeld(conn, List.of(
                     new OutboxStore.Held(old.eventId(), ended, null),
                     new OutboxStore.Held(reused.eventId(), ended, null),
@@ -1206,7 +1208,40 @@ class JdbcOutboxStoreTest {
             assertNull(lockedByOf(conn, old.eventId()));
             assertStampOf(POD_A, lockedByOf(conn, reused.eventId()), "a later run keeps its stamp");
             assertStampOf(POD_A, lockedByOf(conn, rebuilt.eventId()), "a later run keeps its stamp");
-            assertEquals(List.of(), store.findStamped(conn, ended, 10));
+            assertEquals(List.of(), store.findStamped(conn, ended, null, 10));
+        }
+    }
+
+    /** findStamped pages by event id: ascending, each page after the last id of the one before. */
+    @Test
+    void findStampedPagesByEventId() throws SQLException {
+        H2OutboxStore store = new H2OutboxStore(TABLE, POD_A);
+        try (Connection conn = dataSource.getConnection()) {
+            for (int i = 0; i < 3; i++) {
+                store.insertNew(conn, event());
+            }
+            String ended = store.endStampRun().orElseThrow();
+            List<String> all = store.findStamped(conn, ended, null, 10);
+            assertEquals(all.stream().sorted().toList(), all, "ascending");
+            assertEquals(3, all.size());
+
+            List<String> first = store.findStamped(conn, ended, null, 2);
+            List<String> rest = store.findStamped(conn, ended, first.get(1), 2);
+
+            assertEquals(all.subList(0, 2), first);
+            assertEquals(all.subList(2, 3), rest);
+        }
+    }
+
+    /** The first page has no lower bound: even an empty event id, which nothing rejects, is found. */
+    @Test
+    void findStampedFirstPageIncludesAnyEventId() throws SQLException {
+        H2OutboxStore store = new H2OutboxStore(TABLE, POD_A);
+        try (Connection conn = dataSource.getConnection()) {
+            store.insertNew(conn, EventEnvelope.builder("TestEvent").eventId("").payloadJson("{}").build());
+            String ended = store.endStampRun().orElseThrow();
+
+            assertEquals(List.of(""), store.findStamped(conn, ended, null, 10));
         }
     }
 
@@ -1297,6 +1332,66 @@ class JdbcOutboxStoreTest {
         assertEquals(0, failed.released());
         assertEquals(2, failed.failed());
         assertNotNull(failed.firstFailure());
+    }
+
+    /**
+     * Batch outcomes are counted honestly: a success with an unknown count is neither released nor
+     * failed, a failed command or one without an outcome is failed, and counts the driver returned
+     * survive an error closing the statement.
+     */
+    @Test
+    void releaseHeldCountsBatchOutcomesHonestly() {
+        H2OutboxStore store = new H2OutboxStore(TABLE, POD_A);
+        List<OutboxStore.Held> three = List.of(new OutboxStore.Held("a", POD_A, Instant.now()),
+                new OutboxStore.Held("b", POD_A, Instant.now()), new OutboxStore.Held("c", POD_A, Instant.now()));
+        List<OutboxStore.Held> two = three.subList(0, 2);
+        int unknown = java.sql.Statement.SUCCESS_NO_INFO;
+        int failed = java.sql.Statement.EXECUTE_FAILED;
+
+        OutboxStore.ReleaseResult mixed = store.releaseHeld(batchConn(() -> {
+            throw new BatchUpdateException(new int[]{1, unknown, failed});
+        }, false), three);
+        assertEquals(1, mixed.released());
+        assertEquals(1, mixed.failed(), "only the command that failed");
+        assertNotNull(mixed.firstFailure());
+
+        OutboxStore.ReleaseResult stopped = store.releaseHeld(batchConn(() -> {
+            throw new BatchUpdateException(new int[]{1});
+        }, false), three);
+        assertEquals(1, stopped.released());
+        assertEquals(2, stopped.failed(), "the commands the driver never reported");
+
+        OutboxStore.ReleaseResult closeFailed = store.releaseHeld(batchConn(() -> new int[]{1, 1}, true), two);
+        assertEquals(2, closeFailed.released(), "counts returned before the close survive it");
+        assertEquals(0, closeFailed.failed());
+        assertNotNull(closeFailed.firstFailure());
+
+        assertEquals(new OutboxStore.ReleaseResult(0, 0, null),
+                store.releaseHeld(batchConn(() -> new int[]{unknown, unknown}, false), two),
+                "done, counts unknown: neither released nor failed");
+    }
+
+    @FunctionalInterface
+    private interface BatchExecution {
+        int[] run() throws SQLException;
+    }
+
+    /** A connection whose statements run {@code execution} for executeBatch and may fail to close. */
+    private static Connection batchConn(BatchExecution execution, boolean closeFails) {
+        PreparedStatement ps = (PreparedStatement) Proxy.newProxyInstance(PreparedStatement.class.getClassLoader(),
+                new Class<?>[]{PreparedStatement.class}, (proxy, method, args) -> switch (method.getName()) {
+                    case "executeBatch" -> execution.run();
+                    case "close" -> {
+                        if (closeFails) {
+                            throw new SQLException("connection reset on close");
+                        }
+                        yield null;
+                    }
+                    default -> null;
+                });
+        return (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> "prepareStatement".equals(method.getName()) ? ps : null);
     }
 
     private static EventEnvelope event() {

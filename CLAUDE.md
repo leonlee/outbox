@@ -174,8 +174,9 @@ outbox-jdbc/src/main/java/
   `claimPending` really locks; `releaseClaim(conn, id, owner, claimedAt)` drops only that exact lease;
   `releaseStamp(conn, id, owner)` drops only an unclaimed writer stamp (`locked_at = created_at`);
   `releaseHeld(conn, List<Held>)` releases leases and stamps at once (JDBC: batched; failures reported in a
-  `ReleaseResult`, `released` a lower bound); `endStampRun()` (in-memory rotation) and `findStamped(conn, stamp, limit)`
-  (lock-free read) let the dispatcher sweep an ended run's stamps;
+  `ReleaseResult`, `released` a lower bound, `failed` = failed or no outcome); `endStampRun()` (in-memory rotation) and
+  `findStamped(conn, stamp, afterEventId, limit)` (lock-free read, keyset-paged by event id) let the dispatcher sweep an
+  ended run's stamps;
   `leaseTimestamp(now)` is the single definition of the `locked_at` a claim writes.
   The four status writes have claim-fenced overloads `(…, claimOwner, claimedAt)`; the dispatcher and poller call the
   plain overload for an unfenced write, so a store's override of it still applies. Owner `null` = unfenced; a
@@ -235,7 +236,7 @@ outbox-jdbc/src/main/java/
   `RELEASE_BATCH_SIZE`: known leases (each dropped copy's handed-over claim or own lease, and the exact fence of every
   status write or claim release that failed outright once the forced shutdown's interrupt was in play — `holdIfCutShort`),
   then known hot stamps pinned to the ended run, then a sweep of the ended run's remaining stamps (lock-free
-  `findStamped`, exact by-id releases; stops on a short read or no progress). `close()` waits at most
+  `findStamped` paged by event id, exact by-id releases; each row read once, stops on a short page). `close()` waits at most
   `RELEASE_ON_CLOSE_BUDGET_MS` (or until interrupted), then cancels it via a flag checked before each batch and read
   (skipped if workers did not stop or the closer is interrupted). An enqueue that reaches a queue after the drain takes
   back exactly the entry it inserted (`offerUnlessClosed`, identity) and refuses it. `hotPathEnabled(false)`

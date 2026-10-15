@@ -538,7 +538,7 @@ abstract class AbstractOutboxStoreIntegrationTest {
             podA.insertNew(conn, reused);
             stampingStore("pod-a").insertNew(conn, rebuilt);
 
-            assertEquals(List.of(old.eventId()), podA.findStamped(conn, ended, 10));
+            assertEquals(List.of(old.eventId()), podA.findStamped(conn, ended, null, 10));
             OutboxStore.ReleaseResult result = podA.releaseHeld(conn, List.of(
                     new OutboxStore.Held(old.eventId(), ended, null),
                     new OutboxStore.Held(reused.eventId(), ended, null),
@@ -581,7 +581,7 @@ abstract class AbstractOutboxStoreIntegrationTest {
             sweeper.setAutoCommit(true);
             shortLockWait(sweeper);
 
-            List<String> found = podA.findStamped(sweeper, ended, 10);
+            List<String> found = podA.findStamped(sweeper, ended, null, 10);
             OutboxStore.ReleaseResult result = podA.releaseHeld(sweeper,
                     found.stream().map(id -> new OutboxStore.Held(id, ended, null)).toList());
 

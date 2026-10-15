@@ -452,18 +452,20 @@ public interface OutboxStore {
     }
 
     /**
-     * Event ids of up to {@code limit} pending rows still carrying exactly {@code stamp} unclaimed
-     * ({@code locked_by = stamp AND locked_at = created_at}). A plain read that takes no row locks,
-     * so the releases that follow touch only these rows.
+     * Event ids, in ascending order and after {@code afterEventId}, of up to {@code limit} pending rows
+     * still carrying exactly {@code stamp} unclaimed ({@code locked_by = stamp AND locked_at = created_at}).
+     * A plain read that takes no row locks, so the releases that follow touch only these rows; read
+     * page after page from the last id returned, each row is seen once, whatever the releases report.
      *
      * <p>Defaults to none.
      *
-     * @param conn  the connection to use
-     * @param stamp an ended run's stamp, from {@link #endStampRun()}
-     * @param limit the most ids to return
-     * @return the matching event ids
+     * @param conn         the connection to use
+     * @param stamp        an ended run's stamp, from {@link #endStampRun()}
+     * @param afterEventId the last id of the previous page, or {@code null} for the first page
+     * @param limit        the most ids to return
+     * @return the matching event ids, ascending
      */
-    default List<String> findStamped(Connection conn, String stamp, int limit) {
+    default List<String> findStamped(Connection conn, String stamp, String afterEventId, int limit) {
         return List.of();
     }
 

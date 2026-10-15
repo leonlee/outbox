@@ -16,6 +16,7 @@ import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
@@ -669,14 +670,18 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     }
 
     /**
-     * One batch of exact releases. A count the driver reports as unknown ({@code SUCCESS_NO_INFO})
-     * is not counted released, and after a batch error every statement without a confirmed count
-     * is counted failed — so the result is a lower bound, never an overstatement.
+     * One batch of exact releases. Counted released: commands that report affected rows. Counted
+     * failed: commands that report {@code EXECUTE_FAILED}, and those with no outcome at all (not
+     * executed, or lost with the batch). A success whose count is unknown ({@code SUCCESS_NO_INFO})
+     * is neither — so the result never overstates either side. Counts the driver already returned
+     * survive an error closing the statement.
      */
     private ReleaseResult executeBatch(Connection conn, String sql, List<Held> batch, boolean lease) {
         if (batch.isEmpty()) {
             return new ReleaseResult(0, 0, null);
         }
+        int[] counts = null;
+        RuntimeException failure = null;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             for (Held one : batch) {
                 ps.setString(1, one.eventId());
@@ -686,20 +691,22 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
                 }
                 ps.addBatch();
             }
-            return new ReleaseResult(confirmed(ps.executeBatch()), 0, null);
+            counts = ps.executeBatch();
         } catch (BatchUpdateException e) {
-            int[] counts = e.getUpdateCounts();
-            int done = counts == null ? 0 : (int) Arrays.stream(counts).filter(c -> c >= 0).count();
-            return new ReleaseResult(confirmed(counts), batch.size() - done,
-                    new OutboxStoreException("Failed to release " + (batch.size() - done) + " of " + batch.size(), e));
+            counts = counts != null ? counts : e.getUpdateCounts();
+            failure = new OutboxStoreException("Batch release of " + batch.size() + " held row(s) failed", e);
         } catch (SQLException e) {
-            return new ReleaseResult(0, batch.size(),
-                    new OutboxStoreException("Failed to release " + batch.size() + " held row(s)", e));
+            failure = new OutboxStoreException("Batch release of " + batch.size() + " held row(s) failed", e);
         }
+        return outcome(batch.size(), counts, failure);
     }
 
-    private static int confirmed(int[] counts) {
-        return counts == null ? 0 : Arrays.stream(counts).filter(c -> c > 0).sum();
+    private static ReleaseResult outcome(int size, int[] counts, RuntimeException failure) {
+        int[] known = counts == null ? new int[0] : counts;
+        int released = Arrays.stream(known).filter(c -> c > 0).sum();
+        int failedCommands = (int) Arrays.stream(known).filter(c -> c == Statement.EXECUTE_FAILED).count();
+        int noOutcome = Math.max(0, size - known.length);
+        return new ReleaseResult(released, failedCommands + noOutcome, failure);
     }
 
     @Override
@@ -711,11 +718,18 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     }
 
     @Override
-    public List<String> findStamped(Connection conn, String stamp, int limit) {
-        // A plain read: no row locks, so the by-id releases that follow touch only these rows.
-        String sql = "SELECT event_id FROM " + tableName()
-                + " WHERE locked_by=? AND locked_at=created_at AND status IN " + PENDING_STATUS_IN + " LIMIT ?";
-        return JdbcTemplate.query(conn, sql, rs -> rs.getString(1), stamp, limit);
+    public List<String> findStamped(Connection conn, String stamp, String afterEventId, int limit) {
+        // A plain read: no row locks, so the by-id releases that follow touch only these rows. Keyset
+        // paging on the primary key: each page starts past the last, so no row is read twice. The first
+        // page has no lower bound at all: no sentinel value can sort before every accepted id.
+        String stamped = " locked_by=? AND locked_at=created_at AND status IN " + PENDING_STATUS_IN
+                + " ORDER BY event_id LIMIT ?";
+        if (afterEventId == null) {
+            return JdbcTemplate.query(conn, "SELECT event_id FROM " + tableName() + " WHERE" + stamped,
+                    rs -> rs.getString(1), stamp, limit);
+        }
+        return JdbcTemplate.query(conn, "SELECT event_id FROM " + tableName() + " WHERE event_id > ? AND" + stamped,
+                rs -> rs.getString(1), afterEventId, stamp, limit);
     }
 
     @Override

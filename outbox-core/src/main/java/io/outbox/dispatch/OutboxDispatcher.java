@@ -1069,7 +1069,7 @@ public final class OutboxDispatcher implements AutoCloseable {
      * ended run's remaining stamps — found by a plain, lock-free read and released by exact id, a
      * batch at a time, so no statement locks rows beyond its own. Cancellation is a flag, not the
      * thread's interrupt, so a callee that swallows the interrupt cannot restart it; checked before
-     * each batch and each read, it stops all but one statement already being issued. Once it has a
+     * each batch and each read, it stops all but a batch already being issued. Once it has a
      * connection it always ends with one INFO report, cancelled or not.
      */
     private static void release(OutboxStore store, ConnectionProvider provider, List<Held> known,
@@ -1102,23 +1102,25 @@ public final class OutboxDispatcher implements AutoCloseable {
 
     /**
      * The ended run's stamps not already released by id: hot copies the dispatcher refused or never
-     * queued, rows written after it stopped delivering. Stops when a read comes back short, when a
-     * batch frees nothing (no progress), or on a failure.
+     * queued, rows written after it stopped delivering. Pages through them by event id, so each row
+     * is read once — a row it cannot release is passed over, and a release whose count the driver
+     * cannot report does not end the sweep. Stops when a read comes back short, or on a failure.
      */
     private static void sweep(OutboxStore store, Connection conn, String run, AtomicBoolean cancelled,
                               ReleaseTally tally) {
+        String after = null; // the first page has no lower bound
         try {
             while (!cancelled.get()) {
-                List<String> ids = store.findStamped(conn, run, RELEASE_BATCH_SIZE);
+                List<String> ids = store.findStamped(conn, run, after, RELEASE_BATCH_SIZE);
                 if (ids.isEmpty() || cancelled.get()) {
                     return;
                 }
                 List<Held> batch = ids.stream().map(id -> new Held(id, run, null)).toList();
-                ReleaseResult result = store.releaseHeld(conn, batch);
-                tally.swept(batch.size(), result);
-                if (ids.size() < RELEASE_BATCH_SIZE || result.released() == 0) {
+                tally.swept(batch.size(), store.releaseHeld(conn, batch));
+                if (ids.size() < RELEASE_BATCH_SIZE) {
                     return;
                 }
+                after = ids.get(ids.size() - 1);
             }
         } catch (RuntimeException e) {
             tally.sweepFailure = e;
@@ -1155,9 +1157,9 @@ public final class OutboxDispatcher implements AutoCloseable {
 
         void report(int knownCount, boolean sweptRun) {
             if (firstFailure != null) {
-                logger.log(Level.WARNING, "Failed to release the claims of " + failed + " of " + knownCount
-                        + " event(s) left unsettled at shutdown; they are retaken after the lock timeout "
-                        + "(first failure shown)", firstFailure);
+                logger.log(Level.WARNING, "Shutdown release: " + failed + " of " + knownCount + " release(s) "
+                        + "failed or have no known outcome; any row still held is retaken after the lock timeout "
+                        + "(first error shown)", firstFailure);
             }
             if (sweepFailure != null) {
                 logger.log(Level.WARNING, "Could not release every remaining writer stamp of this run at "

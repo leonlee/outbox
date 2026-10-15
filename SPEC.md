@@ -653,8 +653,9 @@ public interface OutboxStore {
     // End the current stamping run: later inserts stamp a new run; returns the ended run's exact stamp (default empty)
     default Optional<String> endStampRun();
 
-    // Ids of pending rows still carrying exactly this stamp unclaimed; a plain, lock-free read (default none)
-    default List<String> findStamped(Connection conn, String stamp, int limit);
+    // Ids, ascending and after afterEventId (null for the first page), of pending rows still carrying exactly this stamp
+    // unclaimed; a plain, lock-free read, paged by event id (default none)
+    default List<String> findStamped(Connection conn, String stamp, String afterEventId, int limit);
 
     // The locked_at value claimPending writes for a claim taken at `now`
     default Instant leaseTimestamp(Instant now);
@@ -903,15 +904,18 @@ still holds:
 2. **Known stamps.** A dropped hot copy's writer stamp, and that of a cut-short hot write.
 3. **The rest of the run's stamps.** `close()` first ends the store's stamping run (`endStampRun()`, in memory, on the
    closing thread, before any release starts), so rows written from then on — by this store's next user, too — carry a
-   new run. The known stamps are pinned to the ended run's exact stamp. The sweep then reads the ended run's remaining
-   unclaimed stamps with a plain, lock-free `findStamped` and releases them by exact id in batches, until a read comes
-   back short or a batch frees nothing: hot copies the dispatcher refused (full queue, open breaker, a commit after
-   `close()` began) or never queued. No statement locks rows beyond its own, so another owner's locked rows neither
+   new run. The known stamps are pinned to the ended run's exact stamp. The sweep then pages through the ended run's
+   remaining unclaimed stamps by event id with a plain, lock-free `findStamped` and releases each page by exact id,
+   until a page comes back short: hot copies the dispatcher refused (full queue, open breaker, a commit after `close()`
+   began) or never queued. Each row is read once, so a row it cannot release is passed over, and a release whose count
+   the driver cannot report does not stop it. No statement locks rows beyond its own, so another owner's locked rows neither
    block it nor are touched.
 
 Other nodes then take those rows at once instead of after the lock timeout. A statement that ran but matched no row
-holds nothing. A failure before the forced shutdown, the graceful drain included, is not tracked: its row keeps the
-claim until the lock timeout, as before. An insert that races the run's end can keep the ended run's stamp, and a
+holds nothing. A failure before the forced shutdown, the graceful drain included, is not tracked: an exact lease keeps
+the claim until the lock timeout, as before. A hot copy's stamp, though, belongs to the run the sweep clears, so a hot
+copy whose status write failed earlier is released too and retried at once by another node rather than after the lock
+timeout (its attempt was not recorded either way). An insert that races the run's end can keep the ended run's stamp, and a
 release issued by a producer or the poller after the workers stopped can fail; such rows wait for the lock timeout.
 Copies that hold nothing (single-node: no lease, no stamp) need no connection.
 
@@ -923,7 +927,8 @@ still runs. This bounds `close()`, not the cleanup's I/O: a call already in prog
 statement, closing the connection) can finish after `close()` returns, bounded only by the driver's or pool's own
 timeouts. One WARNING summarises failures; once it has a connection, it ends with one INFO line, cancelled or not,
 reporting the rows handed back — a lower bound: a row settled or claimed again since updates nothing, and a driver may
-report a batch count as unknown — with failed and not-reached counts and the sweep's count. Rows it did not release
+report a batch count as unknown — with failed-or-unknown and not-reached counts and the sweep's count. A release counts
+as failed only when its command failed or reported no outcome; a success whose count is unknown is neither. Rows it did not release
 expire as before. It is skipped when the workers did not stop within the forced-shutdown grace (5 s after
 `shutdownNow`) or the closing thread is already interrupted.
 

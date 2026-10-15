@@ -8,6 +8,8 @@ import io.outbox.UnrecoverableException;
 import io.outbox.registry.DefaultListenerRegistry;
 import io.outbox.spi.ConnectionProvider;
 import io.outbox.spi.MetricsExporter;
+import io.outbox.spi.OutboxStore.Held;
+import io.outbox.spi.OutboxStore.ReleaseResult;
 import io.outbox.util.IsolatingMetricsExporter;
 import org.junit.jupiter.api.Test;
 
@@ -34,7 +36,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
-import java.util.stream.IntStream;
 import java.util.function.IntSupplier;
 import java.util.logging.Handler;
 import java.util.logging.LogRecord;
@@ -3580,7 +3581,7 @@ class OutboxDispatcherTest {
 
         assertTrue(messages.stream().anyMatch(m -> m.startsWith("Shutdown release handed back 2 of 4 row(s)")
                 && m.contains("(1 failed, 0 not reached)")), "got: " + messages);
-        assertTrue(messages.stream().anyMatch(m -> m.startsWith("Failed to release the claims of 1 of 4")),
+        assertTrue(messages.stream().anyMatch(m -> m.startsWith("Shutdown release: 1 of 4 release(s) failed")),
                 "got: " + messages);
         assertTrue(messages.stream().anyMatch(m -> m.contains("closing the connection failed after 4 statement(s)")),
                 "got: " + messages);
@@ -3678,8 +3679,9 @@ class OutboxDispatcherTest {
         }
 
         @Override
-        public List<String> findStamped(Connection conn, String stamp, int limit) {
-            return stamps.entrySet().stream().filter(e -> e.getValue().equals(stamp))
+        public List<String> findStamped(Connection conn, String stamp, String afterEventId, int limit) {
+            return stamps.entrySet().stream()
+                    .filter(e -> e.getValue().equals(stamp) && (afterEventId == null || e.getKey().compareTo(afterEventId) > 0))
                     .map(Map.Entry::getKey).sorted().limit(limit).toList();
         }
 
@@ -3715,37 +3717,104 @@ class OutboxDispatcherTest {
                 && m.contains("and 1 more writer stamp(s) of this run")), "got: " + messages);
     }
 
-    /** With nothing queued the run's stamps are still swept: every refused hot copy left one. */
+    /**
+     * With nothing queued the run's stamps are still swept: every refused hot copy left one. The first
+     * page has no lower bound, so even an empty event id is reached.
+     */
     @Test
     void closeSweepsEvenWithNothingQueued() {
         var store = new RunStore();
         store.stamps.put("refused", "pod-a#r1");
+        store.stamps.put("", "pod-a#r1");
         var d = exclusive(store, new DefaultListenerRegistry(), 0, 1000);
 
         d.close();
 
-        assertEquals(List.of("refused:stamp@pod-a#r1"), store.released);
+        assertEquals(List.of(":stamp@pod-a#r1", "refused:stamp@pod-a#r1"), store.released);
     }
 
     /**
-     * A sweep that finds rows it cannot release (a full read, nothing freed) stops at once rather than
-     * reading the same rows again until the budget runs out.
+     * The sweep pages through the run's stamps by event id, so each row is read once: rows it cannot
+     * release are passed over rather than read again until the budget runs out.
      */
     @Test
-    void aSweepThatMakesNoProgressStops() {
+    void aSweepReadsEachRowOnce() {
         AtomicInteger reads = new AtomicInteger();
         var store = new RunStore() {
             @Override
-            public List<String> findStamped(Connection conn, String stamp, int limit) {
+            public List<String> findStamped(Connection conn, String stamp, String afterEventId, int limit) {
                 reads.incrementAndGet();
-                return IntStream.range(0, limit).mapToObj(i -> "stuck-" + i).toList();
+                return super.findStamped(conn, stamp, afterEventId, limit);
+            }
+
+            @Override
+            public int releaseStamp(Connection conn, String eventId, String writerOwner) {
+                return 0; // stuck: claimed meanwhile, say
             }
         };
+        int stuck = OutboxDispatcher.RELEASE_BATCH_SIZE + 50;
+        for (int i = 0; i < stuck; i++) {
+            store.stamps.put(String.format("stuck-%04d", i), "pod-a#r1");
+        }
         var d = exclusive(store, new DefaultListenerRegistry(), 0, 1000);
 
         d.close();
 
-        assertEquals(1, reads.get());
+        assertEquals(2, reads.get(), "a full page, then the short rest");
+    }
+
+    /**
+     * A release whose count the driver cannot report (SUCCESS_NO_INFO) still released its rows; the
+     * sweep goes on to the next page instead of taking the zero for "no progress".
+     */
+    @Test
+    void aSweepGoesOnWhenReleaseCountsAreUnknown() {
+        var store = new RunStore() {
+            @Override
+            public ReleaseResult releaseHeld(Connection conn, List<Held> held) {
+                super.releaseHeld(conn, held);
+                return new ReleaseResult(0, 0, null); // done, count unknown
+            }
+        };
+        int rows = 2 * OutboxDispatcher.RELEASE_BATCH_SIZE + 1;
+        for (int i = 0; i < rows; i++) {
+            store.stamps.put(String.format("refused-%04d", i), "pod-a#r1");
+        }
+        var d = exclusive(store, new DefaultListenerRegistry(), 0, 1000);
+
+        d.close();
+
+        assertEquals(Map.of(), store.stamps, "every page released");
+    }
+
+    /**
+     * Documented trade-off: the sweep clears every remaining stamp of the ended run, so a hot copy
+     * whose status write failed before close() — its attempt never recorded — is released too and
+     * retried at once by another node, instead of after the lock timeout as an exact lease would be.
+     */
+    @Test
+    void theSweepAlsoReleasesAHotCopyWhoseWriteFailedBeforeClose() throws Exception {
+        AtomicInteger retries = new AtomicInteger();
+        var store = new RunStore() {
+            @Override
+            public int markRetry(Connection conn, String eventId, Instant nextAt, String error,
+                                 String claimOwner, Instant claimedAt) {
+                retries.incrementAndGet();
+                throw new IllegalStateException("connection reset");
+            }
+        };
+        EventEnvelope failing = EventEnvelope.ofJson(ONCE, "{}");
+        store.stamps.put(failing.eventId(), "pod-a#r1");
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            throw new IllegalStateException("downstream down");
+        });
+        var d = exclusive(store, registry, 1, 1000);
+        assertTrue(d.enqueueHot(new QueuedEvent(failing, QueuedEvent.Source.HOT, 0)));
+        awaitCount(retries, 1);
+
+        d.close();
+
+        assertEquals(List.of(failing.eventId() + ":stamp@pod-a#r1"), store.released);
     }
 
     /** The run is ended only when the release may run: not on an interrupted close. */

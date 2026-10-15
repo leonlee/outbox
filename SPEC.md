@@ -873,8 +873,11 @@ and waits up to `drainTimeoutMs` before forcing shutdown.
 Copies still queued when the workers stop are dropped; the poller delivers their rows again. On a store whose claim is
 exclusive (`supportsClaimLocking()`), and only once every worker has terminated, `close()` first hands back what each
 dropped copy still holds, one statement per copy: a claim handed over to it, else its own lease (`releaseClaim`, exact
-lease), else a hot copy's writer stamp (`releaseStamp`). Other nodes then take those rows at once instead of after the
-lock timeout. Copies that hold nothing (single-node: no lease, no stamp) need no connection. The cleanup is best effort:
+lease), else a hot copy's writer stamp (`releaseStamp`). The same goes for a copy that was running when `close()`
+began and whose status write then failed outright (typically cancelled by the forced shutdown's interrupt): the exact
+lease or stamp that write was fenced on is handed back too, even when nothing is left queued. A write that ran but
+matched no row, and one that failed before `close()` began, hold nothing to release. Other nodes then take those rows
+at once instead of after the lock timeout. Copies that hold nothing (single-node: no lease, no stamp) need no connection. The cleanup is best effort:
 it runs on its own thread over one auto-commit connection, and `close()` waits for it at most one second; past that,
 or when the closing thread is interrupted meanwhile, `close()` returns and cancels it. Cancellation is checked before
 each statement, so it holds even if a callee swallows the interrupt; a statement already being issued still runs. This

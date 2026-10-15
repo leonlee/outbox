@@ -19,10 +19,12 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -66,6 +68,13 @@ public final class OutboxDispatcher implements AutoCloseable {
     /** Set just before shutdownNow: from then on a worker's interrupt is a cancellation, not a leftover. */
     private volatile boolean forced;
     private final AtomicBoolean running = new AtomicBoolean(true);
+    /**
+     * The exact fence of each status write that failed once close() had begun — typically one the
+     * forced shutdown cancelled — so its claim is handed back with the stranded copies once every
+     * worker has stopped. Bounded: only copies that run after close() began, at most the queue
+     * capacities plus one per worker.
+     */
+    private final Set<Release> failedWrites = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean accepting = new AtomicBoolean(true);
     private boolean closed; // guarded by this
     private final AtomicInteger pollCounter = new AtomicInteger(0);
@@ -787,7 +796,12 @@ public final class OutboxDispatcher implements AutoCloseable {
             // SPI default throws) rather than let a stale copy clear a newer holder's claim.
             String owner = lease != null ? lease.owner() : claimOwner;
             Instant claimedAt = lease != null ? lease.claimedAt() : null;
-            return withConnection(action, eventId, conn -> op.execute(conn, owner, claimedAt));
+            int written = withConnection(action, eventId, conn -> op.execute(conn, owner, claimedAt));
+            // The lease actually used — an adopted one, not the copy's own. Unfenced (no owner): nothing held.
+            if (written == WRITE_FAILED && owner != null && !running.get()) {
+                failedWrites.add(new Release(eventId, owner, claimedAt));
+            }
+            return written;
         });
         return landed(action, eventId, rows);
     }
@@ -897,25 +911,26 @@ public final class OutboxDispatcher implements AutoCloseable {
         int strandedHot = hotQueue.drainTo(stranded);
         int strandedCold = coldQueue.drainTo(stranded);
         metrics.recordQueueDepths(hotQueue.size(), coldQueue.size());
-        if (stranded.isEmpty()) {
-            return;
+        if (!stranded.isEmpty()) {
+            logger.log(Level.INFO, "Shutdown complete with {0} hot and {1} cold events still queued; the poller "
+                    + "will deliver them again (claimed rows once released, or after their lock timeout)",
+                    new Object[]{strandedHot, strandedCold});
         }
-        logger.log(Level.INFO, "Shutdown complete with {0} hot and {1} cold events still queued; the poller will "
-                + "deliver them again (claimed rows once released, or after their lock timeout)",
-                new Object[]{strandedHot, strandedCold});
         // Only once no worker can run any more: until then a dropped copy's claim may still be the
         // one a running write is fenced on. An interrupted close keeps its cancellation instead.
         if (terminated && outboxStore.supportsClaimLocking() && !Thread.currentThread().isInterrupted()) {
-            List<Release> releases = endStrandedReservations(stranded);
+            Set<Release> releases = new LinkedHashSet<>(failedWrites);
+            releases.addAll(endStrandedReservations(stranded));
             if (!releases.isEmpty()) {
-                releaseWithinBudget(releases);
+                releaseWithinBudget(new ArrayList<>(releases));
             }
         }
     }
 
     /**
-     * One statement handing back what a dropped copy held: its exact lease, or — with no
-     * {@code claimedAt}, as in fenced writes — the writer stamp of a hot copy.
+     * One statement handing back what a copy left unsettled at shutdown held — dropped from its queue,
+     * or its status write failed — its exact lease, or, with no {@code claimedAt} as in fenced
+     * writes, the writer stamp of a hot copy.
      */
     private record Release(String eventId, String owner, Instant claimedAt) {
         int execute(OutboxStore store, Connection conn) {
@@ -986,8 +1001,8 @@ public final class OutboxDispatcher implements AutoCloseable {
         if (releaser.isAlive()) {
             cancelled.set(true);
             releaser.interrupt();
-            logger.log(Level.WARNING, "Releasing the claims of events dropped at shutdown did not finish within "
-                    + RELEASE_ON_CLOSE_BUDGET_MS + " ms; the rest are retaken after the lock timeout");
+            logger.log(Level.WARNING, "Releasing the claims of events left unsettled at shutdown did not finish "
+                    + "within " + RELEASE_ON_CLOSE_BUDGET_MS + " ms; the rest are retaken after the lock timeout");
         }
     }
 
@@ -1031,7 +1046,7 @@ public final class OutboxDispatcher implements AutoCloseable {
             // Statements fail per row above, so this is acquiring, setting up or closing the connection.
             if (attempted == 0) {
                 logger.log(Level.WARNING, "Could not release the claims of " + releases.size()
-                        + " event(s) dropped at shutdown; they are retaken after the lock timeout", e);
+                        + " event(s) left unsettled at shutdown; they are retaken after the lock timeout", e);
                 return;
             }
             logger.log(Level.WARNING, "Shutdown release: closing the connection failed after " + attempted
@@ -1039,12 +1054,12 @@ public final class OutboxDispatcher implements AutoCloseable {
         }
         if (firstFailure != null) {
             logger.log(Level.WARNING, "Failed to release the claims of " + failed + " of " + releases.size()
-                    + " event(s) dropped at shutdown; they are retaken after the lock timeout (first failure shown)",
-                    firstFailure);
+                    + " event(s) left unsettled at shutdown; they are retaken after the lock timeout "
+                    + "(first failure shown)", firstFailure);
         }
         // Rows affected, not statements: 0 is a row already settled or claimed again since.
         logger.log(Level.INFO, "Shutdown release handed back " + released + " of " + releases.size()
-                + " row(s) held by events dropped at shutdown (" + failed + " failed, "
+                + " row(s) held by events left unsettled at shutdown (" + failed + " failed, "
                 + (releases.size() - attempted) + " not reached); any other is settled, claimed again, "
                 + "or retaken after the lock timeout");
     }

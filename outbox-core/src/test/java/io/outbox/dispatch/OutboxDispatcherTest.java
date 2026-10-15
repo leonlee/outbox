@@ -8,6 +8,8 @@ import io.outbox.UnrecoverableException;
 import io.outbox.registry.DefaultListenerRegistry;
 import io.outbox.spi.ConnectionProvider;
 import io.outbox.spi.MetricsExporter;
+import io.outbox.spi.OutboxStore.Held;
+import io.outbox.spi.OutboxStore.ReleaseResult;
 import io.outbox.util.IsolatingMetricsExporter;
 import org.junit.jupiter.api.Test;
 
@@ -23,6 +25,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -32,6 +36,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.IntSupplier;
 import java.util.logging.Handler;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
@@ -1501,6 +1506,8 @@ class OutboxDispatcherTest {
         final AtomicInteger success = new AtomicInteger();
         final AtomicInteger dead = new AtomicInteger();
         final List<String> depths = new CopyOnWriteArrayList<>();
+        volatile IntSupplier boundHot;
+        volatile IntSupplier boundCold;
 
         @Override public void incrementHotTripped() {
             tripped.incrementAndGet();
@@ -1534,6 +1541,11 @@ class OutboxDispatcherTest {
 
         @Override public void recordQueueDepths(int hotDepth, int coldDepth) {
             depths.add(hotDepth + "/" + coldDepth);
+        }
+
+        @Override public void bindQueueDepths(IntSupplier hotDepth, IntSupplier coldDepth) {
+            boundHot = hotDepth;
+            boundCold = coldDepth;
         }
 
         @Override public void recordOldestLagMs(long lagMs) {
@@ -3492,10 +3504,10 @@ class OutboxDispatcherTest {
         d.close();
 
         assertEquals(List.of(
-                stamped.eventId() + ":stamp@pod-a",
                 reclaimed.eventId() + ":" + at(L2),
                 claimed.eventId() + ":" + at(L1),
-                claimedAgain.eventId() + ":" + at(L2)), store.released);
+                claimedAgain.eventId() + ":" + at(L2),
+                stamped.eventId() + ":stamp@pod-a"), store.released, "exact leases first, then stamps");
     }
 
     /**
@@ -3569,7 +3581,7 @@ class OutboxDispatcherTest {
 
         assertTrue(messages.stream().anyMatch(m -> m.startsWith("Shutdown release handed back 2 of 4 row(s)")
                 && m.contains("(1 failed, 0 not reached)")), "got: " + messages);
-        assertTrue(messages.stream().anyMatch(m -> m.startsWith("Failed to release the claims of 1 of 4")),
+        assertTrue(messages.stream().anyMatch(m -> m.startsWith("Shutdown release: 1 of 4 release(s) failed")),
                 "got: " + messages);
         assertTrue(messages.stream().anyMatch(m -> m.contains("closing the connection failed after 4 statement(s)")),
                 "got: " + messages);
@@ -3591,6 +3603,28 @@ class OutboxDispatcherTest {
         d.close();
 
         assertEquals("0/0", metrics.depths.get(metrics.depths.size() - 1));
+    }
+
+    /** The dispatcher binds its live queue sizes, so a pull gauge needs no push to be current. */
+    @Test
+    void theDispatcherBindsItsLiveQueueDepths() {
+        CountingMetrics metrics = new CountingMetrics();
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(new FencingStore())
+                .listenerRegistry(new DefaultListenerRegistry()).metrics(metrics)
+                .workerCount(0)
+                .build();
+        assertEquals(0, metrics.boundHot.getAsInt());
+
+        assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
+        assertTrue(d.enqueueCold(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.COLD, 0)));
+        assertEquals(1, metrics.boundHot.getAsInt());
+        assertEquals(1, metrics.boundCold.getAsInt());
+
+        d.close();
+
+        assertEquals(0, metrics.boundHot.getAsInt());
+        assertEquals(0, metrics.boundCold.getAsInt());
     }
 
     /**
@@ -3621,6 +3655,290 @@ class OutboxDispatcherTest {
             logger.removeHandler(capture);
         }
         return messages;
+    }
+
+    /**
+     * An exclusive store with stamping runs: rows carry "pod-a#rN", endStampRun moves to the next run.
+     * As in the JDBC stores, a stamp release by the owner ("pod-a") clears one event's stamp of any of
+     * its runs; an explicit run stamp clears only that run's.
+     */
+    private static class RunStore extends ExclusiveStore {
+        final Map<String, String> stamps = new ConcurrentHashMap<>();
+        volatile int run = 1;
+        volatile int endedRuns;
+
+        String current() {
+            return "pod-a#r" + run;
+        }
+
+        @Override
+        public Optional<String> endStampRun() {
+            endedRuns++;
+            String ended = current();
+            run++;
+            return Optional.of(ended);
+        }
+
+        @Override
+        public List<String> findStamped(Connection conn, String stamp, int limit) {
+            return stamps.entrySet().stream().filter(e -> e.getValue().equals(stamp))
+                    .map(Map.Entry::getKey).sorted().limit(limit).toList();
+        }
+
+        @Override
+        public int releaseStamp(Connection conn, String eventId, String writerOwner) {
+            super.releaseStamp(conn, eventId, writerOwner);
+            String current = stamps.get(eventId);
+            boolean match = current != null
+                    && ("pod-a".equals(writerOwner) ? current.startsWith("pod-a#r") : current.equals(writerOwner));
+            return match && stamps.remove(eventId, current) ? 1 : 0;
+        }
+    }
+
+    /**
+     * close() ends the store's stamping run, releases a stranded hot copy's stamp by its owner, and
+     * then sweeps the run's remaining stamps: rows whose hot copy was refused or never queued. A row
+     * stamped by the next run is not touched.
+     */
+    @Test
+    void closeSweepsTheEndedRunsRemainingStamps() {
+        var store = new RunStore();
+        EventEnvelope queued = EventEnvelope.ofJson(ONCE, "{}");
+        store.stamps.put(queued.eventId(), "pod-a#r1");
+        store.stamps.put("refused", "pod-a#r1");
+        store.stamps.put("next-run", "pod-a#r2");
+        var d = exclusive(store, new DefaultListenerRegistry(), 0, 1000);
+        assertTrue(d.enqueueHot(new QueuedEvent(queued, QueuedEvent.Source.HOT, 0)));
+
+        List<String> messages = captureDispatcherLogs(live -> d.close());
+
+        assertEquals(1, store.endedRuns);
+        assertEquals(List.of(queued.eventId() + ":stamp@pod-a", "refused:stamp@pod-a#r1"), store.released,
+                "the known stamp first, by its owner; then the sweep of the ended run");
+        assertEquals(Map.of("next-run", "pod-a#r2"), store.stamps);
+        assertTrue(messages.stream().anyMatch(m -> m.startsWith("Shutdown release handed back 1 of 1 row(s)")
+                && m.contains("and 1 more writer stamp(s) of this run")), "got: " + messages);
+    }
+
+    /** With nothing queued the run's stamps are still swept: every refused hot copy left one. */
+    @Test
+    void closeSweepsEvenWithNothingQueued() {
+        var store = new RunStore();
+        store.stamps.put("refused", "pod-a#r1");
+        store.stamps.put("", "pod-a#r1");
+        var d = exclusive(store, new DefaultListenerRegistry(), 0, 1000);
+
+        d.close();
+
+        assertEquals(List.of(":stamp@pod-a#r1", "refused:stamp@pod-a#r1"), store.released);
+    }
+
+    /**
+     * The sweep reads the run's stamps once and releases them in batches: rows it cannot release are
+     * not read again until the budget runs out.
+     */
+    @Test
+    void theSweepReadsOnce() {
+        AtomicInteger reads = new AtomicInteger();
+        AtomicInteger tries = new AtomicInteger();
+        var store = new RunStore() {
+            @Override
+            public List<String> findStamped(Connection conn, String stamp, int limit) {
+                reads.incrementAndGet();
+                return super.findStamped(conn, stamp, limit);
+            }
+
+            @Override
+            public int releaseStamp(Connection conn, String eventId, String writerOwner) {
+                tries.incrementAndGet();
+                return 0; // stuck: claimed meanwhile, say
+            }
+        };
+        int stuck = OutboxDispatcher.RELEASE_BATCH_SIZE + 50;
+        for (int i = 0; i < stuck; i++) {
+            store.stamps.put(String.format("stuck-%04d", i), "pod-a#r1");
+        }
+        var d = exclusive(store, new DefaultListenerRegistry(), 0, 1000);
+
+        d.close();
+
+        assertEquals(1, reads.get());
+        assertEquals(stuck, tries.get(), "every row found is tried once");
+    }
+
+    /**
+     * releaseHeld reports failures rather than throwing; a store that throws anyway fails only that
+     * batch — the sweep still runs, and the report counts the batch as failed.
+     */
+    @Test
+    void aStoreThatThrowsFromReleaseHeldFailsOnlyThatBatch() {
+        AtomicInteger reads = new AtomicInteger();
+        var store = new RunStore() {
+            @Override
+            public ReleaseResult releaseHeld(Connection conn, List<Held> held) {
+                throw new IllegalStateException("broken store");
+            }
+
+            @Override
+            public List<String> findStamped(Connection conn, String stamp, int limit) {
+                reads.incrementAndGet();
+                return super.findStamped(conn, stamp, limit);
+            }
+        };
+        var d = exclusive(store, new DefaultListenerRegistry(), 0, 1000);
+        assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L1)));
+
+        List<String> messages = captureDispatcherLogs(live -> d.close());
+
+        assertEquals(1, reads.get(), "the sweep still runs");
+        assertTrue(messages.stream().anyMatch(m -> m.startsWith("Shutdown release: 1 of 1 release(s) failed")),
+                "got: " + messages);
+    }
+
+    /** A shutdown with nothing to hand back is not news: no INFO report. */
+    @Test
+    void aShutdownWithNothingToReleaseStaysQuiet() {
+        var d = exclusive(new RunStore(), new DefaultListenerRegistry(), 0, 1000);
+
+        List<String> messages = captureDispatcherLogs(live -> d.close());
+
+        assertTrue(messages.stream().noneMatch(m -> m.startsWith("Shutdown release")), "got: " + messages);
+    }
+
+    /**
+     * A release whose count the driver cannot report (SUCCESS_NO_INFO) still released its rows; the
+     * sweep goes on to the next page instead of taking the zero for "no progress".
+     */
+    @Test
+    void aSweepGoesOnWhenReleaseCountsAreUnknown() {
+        var store = new RunStore() {
+            @Override
+            public ReleaseResult releaseHeld(Connection conn, List<Held> held) {
+                super.releaseHeld(conn, held);
+                return new ReleaseResult(0, 0, null); // done, count unknown
+            }
+        };
+        int rows = 2 * OutboxDispatcher.RELEASE_BATCH_SIZE + 1;
+        for (int i = 0; i < rows; i++) {
+            store.stamps.put(String.format("refused-%04d", i), "pod-a#r1");
+        }
+        var d = exclusive(store, new DefaultListenerRegistry(), 0, 1000);
+
+        d.close();
+
+        assertEquals(Map.of(), store.stamps, "every page released");
+    }
+
+    /**
+     * Documented trade-off: the sweep clears every remaining stamp of the ended run, so a hot copy
+     * whose status write failed before close() — its attempt never recorded — is released too and
+     * retried at once by another node, instead of after the lock timeout as an exact lease would be.
+     */
+    @Test
+    void theSweepAlsoReleasesAHotCopyWhoseWriteFailedBeforeClose() throws Exception {
+        AtomicInteger retries = new AtomicInteger();
+        var store = new RunStore() {
+            @Override
+            public int markRetry(Connection conn, String eventId, Instant nextAt, String error,
+                                 String claimOwner, Instant claimedAt) {
+                retries.incrementAndGet();
+                throw new IllegalStateException("connection reset");
+            }
+        };
+        EventEnvelope failing = EventEnvelope.ofJson(ONCE, "{}");
+        store.stamps.put(failing.eventId(), "pod-a#r1");
+        var registry = new DefaultListenerRegistry().register(ONCE, event -> {
+            throw new IllegalStateException("downstream down");
+        });
+        var d = exclusive(store, registry, 1, 1000);
+        assertTrue(d.enqueueHot(new QueuedEvent(failing, QueuedEvent.Source.HOT, 0)));
+        awaitCount(retries, 1);
+
+        d.close();
+
+        assertEquals(List.of(failing.eventId() + ":stamp@pod-a#r1"), store.released);
+    }
+
+    /**
+     * The sweep's read is new I/O, so it does not start once close() has given up: not after a known
+     * batch that outlived the budget (its callee swallowing the interrupt) …
+     */
+    @Test
+    void noSweepReadStartsAfterABatchThatOutlivedTheBudget() throws Exception {
+        CountDownLatch unblock = new CountDownLatch(1);
+        CountDownLatch connClosed = new CountDownLatch(1);
+        AtomicInteger reads = new AtomicInteger();
+        var store = new RunStore() {
+            @Override
+            public int releaseClaim(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+                awaitDeaf(unblock);
+                return super.releaseClaim(conn, eventId, claimOwner, claimedAt);
+            }
+
+            @Override
+            public List<String> findStamped(Connection conn, String stamp, int limit) {
+                reads.incrementAndGet();
+                return super.findStamped(conn, stamp, limit);
+            }
+        };
+        store.stamps.put("refused", "pod-a#r1");
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(recordingCp(new CopyOnWriteArrayList<>(), connClosed))
+                .outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
+                .workerCount(0).claimOwner("pod-a")
+                .build();
+        assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L1)));
+
+        d.close();
+        unblock.countDown();
+
+        assertTrue(connClosed.await(5, TimeUnit.SECONDS));
+        assertEquals(0, reads.get(), "cancelled before the sweep could read");
+        assertEquals(Map.of("refused", "pod-a#r1"), store.stamps, "left for the lock timeout");
+    }
+
+    /** … nor after a connection that arrived late. */
+    @Test
+    void noSweepReadStartsOnALateConnection() throws Exception {
+        CountDownLatch unblock = new CountDownLatch(1);
+        CountDownLatch connClosed = new CountDownLatch(1);
+        AtomicInteger reads = new AtomicInteger();
+        ConnectionProvider pool = recordingCp(new CopyOnWriteArrayList<>(), connClosed);
+        var store = new RunStore() {
+            @Override
+            public List<String> findStamped(Connection conn, String stamp, int limit) {
+                reads.incrementAndGet();
+                return super.findStamped(conn, stamp, limit);
+            }
+        };
+        store.stamps.put("refused", "pod-a#r1");
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(() -> {
+                    awaitDeaf(unblock);
+                    return pool.getConnection();
+                })
+                .outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
+                .workerCount(0).claimOwner("pod-a")
+                .build();
+
+        d.close();
+        unblock.countDown();
+
+        assertTrue(connClosed.await(5, TimeUnit.SECONDS));
+        assertEquals(0, reads.get());
+    }
+
+    /** The run is ended only when the release may run: not on an interrupted close. */
+    @Test
+    void anInterruptedCloseKeepsTheStampRun() {
+        var store = new RunStore();
+        var d = exclusive(store, new DefaultListenerRegistry(), 0, 1000);
+
+        Thread.currentThread().interrupt();
+        d.close();
+        Thread.interrupted();
+
+        assertEquals(0, store.endedRuns);
     }
 
     /** A non-exclusive claim cannot prove no other copy holds the same lease, so nothing is released. */
@@ -3723,51 +4041,141 @@ class OutboxDispatcherTest {
     }
 
     /**
-     * Documented limit: an enqueue that passed the accepting check before close can publish after the
-     * queues were drained. Its copy never runs and is not released; the row waits for the lock timeout.
+     * An enqueue that passed the accepting check before close can reach the queue after close drained
+     * it. That copy would never run, so it is taken back and refused: the caller's fallback (the
+     * writer hook's, or the poller's release of a refused claim) handles it, and nothing is left queued.
      */
     @Test
-    void aCopyPublishedAfterTheDrainIsLeftToExpire() throws Exception {
-        CountDownLatch inReserve = new CountDownLatch(1);
-        CountDownLatch resume = new CountDownLatch(1);
-        InFlightTracker pausing = new InFlightTracker() {
-            @Override
-            public boolean tryAcquire(String eventId) {
-                return true;
-            }
-
-            @Override
-            public void release(String eventId) {
-            }
-
-            @Override
-            public boolean supportsIsRunning() {
-                return true;
-            }
-
-            @Override
-            public boolean isRunning(String eventId) {
-                inReserve.countDown();
-                awaitQuietly(resume);
-                return false;
-            }
-        };
+    void aCopyPublishedAfterTheDrainIsRefused() throws Exception {
+        var pausing = new PausingTracker();
         var store = new ExclusiveStore();
         var d = OutboxDispatcher.builder()
                 .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
-                .inFlightTracker(pausing).workerCount(0).claimOwner("pod-a")
+                .inFlightTracker(pausing).workerCount(0).claimOwner("pod-a").coldQueueCapacity(10)
                 .build();
         AtomicBoolean accepted = new AtomicBoolean();
         Thread producer = new Thread(() -> accepted.set(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L1))));
         producer.start();
-        assertTrue(inReserve.await(5, TimeUnit.SECONDS));
+        assertTrue(pausing.inReserve.await(5, TimeUnit.SECONDS));
 
         d.close();
-        resume.countDown();
+        pausing.resume.countDown();
         producer.join(5000);
 
-        assertTrue(accepted.get(), "published after close");
-        assertEquals(List.of(), store.released);
+        assertFalse(accepted.get(), "refused: it would never run");
+        assertEquals(10, d.coldQueueRemainingCapacity(), "nothing left queued");
+        assertEquals(List.of(), store.released, "its claim is the caller's to release");
+    }
+
+    /**
+     * The take-back removes only the entry this call inserted. Here, while it checks, a worker has
+     * already dequeued (and so runs) that entry and an equal successor has been queued: the call
+     * reports its copy accepted, and the successor stays queued.
+     */
+    @Test
+    void theTakeBackLeavesAnEqualSuccessorQueued() {
+        BlockingQueue<QueuedEvent> queue = new ArrayBlockingQueue<>(10);
+        QueuedEvent event = cold(EventEnvelope.ofJson(ONCE, "{}"), L1);
+        AtomicReference<QueuedEvent> dequeued = new AtomicReference<>();
+
+        boolean accepted = OutboxDispatcher.offerUnlessClosed(queue, event, () -> {
+            dequeued.set(queue.poll()); // a worker takes the original
+            assertTrue(queue.offer(event), "an equal successor is queued");
+            return false; // close() has begun
+        });
+
+        assertTrue(accepted, "its own entry was taken by a worker, which runs it");
+        assertEquals(event, dequeued.get());
+        assertEquals(1, queue.size(), "the successor is not this call's to take back");
+    }
+
+    /** The hot path's mirror: the writer hook then leaves the row to the poller, as for any refusal. */
+    @Test
+    void aHotCopyPublishedAfterTheDrainIsRefused() throws Exception {
+        var pausing = new PausingTracker();
+        CountingMetrics metrics = new CountingMetrics();
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(new ExclusiveStore())
+                .listenerRegistry(new DefaultListenerRegistry()).metrics(metrics)
+                .inFlightTracker(pausing).workerCount(0).claimOwner("pod-a")
+                .build();
+        AtomicBoolean accepted = new AtomicBoolean();
+        Thread producer = new Thread(() -> accepted.set(
+                d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0))));
+        producer.start();
+        assertTrue(pausing.inReserve.await(5, TimeUnit.SECONDS));
+
+        d.close();
+        pausing.resume.countDown();
+        producer.join(5000);
+
+        assertFalse(accepted.get(), "refused: it would never run");
+        assertEquals(0, metrics.boundHot.getAsInt(), "nothing left queued");
+    }
+
+    /**
+     * A tracker whose isRunning pauses the first reservation until {@link #resume} opens, then
+     * answers {@code running}.
+     */
+    private static final class PausingTracker implements InFlightTracker {
+        final CountDownLatch inReserve = new CountDownLatch(1);
+        final CountDownLatch resume = new CountDownLatch(1);
+        private final boolean running;
+
+        PausingTracker() {
+            this(false);
+        }
+
+        PausingTracker(boolean running) {
+            this.running = running;
+        }
+
+        @Override
+        public boolean tryAcquire(String eventId) {
+            return true;
+        }
+
+        @Override
+        public void release(String eventId) {
+        }
+
+        @Override
+        public boolean supportsIsRunning() {
+            return true;
+        }
+
+        @Override
+        public boolean isRunning(String eventId) {
+            inReserve.countDown();
+            awaitQuietly(resume);
+            return running;
+        }
+    }
+
+    /**
+     * A claim handed to a reservation that then fails is passed on, here released: nobody else
+     * holds it. The hand-over lands while the reservation is still in progress (its marker is the
+     * current one), and the tracker then reports the event running, so the reservation is undone.
+     */
+    @Test
+    void aClaimHandedToAFailedReservationIsReleased() throws Exception {
+        var pausing = new PausingTracker(true);
+        var store = new ExclusiveStore();
+        EventEnvelope envelope = EventEnvelope.ofJson(ONCE, "{}");
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
+                .inFlightTracker(pausing).workerCount(0).claimOwner("pod-a")
+                .build();
+        Thread producer = new Thread(() -> d.enqueueCold(cold(envelope, L1)));
+        producer.start();
+        assertTrue(pausing.inReserve.await(5, TimeUnit.SECONDS));
+        d.enqueueCold(cold(envelope, L2)); // turned away: its newer claim is handed to the reservation in progress
+
+        pausing.resume.countDown();
+        producer.join(5000);
+
+        assertTrue(store.released.contains(envelope.eventId() + ":" + at(L2)),
+                "the handed-over claim is released, not stranded: " + store.released);
     }
 
     /** One failed release does not stop the rest. */
@@ -3834,6 +4242,12 @@ class OutboxDispatcherTest {
             return super.markRetry(conn, eventId, nextAt, error, claimOwner, claimedAt);
         }
 
+        @Override
+        public int releaseClaim(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+            refuseIfInterrupted();
+            return super.releaseClaim(conn, eventId, claimOwner, claimedAt);
+        }
+
         private static void refuseIfInterrupted() {
             if (Thread.currentThread().isInterrupted()) {
                 throw new IllegalStateException("interrupted during connection acquisition");
@@ -3868,6 +4282,105 @@ class OutboxDispatcherTest {
 
         assertEquals(List.of(), store.writes, "the write was cancelled");
         assertEquals(List.of(first.eventId() + ":" + at(L1)), store.released);
+    }
+
+    /**
+     * Not only status writes: a worker interrupted while it waits in the tracker gives the copy up and
+     * releases the claim handed to it on the spot. That release fails the same way, and close() hands
+     * the claim back instead.
+     */
+    @Test
+    void aClaimReleaseCutShortByTheForcedShutdownIsHandedBack() throws Exception {
+        CountDownLatch acquiring = new CountDownLatch(1);
+        InFlightTracker blocking = new InFlightTracker() {
+            @Override
+            public boolean tryAcquire(String eventId) {
+                return true;
+            }
+
+            @Override
+            public long acquire(String eventId) {
+                acquiring.countDown();
+                awaitQuietly(new CountDownLatch(1)); // until shutdownNow interrupts it
+                return NOT_ACQUIRED;
+            }
+
+            @Override
+            public void release(String eventId) {
+            }
+
+            @Override
+            public boolean supportsIsRunning() {
+                return true;
+            }
+        };
+        var store = new InterruptSensitiveStore();
+        EventEnvelope envelope = EventEnvelope.ofJson(ONCE, "{}");
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
+                .inFlightTracker(blocking).workerCount(1).drainTimeoutMs(100).claimOwner("pod-a")
+                .build();
+        assertTrue(d.enqueueCold(cold(envelope, L1)));
+        assertTrue(acquiring.await(5, TimeUnit.SECONDS));
+        d.enqueueCold(cold(envelope, L2)); // turned away: its newer claim is handed to the copy in acquire
+
+        d.close();
+
+        assertEquals(List.of(envelope.eventId() + ":" + at(L2)), store.released);
+    }
+
+    /**
+     * The same for a copy that replay suppression turns away: the release of its own claim, cut short
+     * by the forced interrupt, is handed back by close().
+     */
+    @Test
+    void aSuppressedCopysReleaseCutShortIsHandedBack() throws Exception {
+        CountDownLatch acquiring = new CountDownLatch(1);
+        InFlightTracker settled = new InFlightTracker() {
+            @Override
+            public boolean tryAcquire(String eventId) {
+                return true;
+            }
+
+            @Override
+            public long acquire(String eventId) {
+                acquiring.countDown();
+                awaitQuietly(new CountDownLatch(1)); // until shutdownNow interrupts it
+                return NOT_ACQUIRED;
+            }
+
+            @Override
+            public void release(String eventId) {
+            }
+
+            @Override
+            public long settledToken(String eventId) {
+                return 7; // settled here before: the marker suppression keeps
+            }
+
+            @Override
+            public boolean supportsIsRunning() {
+                return true;
+            }
+
+            @Override
+            public boolean hasTtl() {
+                return true;
+            }
+        };
+        var store = new InterruptSensitiveStore();
+        EventEnvelope envelope = EventEnvelope.ofJson(ONCE, "{}");
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
+                .inFlightTracker(settled).suppressReplays(true)
+                .workerCount(1).drainTimeoutMs(100).claimOwner("pod-a")
+                .build();
+        assertTrue(d.enqueueCold(cold(envelope, L1)));
+        assertTrue(acquiring.await(5, TimeUnit.SECONDS));
+
+        d.close();
+
+        assertEquals(List.of(envelope.eventId() + ":" + at(L1)), store.released);
     }
 
     /**
@@ -4105,16 +4618,12 @@ class OutboxDispatcherTest {
                 return super.releaseClaim(conn, eventId, claimOwner, claimedAt);
             }
         };
-        EventEnvelope hot = EventEnvelope.ofJson(ONCE, "{}");
-        EventEnvelope next = EventEnvelope.ofJson(ONCE, "{}");
         var d = OutboxDispatcher.builder()
                 .connectionProvider(recordingCp(new CopyOnWriteArrayList<>(), connClosed))
                 .outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
                 .workerCount(0).claimOwner("pod-a")
                 .build();
-        assertTrue(d.enqueueHot(new QueuedEvent(hot, QueuedEvent.Source.HOT, 0)));
-        assertTrue(d.enqueueCold(cold(hot, L2)), "turned away: its claim is handed to the hot copy");
-        assertTrue(d.enqueueCold(cold(next, L1)));
+        EventEnvelope last = enqueueBatchPlusOne(d);
 
         AtomicLong tookMs = new AtomicLong();
         List<String> messages = captureDispatcherLogs(live -> {
@@ -4127,8 +4636,11 @@ class OutboxDispatcherTest {
 
         assertTrue(tookMs.get() < OutboxDispatcher.RELEASE_ON_CLOSE_BUDGET_MS + 500, "took " + tookMs + "ms");
         assertTrue(connClosed.await(5, TimeUnit.SECONDS));
-        assertEquals(List.of(hot.eventId() + ":" + at(L2)), store.released);
-        assertTrue(messages.stream().anyMatch(m -> m.startsWith("Shutdown release handed back 1 of 2 row(s)")
+        assertEquals(OutboxDispatcher.RELEASE_BATCH_SIZE, store.released.size(), "the batch in flight finishes");
+        assertFalse(store.released.contains(last.eventId() + ":" + at(L1)), "no batch starts after the budget");
+        int all = OutboxDispatcher.RELEASE_BATCH_SIZE + 1;
+        assertTrue(messages.stream().anyMatch(m -> m.startsWith("Shutdown release handed back "
+                + OutboxDispatcher.RELEASE_BATCH_SIZE + " of " + all + " row(s)")
                 && m.contains("(0 failed, 1 not reached)")), "got: " + messages);
     }
 
@@ -4159,14 +4671,12 @@ class OutboxDispatcherTest {
                 return super.releaseClaim(conn, eventId, claimOwner, claimedAt);
             }
         };
-        EventEnvelope first = EventEnvelope.ofJson(ONCE, "{}");
         var d = OutboxDispatcher.builder()
                 .connectionProvider(recordingCp(new CopyOnWriteArrayList<>(), connClosed))
                 .outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
                 .workerCount(0).claimOwner("pod-a")
                 .build();
-        assertTrue(d.enqueueCold(cold(first, L1)));
-        assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L2)));
+        EventEnvelope last = enqueueBatchPlusOne(d);
         AtomicBoolean keptInterrupt = new AtomicBoolean();
         Thread closer = new Thread(() -> {
             d.close();
@@ -4183,7 +4693,21 @@ class OutboxDispatcherTest {
         assertTrue(returnedAtOnce, "close returns on the interrupt, not at the budget");
         assertTrue(keptInterrupt.get(), "close keeps the caller's interrupt");
         assertTrue(connClosed.await(5, TimeUnit.SECONDS));
-        assertEquals(List.of(first.eventId() + ":" + at(L1)), store.released);
+        assertEquals(OutboxDispatcher.RELEASE_BATCH_SIZE, store.released.size(), "the batch in flight finishes");
+        assertFalse(store.released.contains(last.eventId() + ":" + at(L1)), "no batch starts after the interrupt");
+    }
+
+    /**
+     * Queues one more claimed copy than a release batch holds, so a cancelled release shows whether a
+     * second batch starts. Returns the copy that falls into that second batch.
+     */
+    private static EventEnvelope enqueueBatchPlusOne(OutboxDispatcher d) {
+        EventEnvelope envelope = null;
+        for (int i = 0; i <= OutboxDispatcher.RELEASE_BATCH_SIZE; i++) {
+            envelope = EventEnvelope.ofJson(ONCE, "{}");
+            assertTrue(d.enqueueCold(cold(envelope, L1)));
+        }
+        return envelope;
     }
 
     /** A connection that records each call by name and counts down when closed. */

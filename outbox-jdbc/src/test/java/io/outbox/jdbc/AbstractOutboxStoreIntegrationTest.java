@@ -5,6 +5,7 @@ import io.outbox.jdbc.store.AbstractJdbcOutboxStore;
 import io.outbox.jdbc.store.JdbcOutboxStores;
 import io.outbox.model.EventStatus;
 import io.outbox.model.OutboxEvent;
+import io.outbox.spi.OutboxStore;
 import org.junit.jupiter.api.Test;
 
 import javax.sql.DataSource;
@@ -36,6 +37,9 @@ abstract class AbstractOutboxStoreIntegrationTest {
 
     /** This store's type stamping {@code owner} on the rows it writes. */
     abstract AbstractJdbcOutboxStore stampingStore(String owner);
+
+    /** Makes a statement on {@code conn} give up after about a second of waiting for a row lock. */
+    abstract void shortLockWait(Connection conn) throws Exception;
 
     /** The database's timestamp column type with {@code digits} fractional-second digits. */
     abstract String timestampType(int digits);
@@ -515,6 +519,154 @@ abstract class AbstractOutboxStoreIntegrationTest {
             assertEquals(List.of(stamped.eventId()), taken.stream().map(OutboxEvent::eventId).toList(),
                     "another node takes the released row at once; the claimed one stays claimed");
         }
+    }
+
+    /**
+     * Ending a run leaves exactly its stamps to the sweep. A later run — over the same store, or a new
+     * store with the same owner — is out of its reach, and stays its own run's to claim early.
+     */
+    @Test
+    void aSweepOfAnEndedRunCannotTouchALaterRun() throws Exception {
+        AbstractJdbcOutboxStore podA = stampingStore("pod-a");
+        EventEnvelope old = EventEnvelope.ofJson("StampEvent", "{}");
+        EventEnvelope reused = EventEnvelope.ofJson("StampEvent", "{}");
+        EventEnvelope rebuilt = EventEnvelope.ofJson("StampEvent", "{}");
+        try (Connection conn = dataSource().getConnection()) {
+            conn.setAutoCommit(true);
+            podA.insertNew(conn, old);
+            String ended = podA.endStampRun().orElseThrow();
+            podA.insertNew(conn, reused);
+            stampingStore("pod-a").insertNew(conn, rebuilt);
+
+            assertEquals(List.of(old.eventId()), podA.findStamped(conn, ended, 10));
+            OutboxStore.ReleaseResult result = podA.releaseHeld(conn, List.of(
+                    new OutboxStore.Held(old.eventId(), ended, null),
+                    new OutboxStore.Held(reused.eventId(), ended, null),
+                    new OutboxStore.Held(rebuilt.eventId(), ended, null)));
+            assertEquals(new OutboxStore.ReleaseResult(1, 0, null), result);
+
+            Instant now = Instant.now();
+            assertEquals(List.of(old.eventId(), reused.eventId()).stream().sorted().toList(),
+                    ids(podA.claimPending(conn, "pod-a", now, now.minusSeconds(60), Duration.ZERO, 10)).stream()
+                            .sorted().toList(),
+                    "the swept row is unowned, the store's current run is its own; the rebuilt store's run is not");
+        }
+    }
+
+    /**
+     * The sweep reads without locks and releases by exact id, so another owner's row held by a
+     * concurrent transaction neither blocks it nor is touched — where one broad UPDATE over the
+     * pending rows would wait on that row's lock.
+     */
+    @Test
+    void theSweepDoesNotWaitOnAnotherOwnersLockedRow() throws Exception {
+        AbstractJdbcOutboxStore podA = stampingStore("pod-a");
+        EventEnvelope mine = EventEnvelope.ofJson("StampEvent", "{}");
+        EventEnvelope theirs = EventEnvelope.ofJson("StampEvent", "{}");
+        try (Connection setup = dataSource().getConnection()) {
+            setup.setAutoCommit(true);
+            stampingStore("pod-b").insertNew(setup, theirs);
+            podA.insertNew(setup, mine);
+        }
+        String ended = podA.endStampRun().orElseThrow();
+        try (Connection holder = dataSource().getConnection(); Connection sweeper = dataSource().getConnection()) {
+            holder.setAutoCommit(false);
+            try (PreparedStatement lock = holder.prepareStatement(
+                    "SELECT event_id FROM outbox_event WHERE event_id = ? FOR UPDATE")) {
+                lock.setString(1, theirs.eventId());
+                try (ResultSet rs = lock.executeQuery()) {
+                    assertTrue(rs.next());
+                }
+            }
+            sweeper.setAutoCommit(true);
+            shortLockWait(sweeper);
+
+            List<String> found = podA.findStamped(sweeper, ended, 10);
+            OutboxStore.ReleaseResult result = podA.releaseHeld(sweeper,
+                    found.stream().map(id -> new OutboxStore.Held(id, ended, null)).toList());
+
+            assertEquals(List.of(mine.eventId()), found);
+            assertEquals(new OutboxStore.ReleaseResult(1, 0, null), result);
+            holder.rollback();
+        }
+    }
+
+    /**
+     * One row of a batch release fails (another transaction holds its lock), and the others are still
+     * released. PostgreSQL runs a failed auto-commit batch as one implicit transaction and rolls all of
+     * it back, so the store releases the batch's rows again one at a time.
+     */
+    @Test
+    void aFailedRowDoesNotUndoTheRestOfABatchRelease() throws Exception {
+        AbstractJdbcOutboxStore podA = stampingStore("pod-a");
+        EventEnvelope first = EventEnvelope.ofJson("StampEvent", "{}");
+        EventEnvelope locked = EventEnvelope.ofJson("StampEvent", "{}");
+        EventEnvelope last = EventEnvelope.ofJson("StampEvent", "{}");
+        try (Connection setup = dataSource().getConnection()) {
+            setup.setAutoCommit(true);
+            podA.insertNew(setup, first);
+            podA.insertNew(setup, locked);
+            podA.insertNew(setup, last);
+        }
+        String ended = podA.endStampRun().orElseThrow();
+        try (Connection holder = dataSource().getConnection(); Connection releaser = dataSource().getConnection()) {
+            holder.setAutoCommit(false);
+            try (PreparedStatement lock = holder.prepareStatement(
+                    "SELECT event_id FROM outbox_event WHERE event_id = ? FOR UPDATE")) {
+                lock.setString(1, locked.eventId());
+                try (ResultSet rs = lock.executeQuery()) {
+                    assertTrue(rs.next());
+                }
+            }
+            releaser.setAutoCommit(true);
+            shortLockWait(releaser);
+
+            OutboxStore.ReleaseResult result = podA.releaseHeld(releaser, List.of(
+                    new OutboxStore.Held(first.eventId(), ended, null),
+                    new OutboxStore.Held(locked.eventId(), ended, null),
+                    new OutboxStore.Held(last.eventId(), ended, null)));
+            holder.rollback();
+
+            assertEquals(1, result.failed(), "only the locked row");
+            assertTrue(result.released() <= 2, "a lower bound");
+            assertEquals(null, lockedBy(releaser, first.eventId()), "released despite the failure after it");
+            assertEquals(null, lockedBy(releaser, last.eventId()));
+            assertEquals(ended, lockedBy(releaser, locked.eventId()), "the locked row keeps its stamp");
+        }
+    }
+
+    private static String lockedBy(Connection conn, String eventId) throws Exception {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT locked_by FROM outbox_event WHERE event_id = ?")) {
+            ps.setString(1, eventId);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next());
+                return rs.getString(1);
+            }
+        }
+    }
+
+    /**
+     * Ended runs are not remembered: one event's stamp is matched against live stores' current runs only,
+     * so a long-lived JVM that rebuilds its outbox many times keeps a small hot fence — not one bind
+     * parameter per run ever started (PostgreSQL refuses more than 65,535).
+     */
+    @Test
+    void endedRunsDoNotGrowTheHotFence() throws Exception {
+        AbstractJdbcOutboxStore podA = stampingStore("pod-a");
+        for (int i = 0; i < 70_000; i++) {
+            podA.endStampRun();
+        }
+        EventEnvelope event = EventEnvelope.ofJson("StampEvent", "{}");
+        try (Connection conn = dataSource().getConnection()) {
+            conn.setAutoCommit(true);
+            podA.insertNew(conn, event);
+
+            assertEquals(1, podA.markDone(conn, event.eventId(), "pod-a", null));
+        }
+    }
+
+    private static List<String> ids(List<OutboxEvent> events) {
+        return events.stream().map(OutboxEvent::eventId).toList();
     }
 
     @Test

@@ -173,6 +173,11 @@ outbox-jdbc/src/main/java/
   in `io.outbox.jdbc.store`. `supportsClaimLocking()` (default `false`; MySQL/Postgres `true`) says whether
   `claimPending` really locks; `releaseClaim(conn, id, owner, claimedAt)` drops only that exact lease;
   `releaseStamp(conn, id, owner)` drops only an unclaimed writer stamp (`locked_at = created_at`);
+  `releaseHeld(conn, List<Held>)` releases leases and stamps at once (JDBC: batched; failures reported in a
+  `ReleaseResult`, `released` a lower bound, `failed` = failed or no outcome); `endStampRun()` (in-memory rotation) and
+  `findStamped(conn, stamp, limit)` (one lock-free, unordered read) let the dispatcher sweep an ended run's stamps;
+  JDBC `releaseHeld` re-releases a failed batch row by row through `releaseClaim`/`releaseStamp` (PG rolls back a failed
+  auto-commit batch whole);
   `leaseTimestamp(now)` is the single definition of the `locked_at` a claim writes.
   The four status writes have claim-fenced overloads `(…, claimOwner, claimedAt)`; the dispatcher and poller call the
   plain overload for an unfenced write, so a store's override of it still applies. Owner `null` = unfenced; a
@@ -186,11 +191,19 @@ outbox-jdbc/src/main/java/
   `locked_at = created_at`, so any schema needs `locked_at` at ≥ ms precision and the same type/precision for
   `created_at` and `locked_at` (SPEC §4.1, TUTORIAL §1). A bare MySQL `DATETIME` (seconds) silently breaks multi-node.
 - **Writer-stamped ownership**: JDBC stores take an optional `writerOwnerId` constructor arg. When set, inserts write
-  `locked_by = owner, locked_at = created_at`; `claimPending` treats that equality as an unclaimed stamp the owner may
-  claim once immediately while other nodes wait for the lock timeout. Rows older than
+  `locked_by = owner#run, locked_at = created_at`, where `run` is a 22-char token (a random UUID, 122 random bits) for the store's
+  current stamping run, rotated by `endStampRun()`; `claimPending` treats that equality as an unclaimed stamp the owner
+  may claim once immediately (only its current run's: every stamp comparison is exact, so a predecessor's or a 0.13
+  base-only stamp waits for the lock timeout) while other nodes wait for the lock timeout. Leases still write the plain
+  owner. The store maps its own owner to the current run's stamp in stamp predicates and takes other values (an ended
+  run's stamp) verbatim. The hot fence and per-event `releaseStamp` match `locked_by IN (…)` over the current and
+  last-ended stamp of every live stamping store of the owner (static weak `LIVE_STAMPING_STORES`, ≤ 2 per live store;
+  exact values, no pattern), so separate long-lived writer/dispatcher instances still agree on hot writes and known-stamp releases;
+  the early claim and the sweep are exact-run. Known stamps keep the plain owner (not pinned to the ended run). A subclass overriding `claimPending`
+  must bind `stampOf(ownerId)`. Rows older than
   `OutboxStore.WRITER_STAMP_MAX_AGE` (30s) insert unowned and skip the hot path. `OutboxStore.writerOwnerId()` reports
-  the stamp; `verifySchema(conn)` (JDBC: read-only metadata check of `created_at`/`locked_at`, MySQL reads precision
-  from `COLUMN_SIZE`) runs in `multiNode().build()` unless `verifySchema(false)` / `outbox.claim-locking.verify-schema=false`,
+  the plain owner; `verifySchema(conn)` (JDBC: read-only metadata check of `created_at`/`locked_at`, MySQL reads
+  precision from `COLUMN_SIZE`, plus `locked_by` wide enough for the stamp: owner ≤ 105 chars with `VARCHAR(128)`) runs in `multiNode().build()` unless `verifySchema(false)` / `outbox.claim-locking.verify-schema=false`,
   refusing only a definite mismatch; `multiNode()` with the hot path requires the stamp on a locking store, requires it to equal the claim owner
   (`claimLocking(Duration)` adopts it), and requires `lockTimeout >= 2 * WRITER_STAMP_MAX_AGE` when stamping with the
   hot path on.
@@ -223,12 +236,15 @@ outbox-jdbc/src/main/java/
   `InFlightTracker` acquisitions are token-scoped (`acquire` / `release(id, token)`) so a late completion cannot end a
   newer acquisition; opt-in `suppressReplays` keeps settled entries until TTL (requires a TTL tracker); opt-in
   `hotTripMs` breaker refuses hot enqueue once the hot queue head is too old (recovers at half). `close()` drains the
-  queues with `drainTo`; after confirmed worker termination on an exclusive-claim store it releases what each dropped
-  copy still holds (one statement: handed-over claim, else own lease, else hot writer stamp; none = no connection), then
-  the exact fence of each status write that failed outright (`WRITE_FAILED`) once the forced shutdown's interrupt was
-  in play, on its own thread and one connection; `close()` waits at most `RELEASE_ON_CLOSE_BUDGET_MS` (or until
-  interrupted), then cancels it via a flag checked before each statement (skipped if workers did not stop or the closer
-  is interrupted; a copy published after the drain expires). `hotPathEnabled(false)`
+  queues with `drainTo`; after confirmed worker termination on an exclusive-claim store it ends the store's stamping
+  run (`endStampRun()`, on the closing thread) and releases, on its own thread and one connection in batches of
+  `RELEASE_BATCH_SIZE`: known leases (each dropped copy's handed-over claim or own lease, and the exact fence of every
+  status write or claim release that failed outright once the forced shutdown's interrupt was in play — `holdIfCutShort`),
+  then known hot stamps by their owner, then a sweep of the ended run's remaining stamps (lock-free
+  `findStamped`, one read of up to `SWEEP_READ_LIMIT`, exact by-id releases in batches). `close()` waits at most
+  `RELEASE_ON_CLOSE_BUDGET_MS` (or until interrupted), then cancels it via a flag checked before each batch and read
+  (skipped if workers did not stop or the closer is interrupted). An enqueue that reaches a queue after the drain takes
+  back exactly the entry it inserted (`offerUnlessClosed`, identity) and refuses it. `hotPathEnabled(false)`
   = poller-only delivery (`enqueueHot` refuses). Claim-leased cold copies and a `claimOwner` need a tracker with
   `supportsIsRunning()` (`DefaultInFlightTracker`); a `claimOwner` must equal the store's `writerOwnerId()` if it
   stamps. A listener's leftover interrupt is cleared before the status write. Dispatcher, poller and writer hook wrap
@@ -281,7 +297,8 @@ outbox-jdbc/src/main/java/
 - **MicrometerMetricsExporter** (`io.outbox.micrometer`): Micrometer-based `MetricsExporter` implementation with
   counters
   and gauges. Tracks `incrementDispatchDeferred` for handler-deferred events and `incrementHotSkippedDelayed` for
-  delayed events bypassing the hot path. Supports custom `namePrefix` for multi-instance use.
+  delayed events bypassing the hot path. Supports custom `namePrefix` for multi-instance use. The queue-depth gauges
+  read the live sizes a dispatcher binds (`MetricsExporter.bindQueueDepths`, default no-op), else the pushed values.
 - **DispatchResult**: Sealed interface returned by `EventListener.onEvent()`. `Done` (singleton) marks event
   complete. `RetryAfter(Duration)` defers re-delivery without counting against `maxAttempts`. `Dead(String)` marks
   event as immediately DEAD with optional reason.

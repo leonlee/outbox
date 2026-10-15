@@ -1,5 +1,7 @@
 package io.outbox.spi;
 
+import java.util.function.IntSupplier;
+
 /**
  * Observability hook for exporting outbox counters and gauges to a metrics backend.
  *
@@ -108,6 +110,20 @@ public interface MetricsExporter {
      * @param coldDepth number of events in the cold queue
      */
     void recordQueueDepths(int hotDepth, int coldDepth);
+
+    /**
+     * Binds the live depth of both dispatch queues, once, when a dispatcher is built.
+     *
+     * <p>An exporter that reads depth on demand (a pull gauge) should read these instead of the
+     * last {@link #recordQueueDepths} values, which are pushed only when a queue changes on a
+     * dispatcher path and can go stale (a producer racing shutdown). A dispatcher built later binds
+     * its own queues in their place. The default ignores it, and pushed depths keep coming.
+     *
+     * @param hotDepth  current number of events in the hot queue
+     * @param coldDepth current number of events in the cold queue
+     */
+    default void bindQueueDepths(IntSupplier hotDepth, IntSupplier coldDepth) {
+    }
 
     /**
      * Records the lag (in milliseconds) of the oldest pending event.

@@ -11,6 +11,8 @@ import io.outbox.registry.ListenerRegistry;
 import io.outbox.spi.ConnectionProvider;
 import io.outbox.spi.MetricsExporter;
 import io.outbox.spi.OutboxStore;
+import io.outbox.spi.OutboxStore.Held;
+import io.outbox.spi.OutboxStore.ReleaseResult;
 import io.outbox.util.DaemonThreadFactory;
 import io.outbox.util.IsolatingMetricsExporter;
 
@@ -18,7 +20,6 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -34,6 +35,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -56,6 +58,10 @@ public final class OutboxDispatcher implements AutoCloseable {
     private static final Logger logger = Logger.getLogger(OutboxDispatcher.class.getName());
 
     private static final long QUEUE_POLL_TIMEOUT_MS = 50;
+    /** Claims and stamps a shutdown release hands back per statement batch. */
+    static final int RELEASE_BATCH_SIZE = 200;
+    /** The most of a run's remaining stamps the shutdown sweep reads; any beyond wait for the lock timeout. */
+    static final int SWEEP_READ_LIMIT = 10_000;
     /** How long close() waits, after shutdownNow, for the workers to stop; only then are claims released. */
     private static final long FORCED_SHUTDOWN_GRACE_MS = 5000;
     /**
@@ -73,12 +79,14 @@ public final class OutboxDispatcher implements AutoCloseable {
     private volatile boolean forced;
     private final AtomicBoolean running = new AtomicBoolean(true);
     /**
-     * The exact fence of each status write that failed once the forced shutdown's interrupt was in
-     * play — typically the write it cancelled — so its claim is handed back with the stranded copies
-     * once every worker has stopped. A failure before that, the graceful drain included, keeps the
-     * lock-timeout backoff. Kept only for the copies still running or queued at the forced shutdown.
+     * The exact fence of each statement that failed once the forced shutdown's interrupt was in
+     * play — typically the status write or claim release it cancelled — so its claim is handed back
+     * with the stranded copies once every worker has stopped. A failure before that, the graceful
+     * drain included, is not recorded: an exact lease keeps the lock-timeout backoff, while a hot
+     * copy's stamp still goes with the run's sweep. Kept only for the copies still running or queued
+     * at the forced shutdown.
      */
-    private final Set<Release> failedWrites = ConcurrentHashMap.newKeySet();
+    private final Set<Held> cutShort = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean accepting = new AtomicBoolean(true);
     private boolean closed; // guarded by this
     private final AtomicInteger pollCounter = new AtomicInteger(0);
@@ -159,7 +167,7 @@ public final class OutboxDispatcher implements AutoCloseable {
         }
         String stamp = outboxStore.writerOwnerId().orElse(null);
         if (claimOwner != null && stamp != null && !stamp.equals(claimOwner)) {
-            // Hot writes are fenced on locked_by = claimOwner AND locked_at = created_at; a store
+            // Hot writes are fenced on the store's stamp for claimOwner AND locked_at = created_at; a store
             // stamping another owner makes every one of them miss.
             throw new IllegalArgumentException("The store stamps rows for '" + stamp
                     + "' but claimOwner is '" + claimOwner + "'; they must be the same id");
@@ -190,6 +198,8 @@ public final class OutboxDispatcher implements AutoCloseable {
 
         this.hotQueue = new ArrayBlockingQueue<>(hotQueueCapacity);
         this.coldQueue = new ArrayBlockingQueue<>(coldQueueCapacity);
+        // A pull gauge reads these live; the pushed depths below remain for exporters that do not.
+        metrics.bindQueueDepths(hotQueue::size, coldQueue::size);
 
         if (workerCount > 0) {
             this.workers = Executors.newFixedThreadPool(workerCount, new DaemonThreadFactory("outbox-dispatcher-"));
@@ -249,7 +259,7 @@ public final class OutboxDispatcher implements AutoCloseable {
             return true;
         }
         // Only this call's own reservation — reserve() returned true, so the id is ours to undo.
-        boolean enqueued = hotQueue.offer(event);
+        boolean enqueued = offerUnlessClosed(hotQueue, event, accepting::get);
         if (!enqueued) {
             unreserve(eventId, handoff);
         }
@@ -338,12 +348,35 @@ public final class OutboxDispatcher implements AutoCloseable {
             return true;
         }
         // Only this call's own reservation — reserve() returned true, so the id is ours to undo.
-        boolean enqueued = coldQueue.offer(event);
+        boolean enqueued = offerUnlessClosed(coldQueue, event, accepting::get);
         if (!enqueued) {
             unreserve(eventId, handoff);
         }
         metrics.recordQueueDepths(hotQueue.size(), coldQueue.size());
         return enqueued;
+    }
+
+    /**
+     * Queues a reserved copy, unless close() has begun and already drained the queues.
+     *
+     * <p>A producer that passed the accepting check before close() can reach the queue after
+     * close() took everything out of it; that copy would never run. So once closing, the copy is
+     * taken back and refused, and the caller's fallback handles it — the writer hook's, or the
+     * poller's release of a refused claim. Removal from the queue decides each copy, as in close():
+     * close() drains it, a worker dequeues it, or this call takes it back — exactly one of them.
+     *
+     * <p>Only the entry this call inserted, by identity: an equal successor queued meanwhile (the
+     * original already dequeued and run) is not this call's to take. Hence a fresh instance per
+     * insertion, which no caller can hold or reuse.
+     */
+    static boolean offerUnlessClosed(BlockingQueue<QueuedEvent> queue, QueuedEvent event,
+                                     BooleanSupplier accepting) {
+        QueuedEvent inserted = new QueuedEvent(event.envelope(), event.source(), event.attempts(),
+                event.enqueuedAtNanos(), event.claimLease());
+        if (!queue.offer(inserted)) {
+            return false;
+        }
+        return accepting.getAsBoolean() || !queue.removeIf(entry -> entry == inserted);
     }
 
     /**
@@ -660,6 +693,7 @@ public final class OutboxDispatcher implements AutoCloseable {
         }
         int freed = withConnection("release claim", eventId,
                 conn -> outboxStore.releaseClaim(conn, eventId, lease.owner(), lease.claimedAt()));
+        holdIfCutShort(freed, eventId, lease.owner(), lease.claimedAt());
         if (freed > 0) {
             // releaseClaim only matches rows still awaiting delivery, so a hit proves the row came
             // back after this marker was written — a replay, or any other reset. The marker is
@@ -801,12 +835,8 @@ public final class OutboxDispatcher implements AutoCloseable {
             String owner = lease != null ? lease.owner() : claimOwner;
             Instant claimedAt = lease != null ? lease.claimedAt() : null;
             int written = withConnection(action, eventId, conn -> op.execute(conn, owner, claimedAt));
-            // The lease actually used — an adopted one, not the copy's own. Unfenced (no owner), or
-            // no lease on a store that does not stamp: nothing held.
-            if (written == WRITE_FAILED && forced && owner != null
-                    && (claimedAt != null || outboxStore.writerOwnerId().isPresent())) {
-                failedWrites.add(new Release(eventId, owner, claimedAt));
-            }
+            // The lease actually used — an adopted one, not the copy's own.
+            holdIfCutShort(written, eventId, owner, claimedAt);
             return written;
         });
         return landed(action, eventId, rows);
@@ -827,8 +857,22 @@ public final class OutboxDispatcher implements AutoCloseable {
         if (lease == null) {
             return;
         }
-        withConnection("release claim", eventId,
+        int released = withConnection("release claim", eventId,
                 conn -> outboxStore.releaseClaim(conn, eventId, lease.owner(), lease.claimedAt()));
+        holdIfCutShort(released, eventId, lease.owner(), lease.claimedAt());
+    }
+
+    /**
+     * Keeps the exact fence of a statement that failed outright once the forced shutdown's
+     * interrupt was in play — a status write, or the release of a claim — so close() hands the
+     * claim back once every worker has stopped. Unfenced (no owner), or no lease on a store that
+     * does not stamp: nothing held.
+     */
+    private void holdIfCutShort(int result, String eventId, String owner, Instant claimedAt) {
+        if (result == WRITE_FAILED && forced && owner != null
+                && (claimedAt != null || outboxStore.writerOwnerId().isPresent())) {
+            cutShort.add(new Held(eventId, owner, claimedAt));
+        }
     }
 
     /**
@@ -924,30 +968,34 @@ public final class OutboxDispatcher implements AutoCloseable {
         }
         // Only once no worker can run any more: until then a dropped copy's claim may still be the
         // one a running write is fenced on. An interrupted close keeps its cancellation instead.
-        if (stranded.isEmpty() && failedWrites.isEmpty()) {
+        if (!terminated || !outboxStore.supportsClaimLocking() || Thread.currentThread().isInterrupted()) {
             return;
         }
-        if (terminated && outboxStore.supportsClaimLocking() && !Thread.currentThread().isInterrupted()) {
-            // Queued copies first: a failed write's row is the likelier one to be slow.
-            Set<Release> releases = new LinkedHashSet<>(endStrandedReservations(stranded));
-            releases.addAll(failedWrites);
-            if (!releases.isEmpty()) {
-                releaseWithinBudget(releases);
-            }
+        // Ended here, on the closing thread, before any cleanup is published: rows stamped from now
+        // on — by this store's next user, too — carry a new run, which the sweep cannot reach.
+        Optional<String> endedRun = outboxStore.endStampRun();
+        List<Held> known = heldInOrder(endStrandedReservations(stranded), cutShort);
+        if (!known.isEmpty() || endedRun.isPresent()) {
+            releaseWithinBudget(known, endedRun);
         }
     }
 
     /**
-     * One statement handing back what a copy left unsettled at shutdown held — dropped from its queue,
-     * or its status write failed — its exact lease, or, with no {@code claimedAt} as in fenced
-     * writes, the writer stamp of a hot copy.
+     * What to release, cheapest and surest first: exact leases, then the stamps of known hot copies.
+     * A stamp keeps the plain owner: the store matches one event's stamp of any run of its owner
+     * issued in this JVM — whichever store instance wrote it — rather than only the run that ended.
+     * Each once: a stranded copy and a cut-short write can name the same claim.
      */
-    private record Release(String eventId, String owner, Instant claimedAt) {
-        int execute(OutboxStore store, Connection conn) {
-            return claimedAt == null
-                    ? store.releaseStamp(conn, eventId, owner)
-                    : store.releaseClaim(conn, eventId, owner, claimedAt);
+    private static List<Held> heldInOrder(List<Held> stranded, Set<Held> cutShort) {
+        Set<Held> all = new LinkedHashSet<>(stranded);
+        all.addAll(cutShort);
+        List<Held> leases = new ArrayList<>();
+        List<Held> stamps = new ArrayList<>();
+        for (Held one : all) {
+            (one.claimedAt() != null ? leases : stamps).add(one);
         }
+        leases.addAll(stamps);
+        return leases;
     }
 
     /**
@@ -963,28 +1011,27 @@ public final class OutboxDispatcher implements AutoCloseable {
      * <p>Safe only after the workers have terminated — nothing here can write under these claims
      * any more — and only for an exclusive claim, which guarantees no other copy holds the same
      * lease. Each release names its exact lease or the stamp, so a newer claim or a settled row is
-     * left alone. A producer that passed the accepting check before close can still publish a copy
-     * after the queues were drained; that copy never runs, and its row waits for the lock timeout.
+     * left alone.
      */
-    private List<Release> endStrandedReservations(List<QueuedEvent> stranded) {
+    private List<Held> endStrandedReservations(List<QueuedEvent> stranded) {
         String stampOwner = outboxStore.writerOwnerId().orElse(null);
-        List<Release> releases = new ArrayList<>();
+        List<Held> held = new ArrayList<>();
         for (QueuedEvent copy : stranded) {
             String eventId = copy.envelope().eventId();
             ClaimHandoff handoff = queued.get(eventId);
             Optional<ClaimLease> adopted = handoff != null ? unpublish(eventId, handoff) : Optional.empty();
-            ClaimLease held = adopted.orElse(copy.claimLease());
-            if (held != null) {
-                releases.add(new Release(eventId, held.owner(), held.claimedAt()));
+            ClaimLease lease = adopted.orElse(copy.claimLease());
+            if (lease != null) {
+                held.add(new Held(eventId, lease.owner(), lease.claimedAt()));
             } else if (copy.source() == QueuedEvent.Source.HOT && stampOwner != null) {
-                releases.add(new Release(eventId, stampOwner, null));
+                held.add(new Held(eventId, stampOwner, null));
             }
         }
-        return releases;
+        return held;
     }
 
     /**
-     * Runs the releases on their own thread and waits at most {@link #RELEASE_ON_CLOSE_BUDGET_MS}:
+     * Runs the release on its own thread and waits at most {@link #RELEASE_ON_CLOSE_BUDGET_MS}:
      * a stalled connection or statement cannot hold up close(). Past the budget, or when the closer
      * is interrupted, the release is cancelled and interrupted; whatever it did not reach expires
      * as before.
@@ -993,12 +1040,12 @@ public final class OutboxDispatcher implements AutoCloseable {
      * connection, a statement, closing the connection — can finish after close() returns, bounded
      * only by the driver's or pool's own timeouts. The thread holds nothing of this dispatcher.
      */
-    private void releaseWithinBudget(Collection<Release> releases) {
+    private void releaseWithinBudget(List<Held> known, Optional<String> endedRun) {
         AtomicBoolean cancelled = new AtomicBoolean();
         OutboxStore store = outboxStore;
         ConnectionProvider provider = connectionProvider;
         Thread releaser = new DaemonThreadFactory("outbox-dispatcher-release-")
-                .newThread(() -> release(store, provider, releases, cancelled));
+                .newThread(() -> release(store, provider, known, endedRun, cancelled));
         releaser.start();
         try {
             releaser.join(RELEASE_ON_CLOSE_BUDGET_MS);
@@ -1017,61 +1064,126 @@ public final class OutboxDispatcher implements AutoCloseable {
     }
 
     /**
-     * Best effort on one auto-commit connection. Cancellation is a flag, not the thread's interrupt,
-     * so a callee that swallows the interrupt cannot restart it; checked before each statement, it
-     * stops all but one already being issued. Once it has a connection it always ends with one INFO
-     * report, cancelled or not.
+     * Best effort on one auto-commit connection: the known claims and stamps in batches, then the
+     * ended run's remaining stamps — found by a plain, lock-free read and released by exact id, a
+     * batch at a time, so no statement locks rows beyond its own. Cancellation is a flag, not the
+     * thread's interrupt, so a callee that swallows the interrupt cannot restart it; checked before
+     * each batch and each read, it stops all but a batch already being issued. Once it has a
+     * connection it always ends with one INFO report, cancelled or not.
      */
-    private static void release(OutboxStore store, ConnectionProvider provider, Collection<Release> releases,
-                                AtomicBoolean cancelled) {
-        // ponytail: one round trip per release within a fixed budget; batch the UPDATEs if large queues need more.
+    private static void release(OutboxStore store, ConnectionProvider provider, List<Held> known,
+                                Optional<String> endedRun, AtomicBoolean cancelled) {
         if (cancelled.get()) {
             return;
         }
-        int attempted = 0;
-        int released = 0;
-        int failed = 0;
-        RuntimeException firstFailure = null;
+        ReleaseTally tally = new ReleaseTally();
         try (Connection conn = provider.getConnection()) {
             if (!cancelled.get()) {
                 conn.setAutoCommit(true);
             }
-            for (Release release : releases) {
-                if (cancelled.get()) {
-                    break;
-                }
-                attempted++;
-                try {
-                    released += release.execute(store, conn);
-                } catch (RuntimeException e) {
-                    logger.log(Level.FINE, "Failed to release the claim on eventId=" + release.eventId()
-                            + " at shutdown", e);
-                    failed++;
-                    if (firstFailure == null) {
-                        firstFailure = e;
-                    }
-                }
+            for (int from = 0; from < known.size() && !cancelled.get(); from += RELEASE_BATCH_SIZE) {
+                List<Held> batch = known.subList(from, Math.min(from + RELEASE_BATCH_SIZE, known.size()));
+                tally.known(batch.size(), releaseReporting(store, conn, batch));
             }
+            endedRun.ifPresent(run -> sweep(store, conn, run, cancelled, tally));
         } catch (SQLException | RuntimeException e) {
-            // Statements fail per row above, so this is acquiring, setting up or closing the connection.
-            if (attempted == 0) {
-                logger.log(Level.WARNING, "Could not release the claims of " + releases.size()
-                        + " event(s) left unsettled at shutdown; they are retaken after the lock timeout", e);
+            // Releases report their failures, so this is acquiring, setting up or closing the connection.
+            if (tally.statements == 0) {
+                logger.log(Level.WARNING, known.isEmpty()
+                        ? "Could not sweep this run's writer stamps at shutdown; any left are retaken after the "
+                                + "lock timeout"
+                        : "Could not release the claims of " + known.size() + " event(s) left unsettled at "
+                                + "shutdown; they are retaken after the lock timeout", e);
                 return;
             }
-            logger.log(Level.WARNING, "Shutdown release: closing the connection failed after " + attempted
+            logger.log(Level.WARNING, "Shutdown release: closing the connection failed after " + tally.statements
                     + " statement(s)", e);
         }
-        if (firstFailure != null) {
-            logger.log(Level.WARNING, "Failed to release the claims of " + failed + " of " + releases.size()
-                    + " event(s) left unsettled at shutdown; they are retaken after the lock timeout "
-                    + "(first failure shown)", firstFailure);
+        tally.report(known.size(), endedRun.isPresent());
+    }
+
+    /**
+     * The ended run's stamps not already released by id: hot copies the dispatcher refused or never
+     * queued, rows written after it stopped delivering. One lock-free read of up to
+     * {@link #SWEEP_READ_LIMIT} ids, then exact by-id releases a batch at a time; rows beyond the limit
+     * wait for the lock timeout.
+     */
+    private static void sweep(OutboxStore store, Connection conn, String run, AtomicBoolean cancelled,
+                              ReleaseTally tally) {
+        if (cancelled.get()) {
+            return; // a read is new I/O: not after close() has given up, however late we got here
         }
-        // Rows affected, not statements: 0 is a row already settled or claimed again since.
-        logger.log(Level.INFO, "Shutdown release handed back " + released + " of " + releases.size()
-                + " row(s) held by events left unsettled at shutdown (" + failed + " failed, "
-                + (releases.size() - attempted) + " not reached); any other is settled, claimed again, "
-                + "or retaken after the lock timeout");
+        List<String> ids;
+        try {
+            ids = store.findStamped(conn, run, SWEEP_READ_LIMIT);
+        } catch (RuntimeException e) {
+            tally.sweepFailure = e;
+            return;
+        }
+        for (int from = 0; from < ids.size() && !cancelled.get(); from += RELEASE_BATCH_SIZE) {
+            List<Held> batch = ids.subList(from, Math.min(from + RELEASE_BATCH_SIZE, ids.size())).stream()
+                    .map(id -> new Held(id, run, null)).toList();
+            tally.swept(batch.size(), releaseReporting(store, conn, batch));
+        }
+    }
+
+    /** The SPI reports failures rather than throwing; a store that throws anyway fails this batch, not the rest. */
+    private static ReleaseResult releaseReporting(OutboxStore store, Connection conn, List<Held> batch) {
+        try {
+            return store.releaseHeld(conn, batch);
+        } catch (RuntimeException e) {
+            return new ReleaseResult(0, batch.size(), e);
+        }
+    }
+
+    /** Counts for the one report a shutdown release ends with; confirmed counts are lower bounds. */
+    private static final class ReleaseTally {
+        int statements;
+        int knownAttempted;
+        int released;
+        int failed;
+        int swept;
+        RuntimeException firstFailure;
+        RuntimeException sweepFailure;
+
+        void known(int attempted, ReleaseResult result) {
+            statements += attempted;
+            knownAttempted += attempted;
+            released += result.released();
+            failed += result.failed();
+            if (firstFailure == null) {
+                firstFailure = result.firstFailure();
+            }
+        }
+
+        void swept(int attempted, ReleaseResult result) {
+            statements += attempted;
+            swept += result.released();
+            if (sweepFailure == null) {
+                sweepFailure = result.firstFailure();
+            }
+        }
+
+        void report(int knownCount, boolean sweptRun) {
+            if (firstFailure != null) {
+                logger.log(Level.WARNING, "Shutdown release: " + failed + " of " + knownCount + " release(s) "
+                        + "failed or have no known outcome; any row still held is retaken after the lock timeout "
+                        + "(first error shown)", firstFailure);
+            }
+            if (sweepFailure != null) {
+                logger.log(Level.WARNING, "Could not release every remaining writer stamp of this run at "
+                        + "shutdown; those left are retaken after the lock timeout", sweepFailure);
+            }
+            // Rows affected, not statements: 0 is a row already settled or claimed again since. A
+            // shutdown that found nothing to hand back is not news: FINE, not INFO.
+            Level level = statements == 0 && firstFailure == null && sweepFailure == null ? Level.FINE : Level.INFO;
+            logger.log(level, "Shutdown release handed back " + released + " of " + knownCount
+                    + " row(s) held by events left unsettled at shutdown (" + failed + " failed, "
+                    + (knownCount - knownAttempted) + " not reached)"
+                    + (sweptRun ? ", and " + swept + " more writer stamp(s) of this run" : "")
+                    + "; counts are lower bounds, and any other row is settled, claimed again, "
+                    + "or retaken after the lock timeout");
+        }
     }
 
     /**

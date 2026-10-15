@@ -7,6 +7,8 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -86,6 +88,30 @@ class MicrometerMetricsExporterTest {
         exporter.recordQueueDepths(0, 0);
         assertEquals(0.0, gauge("outbox.queue.hot.depth").value());
         assertEquals(0.0, gauge("outbox.queue.cold.depth").value());
+    }
+
+    /**
+     * Once a dispatcher binds its live queue sizes the gauges read them, so a pushed value that a
+     * racing producer left behind cannot keep a stale backlog on the dashboard. A dispatcher built
+     * later rebinds in its place.
+     */
+    @Test
+    void boundQueueDepthsAreReadLive() {
+        AtomicInteger hot = new AtomicInteger(3);
+        AtomicInteger cold = new AtomicInteger(5);
+        exporter.recordQueueDepths(42, 7);
+
+        exporter.bindQueueDepths(hot::get, cold::get);
+
+        assertEquals(3.0, gauge("outbox.queue.hot.depth").value());
+        assertEquals(5.0, gauge("outbox.queue.cold.depth").value());
+        hot.set(0);
+        exporter.recordQueueDepths(9, 9);
+        assertEquals(0.0, gauge("outbox.queue.hot.depth").value(), "the live size, not the push");
+
+        exporter.bindQueueDepths(() -> 1, () -> 2);
+        assertEquals(1.0, gauge("outbox.queue.hot.depth").value());
+        assertEquals(2.0, gauge("outbox.queue.cold.depth").value());
     }
 
     @Test

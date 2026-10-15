@@ -539,10 +539,11 @@ outbox.poller.batch-size=50
 outbox.poller.skip-recent-ms=0
 # Multi-node claim locking (requires outbox.mode=multi-node)
 outbox.claim-locking.enabled=false
-# Unique per instance, e.g. ${HOSTNAME:} on Kubernetes; empty = generated per JVM
+# Unique per instance, e.g. ${HOSTNAME:} on Kubernetes; empty = generated per JVM.
+# Stamps carry it plus a 23-char run suffix: at most 105 chars with the stock locked_by VARCHAR(128)
 outbox.claim-locking.owner-id=
 outbox.claim-locking.lock-timeout=PT5M
-# Check at startup that created_at/locked_at can hold what claim fencing compares (read-only)
+# Check at startup that created_at/locked_at/locked_by can hold what claim fencing compares (read-only)
 outbox.claim-locking.verify-schema=true
 # Purge: status-based (DONE + DEAD) in dispatcher modes, age-based in writer-only (CDC) mode
 outbox.purge.enabled=false
@@ -602,6 +603,12 @@ outbox.claim-locking.lock-timeout=PT5M
 # Unique per instance (Kubernetes sets HOSTNAME to the pod name); generated per JVM if empty
 outbox.claim-locking.owner-id=${HOSTNAME:}
 ```
+
+Each run of an instance stamps the rows it writes as `<owner-id>#<run>`, where `run` is a fresh random token. On a
+clean shutdown the node hands back that run's remaining stamps, so other nodes take those rows at once. A restarted
+pod does not take over its predecessor's stamps early: after a crash they wait for the lock timeout. The same holds
+once for rows stamped by an older version (base-only `<owner-id>` stamps) after an upgrade, and for run stamps after
+a rollback.
 
 ### Writer-Only Mode (CDC)
 

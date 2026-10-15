@@ -11,6 +11,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.IntSupplier;
 
 /**
  * Micrometer-based implementation of {@link MetricsExporter}.
@@ -32,6 +34,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * <ul>
  *   <li>{@code outbox.queue.hot.depth} — current hot queue depth</li>
  *   <li>{@code outbox.queue.cold.depth} — current cold queue depth</li>
+ * </ul>
+ * The two depth gauges read the dispatcher's live queue sizes once it binds them
+ * ({@link #bindQueueDepths}); until then, the last pushed {@link #recordQueueDepths} values.
+ * <ul>
  *   <li>{@code outbox.lag.oldest.ms} — lag of oldest pending event in milliseconds</li>
  * </ul>
  *
@@ -57,7 +63,7 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
     private final Counter hotSkippedStale;
     private final Counter hotTripped;
     private final Counter dispatchSuppressed;
-    // Held only so close() can remove them; the gauges read the Atomic* fields below.
+    // Held only so close() can remove them; the gauges read the fields below.
     private final Gauge hotDepthGauge;
     private final Gauge coldDepthGauge;
     private final Gauge lagGauge;
@@ -67,6 +73,9 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
     private final AtomicInteger hotDepth = new AtomicInteger();
     private final AtomicInteger coldDepth = new AtomicInteger();
     private final AtomicLong oldestLagMs = new AtomicLong();
+    // The bound dispatcher's live sizes; null until one binds, then replaced by the next.
+    private final AtomicReference<IntSupplier> boundHotDepth = new AtomicReference<>();
+    private final AtomicReference<IntSupplier> boundColdDepth = new AtomicReference<>();
     private volatile boolean closed;
 
     /**
@@ -129,9 +138,11 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
                 .description("Duplicate copies refused by the in-flight tracker, at the cold queue or at dispatch")
                 .register(registry);
 
-        this.hotDepthGauge = Gauge.builder(namePrefix + ".queue.hot.depth", hotDepth, AtomicInteger::get)
+        this.hotDepthGauge = Gauge.builder(namePrefix + ".queue.hot.depth", this,
+                        exporter -> depth(exporter.boundHotDepth, exporter.hotDepth))
                 .register(registry);
-        this.coldDepthGauge = Gauge.builder(namePrefix + ".queue.cold.depth", coldDepth, AtomicInteger::get)
+        this.coldDepthGauge = Gauge.builder(namePrefix + ".queue.cold.depth", this,
+                        exporter -> depth(exporter.boundColdDepth, exporter.coldDepth))
                 .register(registry);
         this.lagGauge = Gauge.builder(namePrefix + ".lag.oldest.ms", oldestLagMs, AtomicLong::get)
                 .register(registry);
@@ -239,6 +250,21 @@ public final class MicrometerMetricsExporter implements MetricsExporter, AutoClo
         }
         this.hotDepth.set(hotDepth);
         this.coldDepth.set(coldDepth);
+    }
+
+    @Override
+    public void bindQueueDepths(IntSupplier hotDepth, IntSupplier coldDepth) {
+        if (closed) {
+            return;
+        }
+        this.boundHotDepth.set(Objects.requireNonNull(hotDepth, "hotDepth"));
+        this.boundColdDepth.set(Objects.requireNonNull(coldDepth, "coldDepth"));
+    }
+
+    /** The bound live depth when a dispatcher has bound one, else the last pushed value. */
+    private static double depth(AtomicReference<IntSupplier> bound, AtomicInteger pushed) {
+        IntSupplier live = bound.get();
+        return live != null ? live.getAsInt() : pushed.get();
     }
 
     @Override

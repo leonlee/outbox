@@ -30,6 +30,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
+import java.util.logging.SimpleFormatter;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -3488,23 +3492,113 @@ class OutboxDispatcherTest {
                 claimedAgain.eventId() + ":" + at(L2)), store.released);
     }
 
-    /** Copies that hold nothing (single-node: no lease, no stamp) need no connection at all. */
+    /**
+     * Copies that hold nothing need no connection at all: single-node on MySQL/Postgres locks rows but
+     * neither stamps (hot) nor leases (cold, from pollPending).
+     */
     @Test
     void copiesHoldingNothingNeedNoConnection() {
         AtomicInteger connections = new AtomicInteger();
+        var store = new ExclusiveStore() {
+            @Override
+            public Optional<String> writerOwnerId() {
+                return Optional.empty();
+            }
+        };
         var d = OutboxDispatcher.builder()
                 .connectionProvider(() -> {
                     connections.incrementAndGet();
                     return stubCp().getConnection();
                 })
-                .outboxStore(new ExclusiveStore()).listenerRegistry(new DefaultListenerRegistry())
+                .outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
                 .workerCount(0)
                 .build();
+        assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
         assertTrue(d.enqueueCold(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.COLD, 0)));
 
         d.close();
 
         assertEquals(0, connections.get());
+        assertEquals(List.of(), store.released);
+    }
+
+    /**
+     * The release reports rows actually handed back, after it ran: a row that moved on since (settled,
+     * claimed again) updates nothing and is not counted.
+     */
+    @Test
+    void theShutdownReleaseReportsRowsActuallyHandedBack() {
+        EventEnvelope movedOn = EventEnvelope.ofJson(ONCE, "{}");
+        var store = new ExclusiveStore() {
+            @Override
+            public int releaseClaim(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+                super.releaseClaim(conn, eventId, claimOwner, claimedAt);
+                return eventId.equals(movedOn.eventId()) ? 0 : 1;
+            }
+        };
+        var d = exclusive(store, new DefaultListenerRegistry(), 0, 1000);
+        assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
+        assertTrue(d.enqueueCold(cold(movedOn, L1)));
+        assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L2)));
+
+        List<String> messages = captureDispatcherLogs(d::close);
+
+        assertTrue(messages.stream().anyMatch(m -> m.startsWith("Shutdown release handed back 2 of 3 row(s)")
+                && m.contains("(0 failed, 0 not reached)")), "got: " + messages);
+    }
+
+    /** close() takes the copies out of the queues, so the depth gauges drop with them. */
+    @Test
+    void closeRecordsTheDrainedQueueDepths() {
+        List<String> depths = new CopyOnWriteArrayList<>();
+        MetricsExporter recording = (MetricsExporter) Proxy.newProxyInstance(
+                MetricsExporter.class.getClassLoader(),
+                new Class<?>[]{MetricsExporter.class},
+                (proxy, method, args) -> {
+                    if ("recordQueueDepths".equals(method.getName())) {
+                        depths.add(args[0] + "/" + args[1]);
+                    }
+                    return null;
+                });
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(stubCp()).outboxStore(new FencingStore())
+                .listenerRegistry(new DefaultListenerRegistry()).metrics(recording)
+                .workerCount(0)
+                .build();
+        assertTrue(d.enqueueHot(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.HOT, 0)));
+        assertTrue(d.enqueueCold(new QueuedEvent(EventEnvelope.ofJson(ONCE, "{}"), QueuedEvent.Source.COLD, 0)));
+        assertEquals("1/1", depths.get(depths.size() - 1));
+
+        d.close();
+
+        assertEquals("0/0", depths.get(depths.size() - 1));
+    }
+
+    /** Formatted messages the dispatcher logs while {@code action} runs. */
+    private static List<String> captureDispatcherLogs(Runnable action) {
+        List<String> messages = new CopyOnWriteArrayList<>();
+        Handler capture = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                messages.add(new SimpleFormatter().formatMessage(record));
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        Logger logger = Logger.getLogger(OutboxDispatcher.class.getName());
+        logger.addHandler(capture);
+        try {
+            action.run();
+        } finally {
+            logger.removeHandler(capture);
+        }
+        return messages;
     }
 
     /** A non-exclusive claim cannot prove no other copy holds the same lease, so nothing is released. */

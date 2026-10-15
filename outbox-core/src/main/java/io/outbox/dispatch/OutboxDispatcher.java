@@ -53,6 +53,8 @@ public final class OutboxDispatcher implements AutoCloseable {
     private static final Logger logger = Logger.getLogger(OutboxDispatcher.class.getName());
 
     private static final long QUEUE_POLL_TIMEOUT_MS = 50;
+    /** How long close() waits, after shutdownNow, for the workers to stop; only then are claims released. */
+    static final long FORCED_SHUTDOWN_GRACE_MS = 5000;
     /** How long close() spends after the workers stop handing back the claims of copies still queued. */
     static final long RELEASE_ON_CLOSE_BUDGET_MS = 1000;
     /** {@link #withConnection} result for a status write that threw. */
@@ -877,7 +879,7 @@ public final class OutboxDispatcher implements AutoCloseable {
                         + "Hot remaining: " + hotQueue.size() + ", Cold remaining: " + coldQueue.size());
                 forced = true;
                 workers.shutdownNow();
-                terminated = workers.awaitTermination(5, TimeUnit.SECONDS);
+                terminated = workers.awaitTermination(FORCED_SHUTDOWN_GRACE_MS, TimeUnit.MILLISECONDS);
             }
         } catch (InterruptedException e) {
             forced = true;
@@ -894,15 +896,17 @@ public final class OutboxDispatcher implements AutoCloseable {
         List<QueuedEvent> stranded = new ArrayList<>();
         int strandedHot = hotQueue.drainTo(stranded);
         int strandedCold = coldQueue.drainTo(stranded);
+        metrics.recordQueueDepths(hotQueue.size(), coldQueue.size());
         if (stranded.isEmpty()) {
             return;
         }
-        logger.log(Level.INFO, "Shutdown complete with {0} hot and {1} cold events still queued; "
-                + "the poller will deliver them again", new Object[]{strandedHot, strandedCold});
+        logger.log(Level.INFO, "Shutdown complete with {0} hot and {1} cold events still queued; the poller will "
+                + "deliver them again (claimed rows once released, or after their lock timeout)",
+                new Object[]{strandedHot, strandedCold});
         // Only once no worker can run any more: until then a dropped copy's claim may still be the
         // one a running write is fenced on. An interrupted close keeps its cancellation instead.
         if (terminated && outboxStore.supportsClaimLocking() && !Thread.currentThread().isInterrupted()) {
-            List<Release> releases = releasesFor(stranded);
+            List<Release> releases = endStrandedReservations(stranded);
             if (!releases.isEmpty()) {
                 releaseWithinBudget(releases);
             }
@@ -922,7 +926,8 @@ public final class OutboxDispatcher implements AutoCloseable {
     }
 
     /**
-     * Ends the reservation of each copy taken out of its queue and returns what it still holds:
+     * Ends the reservation of each copy taken out of its queue — side effect included: its marker is
+     * unpublished and its handoff abandoned — and returns what it still holds:
      * a claim handed to it, else its own lease, else (hot) its writer stamp. A handed-over claim is
      * newer than the copy's own — {@link ClaimHandoff#adopt} takes nothing older — so on an
      * exclusive store it has replaced that lease and the stamp on the row.
@@ -936,7 +941,7 @@ public final class OutboxDispatcher implements AutoCloseable {
      * left alone. A producer that passed the accepting check before close can still publish a copy
      * after the queues were drained; that copy never runs, and its row waits for the lock timeout.
      */
-    private List<Release> releasesFor(List<QueuedEvent> stranded) {
+    private List<Release> endStrandedReservations(List<QueuedEvent> stranded) {
         String stampOwner = outboxStore.writerOwnerId().orElse(null);
         List<Release> releases = new ArrayList<>();
         for (QueuedEvent copy : stranded) {
@@ -997,6 +1002,8 @@ public final class OutboxDispatcher implements AutoCloseable {
         if (cancelled.get()) {
             return;
         }
+        int attempted = 0;
+        int released = 0;
         int failed = 0;
         RuntimeException firstFailure = null;
         try (Connection conn = provider.getConnection()) {
@@ -1008,8 +1015,9 @@ public final class OutboxDispatcher implements AutoCloseable {
                 if (cancelled.get()) {
                     break;
                 }
+                attempted++;
                 try {
-                    release.execute(store, conn);
+                    released += release.execute(store, conn);
                 } catch (RuntimeException e) {
                     logger.log(Level.FINE, "Failed to release the claim on eventId=" + release.eventId()
                             + " at shutdown", e);
@@ -1029,6 +1037,11 @@ public final class OutboxDispatcher implements AutoCloseable {
                     + " event(s) dropped at shutdown; they are retaken after the lock timeout (first failure shown)",
                     firstFailure);
         }
+        // Rows affected, not statements: 0 is a row already settled or claimed again since.
+        logger.log(Level.INFO, "Shutdown release handed back " + released + " of " + releases.size()
+                + " row(s) held by events dropped at shutdown (" + failed + " failed, "
+                + (releases.size() - attempted) + " not reached); any other is settled, claimed again, "
+                + "or retaken after the lock timeout");
     }
 
     /**

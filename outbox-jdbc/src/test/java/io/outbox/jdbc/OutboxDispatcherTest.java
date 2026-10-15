@@ -6,6 +6,7 @@ import io.outbox.dispatch.DefaultInFlightTracker;
 import io.outbox.dispatch.InFlightTracker;
 import io.outbox.dispatch.OutboxDispatcher;
 import io.outbox.dispatch.QueuedEvent;
+import io.outbox.jdbc.store.AbstractJdbcOutboxStore;
 import io.outbox.jdbc.store.H2OutboxStore;
 import io.outbox.model.EventStatus;
 import io.outbox.registry.DefaultListenerRegistry;
@@ -20,6 +21,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -330,4 +332,119 @@ class OutboxDispatcherTest {
             return failed.get();
         }
     }
+    /**
+     * A writer and a dispatcher wired with separate store instances of one owner: the shutdown release
+     * still hands back the known stamps — a stranded hot copy's, and one whose status write the forced
+     * shutdown cut short — because one event's stamp is matched across the owner's runs in this JVM.
+     */
+    @Test
+    void separateWriterAndDispatcherStoresStillHandBackKnownStamps() throws Exception {
+        H2OutboxStore writer = new H2OutboxStore("outbox_event", "pod-a");
+        LockingH2Store dispatcherStore = new LockingH2Store("pod-a");
+        CountDownLatch running = new CountDownLatch(1);
+        DefaultListenerRegistry listeners = new DefaultListenerRegistry().register("Test", event -> {
+            running.countDown();
+            try {
+                new CountDownLatch(1).await(5, TimeUnit.SECONDS); // until shutdownNow interrupts it
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return DispatchResult.done();
+        });
+        EventEnvelope cutShort = EventEnvelope.builder("Test").payloadJson("{}").build();
+        EventEnvelope stranded = EventEnvelope.builder("Test").payloadJson("{}").build();
+        try (Connection conn = dataSource.getConnection()) {
+            writer.insertNew(conn, cutShort);
+            writer.insertNew(conn, stranded);
+        }
+        OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+                .connectionProvider(connectionProvider).outboxStore(dispatcherStore).listenerRegistry(listeners)
+                .claimOwner("pod-a").workerCount(1).drainTimeoutMs(100)
+                .build();
+        assertTrue(dispatcher.enqueueHot(new QueuedEvent(cutShort, QueuedEvent.Source.HOT, 0)));
+        assertTrue(running.await(5, TimeUnit.SECONDS));
+        assertTrue(dispatcher.enqueueHot(new QueuedEvent(stranded, QueuedEvent.Source.HOT, 0)));
+
+        dispatcher.close();
+
+        try (Connection conn = dataSource.getConnection()) {
+            assertEquals(null, lockedBy(conn, cutShort.eventId()), "the cut-short hot write's stamp");
+            assertEquals(null, lockedBy(conn, stranded.eventId()), "the stranded hot copy's stamp");
+        }
+    }
+
+    /**
+     * With the usual wiring — one store for writer and dispatcher — close() ends the store's run before
+     * the release, yet a known hot copy's stamp is still handed back by its own release, not left to a
+     * capped sweep that may not reach it (here the sweep finds nothing at all).
+     */
+    @Test
+    void aSharedStoresKnownStampIsReleasedEvenWhenTheSweepMissesIt() throws Exception {
+        LockingH2Store shared = new LockingH2Store("pod-a") {
+            @Override
+            public List<String> findStamped(Connection conn, String stamp, int limit) {
+                return List.of(); // as if beyond the sweep's cap
+            }
+        };
+        EventEnvelope stranded = EventEnvelope.builder("Test").payloadJson("{}").build();
+        try (Connection conn = dataSource.getConnection()) {
+            shared.insertNew(conn, stranded);
+        }
+        OutboxDispatcher dispatcher = OutboxDispatcher.builder()
+                .connectionProvider(connectionProvider).outboxStore(shared)
+                .listenerRegistry(new DefaultListenerRegistry())
+                .claimOwner("pod-a").workerCount(0)
+                .build();
+        assertTrue(dispatcher.enqueueHot(new QueuedEvent(stranded, QueuedEvent.Source.HOT, 0)));
+
+        dispatcher.close();
+
+        try (Connection conn = dataSource.getConnection()) {
+            assertEquals(null, lockedBy(conn, stranded.eventId()), "released by its own known release");
+        }
+    }
+
+    /**
+     * An H2 store reporting exclusive claims, so the dispatcher's shutdown release runs; its status writes
+     * fail while the thread is interrupted, as an interrupt-sensitive pool's would.
+     */
+    private static class LockingH2Store extends AbstractJdbcOutboxStore {
+        LockingH2Store(String owner) {
+            super("outbox_event", owner);
+        }
+
+        @Override
+        public String name() {
+            return "h2-locking";
+        }
+
+        @Override
+        public List<String> jdbcUrlPrefixes() {
+            return List.of();
+        }
+
+        @Override
+        public boolean supportsClaimLocking() {
+            return true;
+        }
+
+        @Override
+        public int markDone(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new IllegalStateException("interrupted during connection acquisition");
+            }
+            return super.markDone(conn, eventId, claimOwner, claimedAt);
+        }
+    }
+
+    private static String lockedBy(Connection conn, String eventId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT locked_by FROM outbox_event WHERE event_id = ?")) {
+            ps.setString(1, eventId);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next());
+                return rs.getString(1);
+            }
+        }
+    }
+
 }

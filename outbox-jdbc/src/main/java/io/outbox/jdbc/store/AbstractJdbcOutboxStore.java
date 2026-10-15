@@ -10,7 +10,6 @@ import io.outbox.spi.JsonCodec;
 import io.outbox.spi.OutboxStore;
 
 import java.nio.ByteBuffer;
-import java.sql.BatchUpdateException;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
@@ -24,16 +23,21 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.Set;
 import java.util.UUID;
+import java.util.WeakHashMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.ToIntFunction;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -66,11 +70,12 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     private static final String RELEASE_CLAIM_SQL = "UPDATE %s SET locked_by=NULL, locked_at=NULL"
             + " WHERE event_id=? AND locked_by=? AND locked_at=? AND status IN " + PENDING_STATUS_IN;
     /**
-     * An exact stamp: locked_at = created_at is what makes it one, and a poller lease never equals
-     * created_at (see leaseTimestamp), so a claim — this owner's too — is left alone.
+     * One event's stamp: locked_at = created_at is what makes it one, and a poller lease never equals
+     * created_at (see leaseTimestamp), so a claim — this owner's too — is left alone. The second %s is
+     * the locked_by predicate, from {@link #lockedByIn}.
      */
     private static final String RELEASE_STAMP_SQL = "UPDATE %s SET locked_by=NULL, locked_at=NULL"
-            + " WHERE event_id=? AND locked_by=? AND locked_at=created_at AND status IN " + PENDING_STATUS_IN;
+            + " WHERE event_id=? AND %s AND locked_at=created_at AND status IN " + PENDING_STATUS_IN;
     protected static final String TERMINAL_STATUS_IN =
             "(" + EventStatus.DONE.code() + "," + EventStatus.DEAD.code() + ")";
 
@@ -140,6 +145,13 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     private final AtomicReference<String> stamp;
 
     /**
+     * The run {@link #endStampRun()} ended last, or {@code null}: still matched for one event's stamp, so
+     * the shutdown release that follows can hand back the known stamps it wrote. Replaced by the next
+     * ended run — at most one per store, never a history.
+     */
+    private volatile String endedStamp;
+
+    /**
      * @see OutboxStore#WRITER_STAMP_MAX_AGE — shared with the writer hook, which skips hot
      * delivery for the same events so an unstamped row is never raced by a hot copy.
      */
@@ -162,7 +174,20 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
         this.tableName = TableNames.validate(tableName);
         this.writerOwnerId = writerOwnerId;
         this.stamp = new AtomicReference<>(writerOwnerId == null ? null : newStamp(writerOwnerId));
+        if (writerOwnerId != null) {
+            LIVE_STAMPING_STORES.put(this, Boolean.TRUE);
+        }
     }
+
+    /**
+     * The stamping stores alive in this JVM, held weakly. One event's stamp is matched against the
+     * current run of each live store of its owner, so a writer and a dispatcher wired with separate
+     * store instances of one owner still agree — and the set is bounded by the stores alive, not by
+     * every run ever started. An ended run drops out: it ends only once its dispatcher's workers have
+     * stopped, and the sweep that follows names it exactly.
+     */
+    private static final Map<AbstractJdbcOutboxStore, Boolean> LIVE_STAMPING_STORES =
+            Collections.synchronizedMap(new WeakHashMap<>());
 
     private static String newStamp(String owner) {
         UUID run = UUID.randomUUID();
@@ -181,6 +206,44 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
      */
     protected final String stampOf(String owner) {
         return owner.equals(writerOwnerId) ? stamp.get() : owner;
+    }
+
+    /**
+     * The exact {@code locked_by} values one event's stamp may carry for {@code owner}: for this store's
+     * owner, the current and last-ended stamp of every live store of that owner ({@link #LIVE_STAMPING_STORES}) — an
+     * event's hot copy only exists in the process that inserted it, and the event id pins the run — so a
+     * writer and a dispatcher on separate store instances still agree; any other value (an ended run's
+     * stamp) matches only itself. Exact values, never a pattern: no owner id, a legacy one included, can
+     * match another's. Claims and the sweep, which are not pinned to one event, use exact runs.
+     */
+    private List<String> eventStamps(String owner) {
+        if (!owner.equals(writerOwnerId)) {
+            return List.of(owner);
+        }
+        Set<String> stamps = new LinkedHashSet<>();
+        addRuns(stamps);
+        synchronized (LIVE_STAMPING_STORES) {
+            for (AbstractJdbcOutboxStore store : LIVE_STAMPING_STORES.keySet()) {
+                if (owner.equals(store.writerOwnerId)) {
+                    store.addRuns(stamps);
+                }
+            }
+        }
+        return List.copyOf(stamps);
+    }
+
+    /** This store's current run and the run it ended last, if any. */
+    private void addRuns(Set<String> stamps) {
+        stamps.add(stamp.get());
+        String ended = endedStamp;
+        if (ended != null) {
+            stamps.add(ended);
+        }
+    }
+
+    /** {@code locked_by IN (?, …)} for {@code stamps}, which is never empty. */
+    private static String lockedByIn(List<String> stamps) {
+        return "locked_by IN (" + String.join(",", Collections.nCopies(stamps.size(), "?")) + ")";
     }
 
 
@@ -457,11 +520,11 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
 
     @Override
     public int markDone(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+        Fence fence = fence(claimOwner, claimedAt, Timestamp.from(Instant.now()), eventId);
         String sql = "UPDATE " + tableName() +
-                " SET status=" + EventStatus.DONE.code() + ", done_at=?, locked_by=NULL, locked_at=NULL" +
-                unsettled(claimOwner, claimedAt);
-        return JdbcTemplate.update(conn, sql,
-                withFence(claimOwner, claimedAt, Timestamp.from(Instant.now()), eventId));
+                " SET status=" + EventStatus.DONE.code() + ", done_at=?, locked_by=NULL, locked_at=NULL"
+                + fence.where();
+        return JdbcTemplate.update(conn, sql, fence.params());
     }
 
     @Override
@@ -472,12 +535,11 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     @Override
     public int markRetry(Connection conn, String eventId, Instant nextAt, String error,
                          String claimOwner, Instant claimedAt) {
+        Fence fence = fence(claimOwner, claimedAt, Timestamp.from(nextAt), truncateError(error), eventId);
         String sql = "UPDATE " + tableName() +
                 " SET status=" + EventStatus.RETRY.code() +
-                ", attempts=attempts+1, available_at=?, last_error=?, locked_by=NULL, locked_at=NULL" +
-                unsettled(claimOwner, claimedAt);
-        return JdbcTemplate.update(conn, sql,
-                withFence(claimOwner, claimedAt, Timestamp.from(nextAt), truncateError(error), eventId));
+                ", attempts=attempts+1, available_at=?, last_error=?, locked_by=NULL, locked_at=NULL" + fence.where();
+        return JdbcTemplate.update(conn, sql, fence.params());
     }
 
     @Override
@@ -487,11 +549,11 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
 
     @Override
     public int markDead(Connection conn, String eventId, String error, String claimOwner, Instant claimedAt) {
+        Fence fence = fence(claimOwner, claimedAt, Timestamp.from(Instant.now()), truncateError(error), eventId);
         String sql = "UPDATE " + tableName() +
-                " SET status=" + EventStatus.DEAD.code() + ", done_at=?, last_error=?, locked_by=NULL, locked_at=NULL" +
-                unsettled(claimOwner, claimedAt);
-        return JdbcTemplate.update(conn, sql,
-                withFence(claimOwner, claimedAt, Timestamp.from(Instant.now()), truncateError(error), eventId));
+                " SET status=" + EventStatus.DEAD.code() + ", done_at=?, last_error=?, locked_by=NULL, locked_at=NULL"
+                + fence.where();
+        return JdbcTemplate.update(conn, sql, fence.params());
     }
 
     @Override
@@ -501,12 +563,11 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
 
     @Override
     public int markDeferred(Connection conn, String eventId, Instant nextAt, String claimOwner, Instant claimedAt) {
+        Fence fence = fence(claimOwner, claimedAt, Timestamp.from(nextAt), eventId);
         String sql = "UPDATE " + tableName() +
                 " SET status=" + EventStatus.NEW.code() +
-                ", available_at=?, locked_by=NULL, locked_at=NULL" +
-                unsettled(claimOwner, claimedAt);
-        return JdbcTemplate.update(conn, sql,
-                withFence(claimOwner, claimedAt, Timestamp.from(nextAt), eventId));
+                ", available_at=?, locked_by=NULL, locked_at=NULL" + fence.where();
+        return JdbcTemplate.update(conn, sql, fence.params());
     }
 
     @Override
@@ -514,38 +575,36 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
         return true;
     }
 
-    /**
-     * WHERE clause shared by the status writes: the event is not yet terminal and the write still
-     * has authority over it, per the modes on {@link OutboxStore#markDone(Connection, String, String, Instant)}.
-     */
-    private String unsettled(String claimOwner, Instant claimedAt) {
-        String where = " WHERE event_id=? AND status NOT IN " + TERMINAL_STATUS_IN;
-        if (claimOwner == null) {
-            return where;
-        }
-        if (claimedAt != null) {
-            return where + " AND locked_by=? AND locked_at=?";
-        }
-        // A hot copy: its authority is the writer stamp of this owner, which a claim overwrites.
-        return where + (writerOwnerId != null ? " AND locked_by=? AND locked_at=created_at" : " AND locked_by IS NULL");
+    /** A status write's WHERE clause and its parameters, built from one snapshot of the stamps. */
+    private record Fence(String where, Object[] params) {
     }
 
-    /** Parameters for an {@link #unsettled} update: {@code params}, then the fence's own. */
-    private Object[] withFence(String claimOwner, Instant claimedAt, Object... params) {
+    /**
+     * WHERE clause shared by the status writes: the event is not yet terminal and the write still
+     * has authority over it, per the modes on {@link OutboxStore#markDone(Connection, String, String, Instant)}
+     * — with {@code params} (the SET values, then the event id) followed by the fence's own.
+     */
+    private Fence fence(String claimOwner, Instant claimedAt, Object... params) {
+        String where = " WHERE event_id=? AND status NOT IN " + TERMINAL_STATUS_IN;
         if (claimOwner == null) {
-            return params;
+            return new Fence(where, params);
         }
         if (claimedAt != null) {
-            Object[] all = Arrays.copyOf(params, params.length + 2);
-            all[params.length] = claimOwner;
-            all[params.length + 1] = Timestamp.from(claimedAt);
-            return all;
+            return new Fence(where + " AND locked_by=? AND locked_at=?",
+                    append(params, claimOwner, Timestamp.from(claimedAt)));
         }
         if (writerOwnerId == null) {
-            return params;
+            return new Fence(where + " AND locked_by IS NULL", params);
         }
-        Object[] all = Arrays.copyOf(params, params.length + 1);
-        all[params.length] = stampOf(claimOwner);
+        // A hot copy: its authority is the writer stamp of this owner, which a claim overwrites.
+        List<String> stamps = eventStamps(claimOwner);
+        return new Fence(where + " AND " + lockedByIn(stamps) + " AND locked_at=created_at",
+                append(params, stamps.toArray()));
+    }
+
+    private static Object[] append(Object[] params, Object... more) {
+        Object[] all = Arrays.copyOf(params, params.length + more.length);
+        System.arraycopy(more, 0, all, params.length, more.length);
         return all;
     }
 
@@ -650,33 +709,76 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
         if (writerOwner == null) {
             return 0;
         }
-        return JdbcTemplate.update(conn, RELEASE_STAMP_SQL.formatted(tableName()), eventId, stampOf(writerOwner));
+        List<String> stamps = eventStamps(writerOwner);
+        return JdbcTemplate.update(conn, RELEASE_STAMP_SQL.formatted(tableName(), lockedByIn(stamps)),
+                append(new Object[]{eventId}, stamps.toArray()));
     }
 
     @Override
     public ReleaseResult releaseHeld(Connection conn, List<Held> held) {
         List<Held> claims = new ArrayList<>();
-        List<Held> stamps = new ArrayList<>();
+        List<Held> ownStamps = new ArrayList<>();
+        List<Held> exactStamps = new ArrayList<>();
         for (Held one : held) {
-            if (one.owner() != null) {
-                (one.claimedAt() != null ? claims : stamps).add(one);
+            if (one.owner() == null) {
+                continue;
+            }
+            if (one.claimedAt() != null) {
+                claims.add(one);
+            } else {
+                (one.owner().equals(writerOwnerId) ? ownStamps : exactStamps).add(one);
             }
         }
-        ReleaseResult claimed = executeBatch(conn, RELEASE_CLAIM_SQL.formatted(tableName()), claims, true);
-        ReleaseResult stamped = executeBatch(conn, RELEASE_STAMP_SQL.formatted(tableName()), stamps, false);
-        RuntimeException first = claimed.firstFailure() != null ? claimed.firstFailure() : stamped.firstFailure();
-        return new ReleaseResult(claimed.released() + stamped.released(),
-                claimed.failed() + stamped.failed(), first);
+        return sum(
+                releaseBatch(conn, RELEASE_CLAIM_SQL.formatted(tableName()), claims, (ps, one) -> {
+                    ps.setString(1, one.eventId());
+                    ps.setString(2, one.owner());
+                    ps.setTimestamp(3, Timestamp.from(one.claimedAt()));
+                }, one -> releaseClaim(conn, one.eventId(), one.owner(), one.claimedAt())),
+                releaseStampBatch(conn, ownStamps),
+                releaseExactStamps(conn, exactStamps));
+    }
+
+    /** Stamps named by an exact value each (an ended run's): grouped by value, one batch per value. */
+    private ReleaseResult releaseExactStamps(Connection conn, List<Held> stamps) {
+        Map<String, List<Held>> byValue = new LinkedHashMap<>();
+        for (Held one : stamps) {
+            byValue.computeIfAbsent(one.owner(), k -> new ArrayList<>()).add(one);
+        }
+        return sum(byValue.values().stream().map(group -> releaseStampBatch(conn, group))
+                .toArray(ReleaseResult[]::new));
+    }
+
+    private ReleaseResult releaseStampBatch(Connection conn, List<Held> stamps) {
+        if (stamps.isEmpty()) {
+            return new ReleaseResult(0, 0, null);
+        }
+        List<String> values = eventStamps(stamps.get(0).owner());
+        return releaseBatch(conn, RELEASE_STAMP_SQL.formatted(tableName(), lockedByIn(values)), stamps,
+                (ps, one) -> {
+                    ps.setString(1, one.eventId());
+                    for (int i = 0; i < values.size(); i++) {
+                        ps.setString(2 + i, values.get(i));
+                    }
+                }, one -> releaseStamp(conn, one.eventId(), one.owner()));
+    }
+
+    @FunctionalInterface
+    private interface BatchBinder {
+        void bind(PreparedStatement ps, Held one) throws SQLException;
     }
 
     /**
-     * One batch of exact releases. Counted released: commands that report affected rows. Counted
-     * failed: commands that report {@code EXECUTE_FAILED}, and those with no outcome at all (not
-     * executed, or lost with the batch). A success whose count is unknown ({@code SUCCESS_NO_INFO})
-     * is neither — so the result never overstates either side. Counts the driver already returned
-     * survive an error closing the statement.
+     * One batch of exact releases, as a JDBC batch. If the batch itself fails, its outcome is unknown
+     * — PostgreSQL runs an auto-commit batch as one implicit transaction and rolls all of it back,
+     * MySQL applies the statements before (and after) the failing one — so each row is released again
+     * on its own, through the overridable single-row method: idempotent, per-row isolated, and
+     * counted exactly. Counts the driver already returned survive an error closing the statement.
+     * Counted released: commands that report affected rows; a success whose count is unknown
+     * ({@code SUCCESS_NO_INFO}) is neither released nor failed.
      */
-    private ReleaseResult executeBatch(Connection conn, String sql, List<Held> batch, boolean lease) {
+    private ReleaseResult releaseBatch(Connection conn, String sql, List<Held> batch, BatchBinder binder,
+                                       ToIntFunction<Held> single) {
         if (batch.isEmpty()) {
             return new ReleaseResult(0, 0, null);
         }
@@ -684,29 +786,54 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
         RuntimeException failure = null;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             for (Held one : batch) {
-                ps.setString(1, one.eventId());
-                ps.setString(2, lease ? one.owner() : stampOf(one.owner()));
-                if (lease) {
-                    ps.setTimestamp(3, Timestamp.from(one.claimedAt()));
-                }
+                binder.bind(ps, one);
                 ps.addBatch();
             }
             counts = ps.executeBatch();
-        } catch (BatchUpdateException e) {
-            counts = counts != null ? counts : e.getUpdateCounts();
-            failure = new OutboxStoreException("Batch release of " + batch.size() + " held row(s) failed", e);
         } catch (SQLException e) {
             failure = new OutboxStoreException("Batch release of " + batch.size() + " held row(s) failed", e);
         }
-        return outcome(batch.size(), counts, failure);
+        if (counts == null) {
+            return oneByOne(batch, single, failure);
+        }
+        int released = Arrays.stream(counts).filter(c -> c > 0).sum();
+        int failed = (int) Arrays.stream(counts).filter(c -> c == Statement.EXECUTE_FAILED).count()
+                + Math.max(0, batch.size() - counts.length);
+        return new ReleaseResult(released, failed, failure);
     }
 
-    private static ReleaseResult outcome(int size, int[] counts, RuntimeException failure) {
-        int[] known = counts == null ? new int[0] : counts;
-        int released = Arrays.stream(known).filter(c -> c > 0).sum();
-        int failedCommands = (int) Arrays.stream(known).filter(c -> c == Statement.EXECUTE_FAILED).count();
-        int noOutcome = Math.max(0, size - known.length);
-        return new ReleaseResult(released, failedCommands + noOutcome, failure);
+    private static ReleaseResult oneByOne(List<Held> batch, ToIntFunction<Held> single, RuntimeException batchFailure) {
+        int released = 0;
+        int failed = 0;
+        RuntimeException first = null;
+        for (Held one : batch) {
+            try {
+                released += single.applyAsInt(one);
+            } catch (RuntimeException e) {
+                failed++;
+                if (first == null) {
+                    first = e;
+                }
+            }
+        }
+        if (first != null && batchFailure != null) {
+            first.addSuppressed(batchFailure);
+        }
+        return new ReleaseResult(released, failed, first);
+    }
+
+    private static ReleaseResult sum(ReleaseResult... results) {
+        int released = 0;
+        int failed = 0;
+        RuntimeException first = null;
+        for (ReleaseResult result : results) {
+            released += result.released();
+            failed += result.failed();
+            if (first == null) {
+                first = result.firstFailure();
+            }
+        }
+        return new ReleaseResult(released, failed, first);
     }
 
     @Override
@@ -714,22 +841,18 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
         if (writerOwnerId == null) {
             return Optional.empty();
         }
-        return Optional.of(stamp.getAndSet(newStamp(writerOwnerId)));
+        String ended = stamp.getAndSet(newStamp(writerOwnerId));
+        endedStamp = ended;
+        return Optional.of(ended);
     }
 
     @Override
-    public List<String> findStamped(Connection conn, String stamp, String afterEventId, int limit) {
-        // A plain read: no row locks, so the by-id releases that follow touch only these rows. Keyset
-        // paging on the primary key: each page starts past the last, so no row is read twice. The first
-        // page has no lower bound at all: no sentinel value can sort before every accepted id.
-        String stamped = " locked_by=? AND locked_at=created_at AND status IN " + PENDING_STATUS_IN
-                + " ORDER BY event_id LIMIT ?";
-        if (afterEventId == null) {
-            return JdbcTemplate.query(conn, "SELECT event_id FROM " + tableName() + " WHERE" + stamped,
-                    rs -> rs.getString(1), stamp, limit);
-        }
-        return JdbcTemplate.query(conn, "SELECT event_id FROM " + tableName() + " WHERE event_id > ? AND" + stamped,
-                rs -> rs.getString(1), afterEventId, stamp, limit);
+    public List<String> findStamped(Connection conn, String stamp, int limit) {
+        // A plain read: no row locks, so the by-id releases that follow touch only these rows. Unordered,
+        // so the planner can narrow by status instead of walking the primary key past every settled row.
+        String sql = "SELECT event_id FROM " + tableName()
+                + " WHERE locked_by=? AND locked_at=created_at AND status IN " + PENDING_STATUS_IN + " LIMIT ?";
+        return JdbcTemplate.query(conn, sql, rs -> rs.getString(1), stamp, limit);
     }
 
     @Override

@@ -15,6 +15,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -1197,7 +1198,7 @@ class JdbcOutboxStoreTest {
             assertNotEquals(ended, lockedByOf(conn, reused.eventId()), "the same store stamps a new run");
             assertNotEquals(lockedByOf(conn, reused.eventId()), lockedByOf(conn, rebuilt.eventId()));
 
-            assertEquals(List.of(old.eventId()), store.findStamped(conn, ended, null, 10));
+            assertEquals(List.of(old.eventId()), store.findStamped(conn, ended, 10));
             OutboxStore.ReleaseResult result = store.releaseHeld(conn, List.of(
                     new OutboxStore.Held(old.eventId(), ended, null),
                     new OutboxStore.Held(reused.eventId(), ended, null),
@@ -1208,40 +1209,95 @@ class JdbcOutboxStoreTest {
             assertNull(lockedByOf(conn, old.eventId()));
             assertStampOf(POD_A, lockedByOf(conn, reused.eventId()), "a later run keeps its stamp");
             assertStampOf(POD_A, lockedByOf(conn, rebuilt.eventId()), "a later run keeps its stamp");
-            assertEquals(List.of(), store.findStamped(conn, ended, null, 10));
+            assertEquals(List.of(), store.findStamped(conn, ended, 10));
         }
     }
 
-    /** findStamped pages by event id: ascending, each page after the last id of the one before. */
+    /** findStamped has no cursor or sentinel: even an empty event id, which nothing rejects, is found. */
     @Test
-    void findStampedPagesByEventId() throws SQLException {
-        H2OutboxStore store = new H2OutboxStore(TABLE, POD_A);
-        try (Connection conn = dataSource.getConnection()) {
-            for (int i = 0; i < 3; i++) {
-                store.insertNew(conn, event());
-            }
-            String ended = store.endStampRun().orElseThrow();
-            List<String> all = store.findStamped(conn, ended, null, 10);
-            assertEquals(all.stream().sorted().toList(), all, "ascending");
-            assertEquals(3, all.size());
-
-            List<String> first = store.findStamped(conn, ended, null, 2);
-            List<String> rest = store.findStamped(conn, ended, first.get(1), 2);
-
-            assertEquals(all.subList(0, 2), first);
-            assertEquals(all.subList(2, 3), rest);
-        }
-    }
-
-    /** The first page has no lower bound: even an empty event id, which nothing rejects, is found. */
-    @Test
-    void findStampedFirstPageIncludesAnyEventId() throws SQLException {
+    void findStampedFindsAnyEventId() throws SQLException {
         H2OutboxStore store = new H2OutboxStore(TABLE, POD_A);
         try (Connection conn = dataSource.getConnection()) {
             store.insertNew(conn, EventEnvelope.builder("TestEvent").eventId("").payloadJson("{}").build());
             String ended = store.endStampRun().orElseThrow();
 
-            assertEquals(List.of(""), store.findStamped(conn, ended, null, 10));
+            assertEquals(List.of(""), store.findStamped(conn, ended, 10));
+        }
+    }
+
+    /**
+     * A writer and a dispatcher wired with separate store instances of the same owner stamp different
+     * runs, yet still agree on one event's stamp: the hot fence and the per-event release match any run
+     * of the owner, since the event id pins the run that inserted it. Owner ids with LIKE
+     * metacharacters match only themselves.
+     */
+    @Test
+    void separateStoreInstancesOfAnOwnerAgreeOnAnEventsStamp() throws SQLException {
+        for (String owner : List.of(POD_A, "p%_!a")) {
+            H2OutboxStore writer = new H2OutboxStore(TABLE, owner);
+            H2OutboxStore dispatcher = new H2OutboxStore(TABLE, owner);
+            EventEnvelope delivered = event();
+            EventEnvelope dropped = event();
+            try (Connection conn = dataSource.getConnection()) {
+                writer.insertNew(conn, delivered);
+                writer.insertNew(conn, dropped);
+
+                assertEquals(0, new H2OutboxStore(TABLE, "p").markDone(conn, delivered.eventId(), "p", null),
+                        "another owner, even a prefix of this one, is not this stamp's");
+                assertEquals(0, new H2OutboxStore(TABLE, owner + "#x").markDone(conn, delivered.eventId(), owner + "#x",
+                        null), "nor an owner this one is a prefix of");
+                assertEquals(1, dispatcher.markDone(conn, delivered.eventId(), owner, null), owner);
+                assertEquals(1, dispatcher.releaseStamp(conn, dropped.eventId(), owner), owner);
+            }
+        }
+    }
+
+    /**
+     * One event's stamp is matched against exact values, never a pattern, so an owner id with '#' in it
+     * is a different owner: pod-a's hot write or release never touches a row stamped by "pod-a#sibling",
+     * nor a 0.13 base-only stamp whose owner id merely looks like one of pod-a's runs.
+     */
+    @Test
+    void aStampOfAnOwnerWithHashIsNotThisOwnersStamp() throws SQLException {
+        H2OutboxStore podA = new H2OutboxStore(TABLE, POD_A);
+        EventEnvelope sibling = event();
+        EventEnvelope legacy = event();
+        try (Connection conn = dataSource.getConnection()) {
+            new H2OutboxStore(TABLE, POD_A + "#sibling").insertNew(conn, sibling);
+            podA.insertNew(conn, legacy);
+            String lookalike = POD_A + "#AAAAAAAAAAAAAAAAAAAAAA"; // a 0.13 owner id shaped like a run stamp
+            try (PreparedStatement ps = conn.prepareStatement("UPDATE outbox_event SET locked_by = ? WHERE event_id = ?")) {
+                ps.setString(1, lookalike);
+                ps.setString(2, legacy.eventId());
+                assertEquals(1, ps.executeUpdate());
+            }
+
+            for (EventEnvelope foreign : List.of(sibling, legacy)) {
+                assertEquals(0, podA.markDone(conn, foreign.eventId(), POD_A, null));
+                assertEquals(0, podA.releaseStamp(conn, foreign.eventId(), POD_A));
+                assertEquals(new OutboxStore.ReleaseResult(0, 0, null),
+                        podA.releaseHeld(conn, List.of(new OutboxStore.Held(foreign.eventId(), POD_A, null))));
+            }
+        }
+    }
+
+    /**
+     * The run a store ended last still matches one event's stamp by owner, so the shutdown release can hand
+     * back known stamps after the run ended; an earlier ended run does not (one remembered, never a history).
+     */
+    @Test
+    void theLastEndedRunStillMatchesAnEventsStampByOwner() throws SQLException {
+        H2OutboxStore store = new H2OutboxStore(TABLE, POD_A);
+        EventEnvelope older = event();
+        EventEnvelope last = event();
+        try (Connection conn = dataSource.getConnection()) {
+            store.insertNew(conn, older);
+            store.endStampRun();
+            store.insertNew(conn, last);
+            store.endStampRun();
+
+            assertEquals(1, store.releaseStamp(conn, last.eventId(), POD_A), "the last ended run");
+            assertEquals(0, store.releaseStamp(conn, older.eventId(), POD_A), "an earlier one is not remembered");
         }
     }
 
@@ -1335,9 +1391,10 @@ class JdbcOutboxStoreTest {
     }
 
     /**
-     * Batch outcomes are counted honestly: a success with an unknown count is neither released nor
-     * failed, a failed command or one without an outcome is failed, and counts the driver returned
-     * survive an error closing the statement.
+     * Batch outcomes are counted honestly. A batch that fails as a whole has an unknown outcome
+     * (PostgreSQL rolls back an auto-commit batch, MySQL keeps part of it), so its rows are released
+     * again one at a time and counted exactly. Counts the driver returned survive an error closing the
+     * statement, and a success with an unknown count is neither released nor failed.
      */
     @Test
     void releaseHeldCountsBatchOutcomesHonestly() {
@@ -1345,21 +1402,14 @@ class JdbcOutboxStoreTest {
         List<OutboxStore.Held> three = List.of(new OutboxStore.Held("a", POD_A, Instant.now()),
                 new OutboxStore.Held("b", POD_A, Instant.now()), new OutboxStore.Held("c", POD_A, Instant.now()));
         List<OutboxStore.Held> two = three.subList(0, 2);
-        int unknown = java.sql.Statement.SUCCESS_NO_INFO;
-        int failed = java.sql.Statement.EXECUTE_FAILED;
+        int unknown = Statement.SUCCESS_NO_INFO;
 
-        OutboxStore.ReleaseResult mixed = store.releaseHeld(batchConn(() -> {
-            throw new BatchUpdateException(new int[]{1, unknown, failed});
+        OutboxStore.ReleaseResult retried = store.releaseHeld(batchConn(() -> {
+            throw new BatchUpdateException(new int[]{1, unknown, Statement.EXECUTE_FAILED});
         }, false), three);
-        assertEquals(1, mixed.released());
-        assertEquals(1, mixed.failed(), "only the command that failed");
-        assertNotNull(mixed.firstFailure());
-
-        OutboxStore.ReleaseResult stopped = store.releaseHeld(batchConn(() -> {
-            throw new BatchUpdateException(new int[]{1});
-        }, false), three);
-        assertEquals(1, stopped.released());
-        assertEquals(2, stopped.failed(), "the commands the driver never reported");
+        assertEquals(2, retried.released(), "a and c, released again one by one");
+        assertEquals(1, retried.failed(), "b fails on its own as well");
+        assertNotNull(retried.firstFailure());
 
         OutboxStore.ReleaseResult closeFailed = store.releaseHeld(batchConn(() -> new int[]{1, 1}, true), two);
         assertEquals(2, closeFailed.released(), "counts returned before the close survive it");
@@ -1376,22 +1426,41 @@ class JdbcOutboxStoreTest {
         int[] run() throws SQLException;
     }
 
-    /** A connection whose statements run {@code execution} for executeBatch and may fail to close. */
+    /**
+     * A connection whose statements run {@code execution} for executeBatch, may fail to close, and
+     * release a single row (executeUpdate) unless its event id is "b".
+     */
     private static Connection batchConn(BatchExecution execution, boolean closeFails) {
-        PreparedStatement ps = (PreparedStatement) Proxy.newProxyInstance(PreparedStatement.class.getClassLoader(),
-                new Class<?>[]{PreparedStatement.class}, (proxy, method, args) -> switch (method.getName()) {
-                    case "executeBatch" -> execution.run();
-                    case "close" -> {
-                        if (closeFails) {
-                            throw new SQLException("connection reset on close");
-                        }
-                        yield null;
-                    }
-                    default -> null;
-                });
         return (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(),
-                new Class<?>[]{Connection.class},
-                (proxy, method, args) -> "prepareStatement".equals(method.getName()) ? ps : null);
+                new Class<?>[]{Connection.class}, (conn, connMethod, connArgs) -> {
+                    if (!"prepareStatement".equals(connMethod.getName())) {
+                        return null;
+                    }
+                    String[] eventId = new String[1];
+                    return Proxy.newProxyInstance(PreparedStatement.class.getClassLoader(),
+                            new Class<?>[]{PreparedStatement.class}, (ps, method, args) -> switch (method.getName()) {
+                                case "setString" -> {
+                                    if ((int) args[0] == 1) {
+                                        eventId[0] = (String) args[1];
+                                    }
+                                    yield null;
+                                }
+                                case "executeBatch" -> execution.run();
+                                case "executeUpdate" -> {
+                                    if ("b".equals(eventId[0])) {
+                                        throw new SQLException("lock wait timeout");
+                                    }
+                                    yield 1;
+                                }
+                                case "close" -> {
+                                    if (closeFails) {
+                                        throw new SQLException("connection reset on close");
+                                    }
+                                    yield null;
+                                }
+                                default -> null;
+                            });
+                });
     }
 
     private static EventEnvelope event() {

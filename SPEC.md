@@ -653,9 +653,9 @@ public interface OutboxStore {
     // End the current stamping run: later inserts stamp a new run; returns the ended run's exact stamp (default empty)
     default Optional<String> endStampRun();
 
-    // Ids, ascending and after afterEventId (null for the first page), of pending rows still carrying exactly this stamp
-    // unclaimed; a plain, lock-free read, paged by event id (default none)
-    default List<String> findStamped(Connection conn, String stamp, String afterEventId, int limit);
+    // Ids of up to `limit` pending rows still carrying exactly this stamp unclaimed; a plain, lock-free, unordered
+    // read (default none)
+    default List<String> findStamped(Connection conn, String stamp, int limit);
 
     // The locked_at value claimPending writes for a claim taken at `now`
     default Instant leaseTimestamp(Instant now);
@@ -676,13 +676,28 @@ random version-4 UUID — 122 random bits — base64url-encoded) for the store's
 stamps apart from any other run of the same owner — a pod restarted under the same name, an `Outbox` rebuilt over the
 store — so the shutdown sweep (§9.7) clears only its own. `claimPending` treats `locked_at = created_at` as an
 *unclaimed writer stamp*: the owner may claim its current run's stamp once immediately, while other nodes wait for the
-lock timeout. A poller claim
-overwrites `locked_at`, ending the exemption, and writes the plain owner (`locked_by = ownerId`): leases are not
-run-scoped. Every stamp comparison is exact — no prefix matching — so a predecessor run's stamp, or a base-only stamp
-written by 0.13 and earlier, waits for the lock timeout like any other node's. `writerOwnerId()` still reports the
-plain owner; wherever a stamp is matched, the store resolves its own owner to the current run's stamp and takes any
-other value (an ended run's stamp) as given. The writer and the dispatcher must therefore share the store instance
-(`Outbox` and the starter do). Events older than `WRITER_STAMP_MAX_AGE` at insert
+lock timeout. A poller claim overwrites `locked_at`, ending the exemption, and writes the plain owner (`locked_by =
+ownerId`): leases are not run-scoped. `writerOwnerId()` still reports the plain owner. Matching a stamp:
+
+- **Claims and the sweep compare the exact run.** `claimPending`'s own-stamp branch matches only the store's current
+  run, and the sweep only the ended run's stamp, so a predecessor run's stamp, or a base-only stamp written by 0.13 and
+  earlier, waits for the lock timeout like any other node's. No prefix matching here, so an owner id containing `#`
+  can never take another owner's stamp.
+- **One event's stamp matches the current run of any live store of the owner.** The hot-copy fence and
+  `releaseStamp(conn, id, owner)` name one event, whose hot copy can only exist in the process that inserted it, so
+  for the store's own owner they match `locked_by IN (…)` over the current stamp — and the run it ended last — of
+  every live JDBC store of that owner in this JVM (held weakly: at most two values per live store, never every run
+  ever started). The last-ended run stays so the shutdown release that follows `endStampRun()` can hand back its
+  known stamps; an earlier run drops out, which is safe because a run ends only once its dispatcher's workers have
+  stopped. Exact values, never a pattern, so no other owner — one whose id contains `#`, or a 0.13 owner id shaped
+  like a run stamp — can match. A writer and a dispatcher wired with separate, long-lived store instances of the same
+  owner therefore still agree on the hot path and on the shutdown release of known stamps; only the early claim and
+  the sweep need the shared instance (`Outbox` and the starter share it). A store instance discarded while hot copies
+  of its writes are still queued no longer vouches for them. An explicit run stamp (an ended run's) matches only
+  itself.
+
+A store subclass that overrides `claimPending` must bind its own-stamp branch to the current run's stamp (the
+protected `stampOf(ownerId)`), or its own stamps wait for the lock timeout. Events older than `WRITER_STAMP_MAX_AGE` at insert
 (backfills) are written unowned and skip hot delivery. The store reports its stamp owner through
 `OutboxStore.writerOwnerId()` (empty by default). `Outbox.multiNode()` with the hot path requires a stamp from a store
 that `supportsClaimLocking()`, and in every case requires it to equal the claim owner (`claimLocking(Duration)` takes
@@ -904,12 +919,14 @@ still holds:
 2. **Known stamps.** A dropped hot copy's writer stamp, and that of a cut-short hot write.
 3. **The rest of the run's stamps.** `close()` first ends the store's stamping run (`endStampRun()`, in memory, on the
    closing thread, before any release starts), so rows written from then on — by this store's next user, too — carry a
-   new run. The known stamps are pinned to the ended run's exact stamp. The sweep then pages through the ended run's
-   remaining unclaimed stamps by event id with a plain, lock-free `findStamped` and releases each page by exact id,
-   until a page comes back short: hot copies the dispatcher refused (full queue, open breaker, a commit after `close()`
-   began) or never queued. Each row is read once, so a row it cannot release is passed over, and a release whose count
-   the driver cannot report does not stop it. No statement locks rows beyond its own, so another owner's locked rows neither
-   block it nor are touched.
+   new run. The known stamps keep their owner, so each event's stamp is matched whichever live store's current or
+   just-ended run wrote it — the sweep's cap never decides whether a known stamp is released. The sweep then reads the
+   ended run's remaining
+   unclaimed stamps once — a plain, lock-free, unordered `findStamped` of up to `SWEEP_READ_LIMIT` (10,000) ids, so the
+   database can narrow by status instead of walking every settled row in key order — and releases them by exact id in
+   batches: hot copies the dispatcher refused (full queue, open breaker, a commit after `close()` began) or never
+   queued. Rows beyond the limit wait for the lock timeout. No statement locks rows beyond its own, so another owner's
+   locked rows neither block it nor are touched.
 
 Other nodes then take those rows at once instead of after the lock timeout. A statement that ran but matched no row
 holds nothing. A failure before the forced shutdown, the graceful drain included, is not tracked: an exact lease keeps
@@ -920,13 +937,15 @@ release issued by a producer or the poller after the workers stopped can fail; s
 Copies that hold nothing (single-node: no lease, no stamp) need no connection.
 
 The cleanup is best effort: it runs on its own thread over one auto-commit connection, releasing in batches of up to
-200 (`releaseHeld`; the JDBC stores send each as one JDBC batch), and `close()` waits for it at most one second; past
+200 (`releaseHeld`; the JDBC stores send each as one JDBC batch and, if the batch as a whole fails — PostgreSQL rolls
+back a failed auto-commit batch entirely — release its rows again one at a time through the overridable
+`releaseClaim`/`releaseStamp`, so one failing row does not undo the rest), and `close()` waits for it at most one second; past
 that, or when the closing thread is interrupted meanwhile, `close()` returns and cancels it. Cancellation is checked
 before each batch and each read, so it holds even if a callee swallows the interrupt; a batch already being issued
 still runs. This bounds `close()`, not the cleanup's I/O: a call already in progress (acquiring the connection, a
 statement, closing the connection) can finish after `close()` returns, bounded only by the driver's or pool's own
-timeouts. One WARNING summarises failures; once it has a connection, it ends with one INFO line, cancelled or not,
-reporting the rows handed back — a lower bound: a row settled or claimed again since updates nothing, and a driver may
+timeouts. One WARNING summarises failures; once it has a connection, it ends with one report — INFO, or FINE when it
+found nothing to hand back — cancelled or not, giving the rows handed back — a lower bound: a row settled or claimed again since updates nothing, and a driver may
 report a batch count as unknown — with failed-or-unknown and not-reached counts and the sweep's count. A release counts
 as failed only when its command failed or reported no outcome; a success whose count is unknown is neither. Rows it did not release
 expire as before. It is skipped when the workers did not stop within the forced-shutdown grace (5 s after

@@ -175,8 +175,9 @@ outbox-jdbc/src/main/java/
   `releaseStamp(conn, id, owner)` drops only an unclaimed writer stamp (`locked_at = created_at`);
   `releaseHeld(conn, List<Held>)` releases leases and stamps at once (JDBC: batched; failures reported in a
   `ReleaseResult`, `released` a lower bound, `failed` = failed or no outcome); `endStampRun()` (in-memory rotation) and
-  `findStamped(conn, stamp, afterEventId, limit)` (lock-free read, keyset-paged by event id) let the dispatcher sweep an
-  ended run's stamps;
+  `findStamped(conn, stamp, limit)` (one lock-free, unordered read) let the dispatcher sweep an ended run's stamps;
+  JDBC `releaseHeld` re-releases a failed batch row by row through `releaseClaim`/`releaseStamp` (PG rolls back a failed
+  auto-commit batch whole);
   `leaseTimestamp(now)` is the single definition of the `locked_at` a claim writes.
   The four status writes have claim-fenced overloads `(…, claimOwner, claimedAt)`; the dispatcher and poller call the
   plain overload for an unfenced write, so a store's override of it still applies. Owner `null` = unfenced; a
@@ -195,7 +196,11 @@ outbox-jdbc/src/main/java/
   may claim once immediately (only its current run's: every stamp comparison is exact, so a predecessor's or a 0.13
   base-only stamp waits for the lock timeout) while other nodes wait for the lock timeout. Leases still write the plain
   owner. The store maps its own owner to the current run's stamp in stamp predicates and takes other values (an ended
-  run's stamp) verbatim, so writer and dispatcher must share the store instance. Rows older than
+  run's stamp) verbatim. The hot fence and per-event `releaseStamp` match `locked_by IN (…)` over the current and
+  last-ended stamp of every live stamping store of the owner (static weak `LIVE_STAMPING_STORES`, ≤ 2 per live store;
+  exact values, no pattern), so separate long-lived writer/dispatcher instances still agree on hot writes and known-stamp releases;
+  the early claim and the sweep are exact-run. Known stamps keep the plain owner (not pinned to the ended run). A subclass overriding `claimPending`
+  must bind `stampOf(ownerId)`. Rows older than
   `OutboxStore.WRITER_STAMP_MAX_AGE` (30s) insert unowned and skip the hot path. `OutboxStore.writerOwnerId()` reports
   the plain owner; `verifySchema(conn)` (JDBC: read-only metadata check of `created_at`/`locked_at`, MySQL reads
   precision from `COLUMN_SIZE`, plus `locked_by` wide enough for the stamp: owner ≤ 105 chars with `VARCHAR(128)`) runs in `multiNode().build()` unless `verifySchema(false)` / `outbox.claim-locking.verify-schema=false`,
@@ -235,8 +240,8 @@ outbox-jdbc/src/main/java/
   run (`endStampRun()`, on the closing thread) and releases, on its own thread and one connection in batches of
   `RELEASE_BATCH_SIZE`: known leases (each dropped copy's handed-over claim or own lease, and the exact fence of every
   status write or claim release that failed outright once the forced shutdown's interrupt was in play — `holdIfCutShort`),
-  then known hot stamps pinned to the ended run, then a sweep of the ended run's remaining stamps (lock-free
-  `findStamped` paged by event id, exact by-id releases; each row read once, stops on a short page). `close()` waits at most
+  then known hot stamps by their owner, then a sweep of the ended run's remaining stamps (lock-free
+  `findStamped`, one read of up to `SWEEP_READ_LIMIT`, exact by-id releases in batches). `close()` waits at most
   `RELEASE_ON_CLOSE_BUDGET_MS` (or until interrupted), then cancels it via a flag checked before each batch and read
   (skipped if workers did not stop or the closer is interrupted). An enqueue that reaches a queue after the drain takes
   back exactly the entry it inserted (`offerUnlessClosed`, identity) and refuses it. `hotPathEnabled(false)`

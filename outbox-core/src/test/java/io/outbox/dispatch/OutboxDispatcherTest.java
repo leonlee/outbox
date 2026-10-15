@@ -3658,8 +3658,9 @@ class OutboxDispatcherTest {
     }
 
     /**
-     * An exclusive store with stamping runs: rows carry "pod-a#rN", endStampRun moves to the next run,
-     * and a stamp release clears a row only when it names that row's exact stamp.
+     * An exclusive store with stamping runs: rows carry "pod-a#rN", endStampRun moves to the next run.
+     * As in the JDBC stores, a stamp release by the owner ("pod-a") clears one event's stamp of any of
+     * its runs; an explicit run stamp clears only that run's.
      */
     private static class RunStore extends ExclusiveStore {
         final Map<String, String> stamps = new ConcurrentHashMap<>();
@@ -3679,21 +3680,23 @@ class OutboxDispatcherTest {
         }
 
         @Override
-        public List<String> findStamped(Connection conn, String stamp, String afterEventId, int limit) {
-            return stamps.entrySet().stream()
-                    .filter(e -> e.getValue().equals(stamp) && (afterEventId == null || e.getKey().compareTo(afterEventId) > 0))
+        public List<String> findStamped(Connection conn, String stamp, int limit) {
+            return stamps.entrySet().stream().filter(e -> e.getValue().equals(stamp))
                     .map(Map.Entry::getKey).sorted().limit(limit).toList();
         }
 
         @Override
         public int releaseStamp(Connection conn, String eventId, String writerOwner) {
             super.releaseStamp(conn, eventId, writerOwner);
-            return stamps.remove(eventId, writerOwner) ? 1 : 0;
+            String current = stamps.get(eventId);
+            boolean match = current != null
+                    && ("pod-a".equals(writerOwner) ? current.startsWith("pod-a#r") : current.equals(writerOwner));
+            return match && stamps.remove(eventId, current) ? 1 : 0;
         }
     }
 
     /**
-     * close() ends the store's stamping run, pins a stranded hot copy's stamp release to that run, and
+     * close() ends the store's stamping run, releases a stranded hot copy's stamp by its owner, and
      * then sweeps the run's remaining stamps: rows whose hot copy was refused or never queued. A row
      * stamped by the next run is not touched.
      */
@@ -3710,17 +3713,14 @@ class OutboxDispatcherTest {
         List<String> messages = captureDispatcherLogs(live -> d.close());
 
         assertEquals(1, store.endedRuns);
-        assertEquals(List.of(queued.eventId() + ":stamp@pod-a#r1", "refused:stamp@pod-a#r1"), store.released,
-                "the known stamp first, pinned to the ended run; then the sweep");
+        assertEquals(List.of(queued.eventId() + ":stamp@pod-a", "refused:stamp@pod-a#r1"), store.released,
+                "the known stamp first, by its owner; then the sweep of the ended run");
         assertEquals(Map.of("next-run", "pod-a#r2"), store.stamps);
         assertTrue(messages.stream().anyMatch(m -> m.startsWith("Shutdown release handed back 1 of 1 row(s)")
                 && m.contains("and 1 more writer stamp(s) of this run")), "got: " + messages);
     }
 
-    /**
-     * With nothing queued the run's stamps are still swept: every refused hot copy left one. The first
-     * page has no lower bound, so even an empty event id is reached.
-     */
+    /** With nothing queued the run's stamps are still swept: every refused hot copy left one. */
     @Test
     void closeSweepsEvenWithNothingQueued() {
         var store = new RunStore();
@@ -3734,21 +3734,23 @@ class OutboxDispatcherTest {
     }
 
     /**
-     * The sweep pages through the run's stamps by event id, so each row is read once: rows it cannot
-     * release are passed over rather than read again until the budget runs out.
+     * The sweep reads the run's stamps once and releases them in batches: rows it cannot release are
+     * not read again until the budget runs out.
      */
     @Test
-    void aSweepReadsEachRowOnce() {
+    void theSweepReadsOnce() {
         AtomicInteger reads = new AtomicInteger();
+        AtomicInteger tries = new AtomicInteger();
         var store = new RunStore() {
             @Override
-            public List<String> findStamped(Connection conn, String stamp, String afterEventId, int limit) {
+            public List<String> findStamped(Connection conn, String stamp, int limit) {
                 reads.incrementAndGet();
-                return super.findStamped(conn, stamp, afterEventId, limit);
+                return super.findStamped(conn, stamp, limit);
             }
 
             @Override
             public int releaseStamp(Connection conn, String eventId, String writerOwner) {
+                tries.incrementAndGet();
                 return 0; // stuck: claimed meanwhile, say
             }
         };
@@ -3760,7 +3762,47 @@ class OutboxDispatcherTest {
 
         d.close();
 
-        assertEquals(2, reads.get(), "a full page, then the short rest");
+        assertEquals(1, reads.get());
+        assertEquals(stuck, tries.get(), "every row found is tried once");
+    }
+
+    /**
+     * releaseHeld reports failures rather than throwing; a store that throws anyway fails only that
+     * batch — the sweep still runs, and the report counts the batch as failed.
+     */
+    @Test
+    void aStoreThatThrowsFromReleaseHeldFailsOnlyThatBatch() {
+        AtomicInteger reads = new AtomicInteger();
+        var store = new RunStore() {
+            @Override
+            public ReleaseResult releaseHeld(Connection conn, List<Held> held) {
+                throw new IllegalStateException("broken store");
+            }
+
+            @Override
+            public List<String> findStamped(Connection conn, String stamp, int limit) {
+                reads.incrementAndGet();
+                return super.findStamped(conn, stamp, limit);
+            }
+        };
+        var d = exclusive(store, new DefaultListenerRegistry(), 0, 1000);
+        assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L1)));
+
+        List<String> messages = captureDispatcherLogs(live -> d.close());
+
+        assertEquals(1, reads.get(), "the sweep still runs");
+        assertTrue(messages.stream().anyMatch(m -> m.startsWith("Shutdown release: 1 of 1 release(s) failed")),
+                "got: " + messages);
+    }
+
+    /** A shutdown with nothing to hand back is not news: no INFO report. */
+    @Test
+    void aShutdownWithNothingToReleaseStaysQuiet() {
+        var d = exclusive(new RunStore(), new DefaultListenerRegistry(), 0, 1000);
+
+        List<String> messages = captureDispatcherLogs(live -> d.close());
+
+        assertTrue(messages.stream().noneMatch(m -> m.startsWith("Shutdown release")), "got: " + messages);
     }
 
     /**
@@ -3815,6 +3857,75 @@ class OutboxDispatcherTest {
         d.close();
 
         assertEquals(List.of(failing.eventId() + ":stamp@pod-a#r1"), store.released);
+    }
+
+    /**
+     * The sweep's read is new I/O, so it does not start once close() has given up: not after a known
+     * batch that outlived the budget (its callee swallowing the interrupt) …
+     */
+    @Test
+    void noSweepReadStartsAfterABatchThatOutlivedTheBudget() throws Exception {
+        CountDownLatch unblock = new CountDownLatch(1);
+        CountDownLatch connClosed = new CountDownLatch(1);
+        AtomicInteger reads = new AtomicInteger();
+        var store = new RunStore() {
+            @Override
+            public int releaseClaim(Connection conn, String eventId, String claimOwner, Instant claimedAt) {
+                awaitDeaf(unblock);
+                return super.releaseClaim(conn, eventId, claimOwner, claimedAt);
+            }
+
+            @Override
+            public List<String> findStamped(Connection conn, String stamp, int limit) {
+                reads.incrementAndGet();
+                return super.findStamped(conn, stamp, limit);
+            }
+        };
+        store.stamps.put("refused", "pod-a#r1");
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(recordingCp(new CopyOnWriteArrayList<>(), connClosed))
+                .outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
+                .workerCount(0).claimOwner("pod-a")
+                .build();
+        assertTrue(d.enqueueCold(cold(EventEnvelope.ofJson(ONCE, "{}"), L1)));
+
+        d.close();
+        unblock.countDown();
+
+        assertTrue(connClosed.await(5, TimeUnit.SECONDS));
+        assertEquals(0, reads.get(), "cancelled before the sweep could read");
+        assertEquals(Map.of("refused", "pod-a#r1"), store.stamps, "left for the lock timeout");
+    }
+
+    /** … nor after a connection that arrived late. */
+    @Test
+    void noSweepReadStartsOnALateConnection() throws Exception {
+        CountDownLatch unblock = new CountDownLatch(1);
+        CountDownLatch connClosed = new CountDownLatch(1);
+        AtomicInteger reads = new AtomicInteger();
+        ConnectionProvider pool = recordingCp(new CopyOnWriteArrayList<>(), connClosed);
+        var store = new RunStore() {
+            @Override
+            public List<String> findStamped(Connection conn, String stamp, int limit) {
+                reads.incrementAndGet();
+                return super.findStamped(conn, stamp, limit);
+            }
+        };
+        store.stamps.put("refused", "pod-a#r1");
+        var d = OutboxDispatcher.builder()
+                .connectionProvider(() -> {
+                    awaitDeaf(unblock);
+                    return pool.getConnection();
+                })
+                .outboxStore(store).listenerRegistry(new DefaultListenerRegistry())
+                .workerCount(0).claimOwner("pod-a")
+                .build();
+
+        d.close();
+        unblock.countDown();
+
+        assertTrue(connClosed.await(5, TimeUnit.SECONDS));
+        assertEquals(0, reads.get());
     }
 
     /** The run is ended only when the release may run: not on an interrupted close. */

@@ -367,8 +367,9 @@ public interface OutboxStore {
      * the release has lost its write authority, and another node may deliver the event too.
      *
      * <p>Implementations MUST match only a stamp: {@code locked_by} equal to the stamp
-     * {@code writerOwner} names (for a run-scoped store, its own owner names its current run's stamp;
-     * an ended run's stamp is matched as given) and {@code locked_at = created_at}, in a pending state. A poller claim — this owner's included —
+     * {@code writerOwner} names (for a run-scoped store, its own owner names a stamp of any of its
+     * runs — the event id pins the run that inserted it; an ended run's stamp is matched as given)
+     * and {@code locked_at = created_at}, in a pending state. A poller claim — this owner's included —
      * has replaced the stamp and is left alone, as is a settled row.
      *
      * <p>Defaults to doing nothing, which is safe: the stamp expires with the lock timeout.
@@ -452,20 +453,19 @@ public interface OutboxStore {
     }
 
     /**
-     * Event ids, in ascending order and after {@code afterEventId}, of up to {@code limit} pending rows
-     * still carrying exactly {@code stamp} unclaimed ({@code locked_by = stamp AND locked_at = created_at}).
-     * A plain read that takes no row locks, so the releases that follow touch only these rows; read
-     * page after page from the last id returned, each row is seen once, whatever the releases report.
+     * Event ids of up to {@code limit} pending rows still carrying exactly {@code stamp} unclaimed
+     * ({@code locked_by = stamp AND locked_at = created_at}). A plain read that takes no row locks,
+     * so the releases that follow touch only these rows. Unordered: an implementation should let the
+     * database narrow by status rather than walk every row in key order.
      *
      * <p>Defaults to none.
      *
-     * @param conn         the connection to use
-     * @param stamp        an ended run's stamp, from {@link #endStampRun()}
-     * @param afterEventId the last id of the previous page, or {@code null} for the first page
-     * @param limit        the most ids to return
-     * @return the matching event ids, ascending
+     * @param conn  the connection to use
+     * @param stamp an ended run's stamp, from {@link #endStampRun()}
+     * @param limit the most ids to return
+     * @return the matching event ids
      */
-    default List<String> findStamped(Connection conn, String stamp, String afterEventId, int limit) {
+    default List<String> findStamped(Connection conn, String stamp, int limit) {
         return List.of();
     }
 

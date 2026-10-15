@@ -1138,6 +1138,37 @@ class JdbcOutboxStoreTest {
         }
     }
 
+    /**
+     * A dropped hot copy's stamp is handed back so any node takes the row at once; a claim, another
+     * owner's stamp and a settled row are left alone.
+     */
+    @Test
+    void releaseStampClearsOnlyAnUnclaimedStamp() throws SQLException {
+        H2OutboxStore podA = new H2OutboxStore(TABLE, POD_A);
+        EventEnvelope claimed = EventEnvelope.builder("TestEvent").payloadJson("{}").build();
+        EventEnvelope settled = EventEnvelope.builder("TestEvent").payloadJson("{}").build();
+        EventEnvelope stamped = EventEnvelope.builder("TestEvent").payloadJson("{}").build();
+        try (Connection conn = dataSource.getConnection()) {
+            podA.insertNew(conn, claimed);
+            Instant now = Instant.now();
+            assertEquals(1, podA.claimPending(conn, POD_A, now, now.minusSeconds(300), Duration.ZERO, 10).size());
+            assertEquals(0, podA.releaseStamp(conn, claimed.eventId(), POD_A), "a claim is not a stamp");
+
+            podA.insertNew(conn, settled);
+            try (PreparedStatement ps = conn.prepareStatement("UPDATE outbox_event SET status = "
+                    + EventStatus.DONE.code() + " WHERE event_id = ?")) {
+                ps.setString(1, settled.eventId());
+                assertEquals(1, ps.executeUpdate(), "DONE with the stamp kept; markDone would clear it");
+            }
+            assertEquals(0, podA.releaseStamp(conn, settled.eventId(), POD_A), "a settled row stays settled");
+
+            podA.insertNew(conn, stamped);
+            assertEquals(0, podA.releaseStamp(conn, stamped.eventId(), "pod-b"), "only the stamp's owner");
+            assertEquals(1, podA.releaseStamp(conn, stamped.eventId(), POD_A));
+            claimAs(conn, "pod-b", Instant.now()); // exactly the released row: another node takes it at once
+        }
+    }
+
     /** The stamp authorises only its own owner: another owner's hot write must not clear it. */
     @Test
     void hotWriteOnAStampingStoreNeedsTheStampsOwner() throws SQLException {

@@ -355,6 +355,29 @@ public interface OutboxStore {
     }
 
     /**
+     * Clears {@code writerOwner}'s unclaimed writer stamp on an event still awaiting delivery, so
+     * any node can claim the row at once instead of after the lock timeout.
+     *
+     * <p>Used when a hot copy is dropped before it runs and nothing in this process will write
+     * under the stamp again. The caller owes that guarantee: a hot copy that still runs here after
+     * the release has lost its write authority, and another node may deliver the event too.
+     *
+     * <p>Implementations MUST match only a stamp: {@code locked_by = writerOwner} and
+     * {@code locked_at = created_at}, in a pending state. A poller claim — this owner's included —
+     * has replaced the stamp and is left alone, as is a settled row.
+     *
+     * <p>Defaults to doing nothing, which is safe: the stamp expires with the lock timeout.
+     *
+     * @param conn        the connection to use
+     * @param eventId     the event whose stamp should be dropped
+     * @param writerOwner the owner the stamp names, from {@link #writerOwnerId()}
+     * @return number of rows affected
+     */
+    default int releaseStamp(Connection conn, String eventId, String writerOwner) {
+        return 0;
+    }
+
+    /**
      * The value {@link #claimPending} will write to {@code locked_at} for a claim taken at
      * {@code now}.
      *

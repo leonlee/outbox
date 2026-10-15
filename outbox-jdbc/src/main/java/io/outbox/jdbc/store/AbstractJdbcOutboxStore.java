@@ -575,6 +575,19 @@ public abstract class AbstractJdbcOutboxStore implements OutboxStore {
     }
 
     @Override
+    public int releaseStamp(Connection conn, String eventId, String writerOwner) {
+        if (writerOwner == null) {
+            return 0;
+        }
+        // locked_at = created_at is what makes it a stamp; a poller lease never equals created_at
+        // (see leaseTimestamp), so a claim — this owner's too — is left alone.
+        String sql = "UPDATE " + tableName() +
+                " SET locked_by=NULL, locked_at=NULL" +
+                " WHERE event_id=? AND locked_by=? AND locked_at=created_at AND status IN " + PENDING_STATUS_IN;
+        return JdbcTemplate.update(conn, sql, eventId, writerOwner);
+    }
+
+    @Override
     public Instant leaseTimestamp(Instant now) {
         // Truncated so the stored value round-trips: the schema guarantees locked_at holds at least
         // milliseconds (the shipped schemas hold microseconds), and a nanosecond-precision Instant

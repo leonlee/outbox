@@ -66,6 +66,11 @@ class MySqlOutboxStoreIntegrationTest extends AbstractOutboxStoreIntegrationTest
     }
 
     @Override
+    AbstractJdbcOutboxStore stampingStore(String owner) {
+        return new MySqlOutboxStore("outbox_event", owner);
+    }
+
+    @Override
     String timestampType(int digits) {
         return digits == 0 ? "DATETIME" : "DATETIME(" + digits + ")";
     }

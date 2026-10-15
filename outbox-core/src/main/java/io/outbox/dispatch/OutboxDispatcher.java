@@ -1028,8 +1028,9 @@ public final class OutboxDispatcher implements AutoCloseable {
                 }
             }
         } catch (SQLException | RuntimeException e) {
-            logger.log(Level.WARNING, "Could not release the claims of " + releases.size()
-                    + " event(s) dropped at shutdown; they are retaken after the lock timeout", e);
+            logger.log(Level.WARNING, "Shutdown release failed after handing back " + released + " of "
+                    + releases.size() + " row(s) held by events dropped at shutdown; the rest are retaken after "
+                    + "the lock timeout", e);
             return;
         }
         if (firstFailure != null) {
